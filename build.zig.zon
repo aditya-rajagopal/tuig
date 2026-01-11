@@ -1,0 +1,14 @@
+.{
+    .name = .tuig,
+    .version = "0.0.1",
+    .fingerprint = 0xf0ca6679acbbed1b, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0-dev.2040+c475f1fcd",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}

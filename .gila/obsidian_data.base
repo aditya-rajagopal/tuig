@@ -1,0 +1,55 @@
+formulas:
+  "": ""
+views:
+  - type: table
+    name: TODO
+    filters:
+      and:
+        - file.hasProperty("title")
+        - status != "done"
+    order:
+      - file.name
+      - title
+      - priority
+      - priority_value
+      - tags
+      - status
+      - created
+      - waiting_on
+    sort:
+      - property: tags
+        direction: ASC
+      - property: status
+        direction: DESC
+      - property: priority
+        direction: DESC
+      - property: title
+        direction: DESC
+      - property: created
+        direction: DESC
+      - property: formula.
+        direction: ASC
+      - property: priority_value
+        direction: ASC
+    columnSize:
+      note.title: 538
+      note.priority: 73
+      note.priority_value: 77
+      note.tags: 96
+      note.status: 71
+      note.created: 178
+  - type: table
+    name: Done Tasks
+    filters:
+      and:
+        - file.hasProperty("status")
+        - status == "done"
+    order:
+      - file.name
+      - title
+      - tags
+      - completed
+    columnSize:
+      note.title: 424
+      note.tags: 268
+      note.completed: 212
