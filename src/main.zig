@@ -1,7 +1,5 @@
 const std = @import("std");
-const assert = std.debug.assert;
-const builtin = @import("builtin");
-const root = @import("root");
+const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.tui);
 
@@ -11,56 +9,7 @@ const TerminalConfig = t.TerminalConfig;
 const e = @import("event.zig");
 const Code = e.KeyEvent.Code;
 
-const Tui = @This();
-
-pub const FrameBuffer = struct {
-    width: u16,
-    height: u16,
-    capacity: u32,
-    data: []Cell,
-
-    pub const Cell = struct {
-        codepoint: Code,
-        fg: Color,
-        bg: Color,
-        style_flags: Style,
-
-        pub const Style = packed struct {
-            bold: bool = false,
-            italic: bool = false,
-            underline: bool = false,
-            blink: bool = false,
-            strikethrough: bool = false,
-            reverse: bool = false,
-        };
-    };
-
-    pub const Color = union(enum(u8)) {
-        default,
-        rgb: u24,
-        ansi: u8,
-    };
-};
-
-pub const Scissor = struct {
-    x: u16,
-    y: u16,
-    width: u16,
-    height: u16,
-    buffer: *FrameBuffer,
-};
-
-// The palan
-// 1. Have 2 buffers. Screen buffer and render buffer.
-// The render buffer is where the application draws to. And you submit the render.
-// The screen buffer is a reflection of what is on the screen. This is a readonly buffer for the user.
-// We only render the diff between the render buffer and the screen buffer.
-// The actual application is immediate mode when writing to the render buffer.
-// It is given the screen buffer and a render buffer to write to.
-// Should we be command based or should we do things immediately?
-
 var global_tty: ?*Terminal = null;
-
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
     if (global_tty) |tty| {
         tty.deinit();
@@ -86,206 +35,318 @@ pub fn main(_: std.process.Init.Minimal) void {
     defer terminal.setCursorVisible(true) catch {};
 
     var quit = false;
-
-    var screen_position: usize = 0;
-    var task_start: usize = 0;
-    var task_end: usize = 0;
-    var lines: usize = terminal.size.height - 1;
-
-    var screen_buffer: []u8 = undefined;
-    var render_buffer: []u8 = undefined;
-
-    // @INCOMPLETE This is just to avoid dealing wiht the memory allocation
-    const max_cells = 640 * 480;
-    const sbuffer = std.heap.page_allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
-    const rbuffer = std.heap.page_allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
-
-    screen_buffer = sbuffer[0 .. terminal.size.width * terminal.size.height];
-    render_buffer = rbuffer[0 .. terminal.size.width * terminal.size.height];
-
-    terminal.clearScreen() catch {};
-    var redraw: bool = true;
-
-    const text: []const u8 = @embedFile("test.txt");
-    const TestCase = struct {
-        tasks: []const []const u8,
-    };
-    const result: TestCase = comptime blk: {
-        @setEvalBranchQuota(10000);
-        var result: []const []const u8 = &.{};
-        var iter = std.mem.splitScalar(u8, text, '\n');
-        while (iter.next()) |line| {
-            result = result ++ &[_][]const u8{line};
-        }
-        const tasks = result;
-        break :blk TestCase{ .tasks = tasks };
-    };
-    task_end = std.math.clamp(result.tasks.len, 0, lines);
+    var app = Application.init(&terminal);
+    var renderer = Renderer.init(&terminal, std.heap.page_allocator);
 
     while (!quit) {
-        const events = terminal.pollEvents(5) catch {
+        const events = terminal.pollEvents(16) catch {
             log.err("Failed to poll events", .{});
             return;
         };
 
-        { // Begin frame
+        renderer.beginFrame(events);
+        defer renderer.endFrame();
+
+        quit = app.updateAndRender(events, renderer.render_buffer, &terminal);
+    }
+}
+
+const Application = struct {
+    screen_position: usize = 0,
+    task_start: usize = 0,
+    task_end: usize = 0,
+    lines: usize = 0,
+    result: TestCase = undefined,
+    mode: Mode = .spashscreen,
+    splash_progress: u32 = 0,
+
+    const Mode = enum { spashscreen, tasklist };
+    const Result = enum { success, quit, scene_change };
+
+    const TestCase = struct {
+        tasks: []const []const u8,
+    };
+
+    pub fn init(terminal: *Terminal) Application {
+        var ctx = Application{
+            .lines = terminal.size.height - 1,
+        };
+        const text: []const u8 = @embedFile("test.txt");
+        ctx.result = comptime blk: {
+            @setEvalBranchQuota(10000);
+            var result: []const []const u8 = &.{};
+            var iter = std.mem.splitScalar(u8, text, '\n');
+            while (iter.next()) |line| {
+                result = result ++ &[_][]const u8{line};
+            }
+            const tasks = result;
+            break :blk TestCase{ .tasks = tasks };
+        };
+        ctx.task_end = std.math.clamp(ctx.result.tasks.len, 0, ctx.lines);
+        return ctx;
+    }
+
+    fn updateAndRender(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) bool {
+        const result: Result = .scene_change;
+        loop: switch (result) {
+            .scene_change => switch (self.mode) {
+                .spashscreen => continue :loop self.spashscreen(events, render_buffer, terminal),
+                .tasklist => continue :loop self.taskList(events, render_buffer, terminal),
+            },
+            .quit => return true,
+            .success => return false,
+        }
+    }
+
+    // const splash_text =
+    //     \\████████╗██╗   ██╗██╗ ██████╗
+    //     \\╚══██╔══╝██║   ██║██║██╔════╝
+    //     \\   ██║   ██║   ██║██║██║  ███╗
+    //     \\   ██║   ██║   ██║██║██║   ██║
+    //     \\   ██║   ╚██████╔╝██║╚██████╔╝
+    //     \\   ╚═╝    ╚═════╝ ╚═╝ ╚═════╝
+    // ;
+    const splash_text =
+        \\_________         _________ _______ 
+        \\\__   __/|\     /|\__   __/(  ____ \
+        \\   ) (   | )   ( |   ) (   | (    \/
+        \\   | |   | |   | |   | |   | |      
+        \\   | |   | |   | |   | |   | | ____ 
+        \\   | |   | |   | |   | |   | | \_  )
+        \\   | |   | (___) |___) (___| (___) |
+        \\   )_(   (_______)\_______/(_______)
+    ;
+
+    const splash_width = std.mem.findScalar(u8, splash_text, '\n').?;
+    const splash_height = splash_text.len / (splash_width + 1) + 1;
+
+    fn spashscreen(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) Result {
+        for (events) |event| {
+            switch (event) {
+                .key_pressed, .key_repeat => |key| {
+                    switch (key.physical_key) {
+                        .q => return .quit,
+                        else => {
+                            self.mode = .tasklist;
+                            return .scene_change;
+                        },
+                    }
+                },
+                else => {},
+            }
+        }
+        {
+            const width = terminal.size.width;
+            const height = terminal.size.height;
+            const start_x = width / 2 - splash_width / 2;
+            const start_y = height / 2 - splash_height / 2;
+            for (0..splash_height) |row| {
+                const start = (row + start_y) * width + start_x;
+                @memcpy(
+                    render_buffer[start..][0..self.splash_progress],
+                    splash_text[row * (splash_width + 1) ..][0..self.splash_progress],
+                );
+            }
+            if (self.splash_progress < splash_width) {
+                self.splash_progress += 1;
+            }
+        }
+        return .success;
+    }
+
+    fn taskList(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) Result {
+        var direction: i8 = 0;
+        {
             for (events) |event| {
                 switch (event) {
-                    .resize => |resize| {
-                        const new_cells = resize.width * resize.height;
-                        if (new_cells > max_cells) {
-                            log.err("Resized to too large a size", .{});
-                            return;
+                    .key_pressed, .key_repeat => |key| {
+                        switch (key.physical_key) {
+                            .q => return .quit,
+                            .j, .down => direction = 1,
+                            .k, .up => direction = -1,
+                            else => {},
                         }
-                        screen_buffer = sbuffer[0..new_cells];
-                        render_buffer = rbuffer[0..new_cells];
-                        redraw = true;
-                        terminal.clearScreen() catch {};
+                    },
+                    .mouse_scroll_up => {
+                        direction = 1;
+                    },
+                    .mouse_scroll_down => {
+                        direction = -1;
+                    },
+                    .resize => |resize| {
+                        const lines_before = self.lines;
+                        self.lines = resize.height - 1;
+                        if (lines_before > self.lines) {
+                            if (self.result.tasks.len < lines_before) {
+                                const lines_empty_before = lines_before - self.result.tasks.len;
+                                const lines_reduced = lines_before - self.lines;
+                                if (lines_empty_before > lines_reduced) {} else {
+                                    self.task_end -= (lines_reduced - lines_empty_before);
+                                }
+                            } else {
+                                if (self.screen_position >= self.lines) {
+                                    self.task_end -= lines_before - 1 - self.screen_position;
+                                    self.task_start = self.task_end - self.lines;
+                                    self.screen_position = self.lines - 1;
+                                } else {
+                                    self.task_end -= (lines_before - self.lines);
+                                }
+                            }
+                        } else {
+                            if (self.result.tasks.len <= self.lines) {
+                                self.task_start = 0;
+                                self.task_end = self.result.tasks.len;
+                            } else {
+                                const tasks_remaining = self.result.tasks.len - self.task_end;
+                                const lines_added = self.lines - lines_before;
+                                if (tasks_remaining < lines_added) {
+                                    self.task_end += tasks_remaining;
+                                    self.task_start -= lines_added - tasks_remaining;
+                                    self.screen_position += lines_added - tasks_remaining;
+                                } else {
+                                    self.task_end += lines_added;
+                                }
+                            }
+                        }
                     },
                     else => {},
                 }
             }
-            @memset(render_buffer, ' ');
         }
 
-        { // Application
-            var direction: i8 = 0;
-            {
-                for (events) |event| {
-                    switch (event) {
-                        .key_pressed, .key_repeat => |key| {
-                            switch (key.physical_key) {
-                                .q => quit = true,
-                                .j, .down => direction = 1,
-                                .k, .up => direction = -1,
-                                else => {},
-                            }
-                        },
-                        .mouse_scroll_up => {
-                            direction = 1;
-                        },
-                        .mouse_scroll_down => {
-                            direction = -1;
-                        },
-                        .resize => |resize| {
-                            const lines_before = lines;
-                            lines = resize.height - 1;
-                            if (lines_before > lines) {
-                                if (result.tasks.len < lines_before) {
-                                    const lines_empty_before = lines_before - result.tasks.len;
-                                    const lines_reduced = lines_before - lines;
-                                    if (lines_empty_before > lines_reduced) {} else {
-                                        task_end -= (lines_reduced - lines_empty_before);
-                                    }
-                                } else {
-                                    if (screen_position >= lines) {
-                                        task_end -= lines_before - 1 - screen_position;
-                                        task_start = task_end - lines;
-                                        screen_position = lines - 1;
-                                    } else {
-                                        task_end -= (lines_before - lines);
-                                    }
-                                }
-                            } else {
-                                if (result.tasks.len <= lines) {
-                                    task_start = 0;
-                                    task_end = result.tasks.len;
-                                } else {
-                                    const tasks_remaining = result.tasks.len - task_end;
-                                    const lines_added = lines - lines_before;
-                                    if (tasks_remaining < lines_added) {
-                                        task_end += tasks_remaining;
-                                        task_start -= lines_added - tasks_remaining;
-                                        screen_position += lines_added - tasks_remaining;
-                                    } else {
-                                        task_end += lines_added;
-                                    }
-                                }
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-
-            {
-                if (direction == -1) {
-                    if (screen_position == 0) {
-                        if (task_start == 0) {
-                            if (result.tasks.len > lines) {
-                                task_end = result.tasks.len;
-                                task_start = result.tasks.len - lines;
-                                screen_position = lines - 1;
-                            } else {
-                                screen_position = result.tasks.len;
-                            }
+        {
+            if (direction == -1) {
+                if (self.screen_position == 0) {
+                    if (self.task_start == 0) {
+                        if (self.result.tasks.len > self.lines) {
+                            self.task_end = self.result.tasks.len;
+                            self.task_start = self.result.tasks.len - self.lines;
+                            self.screen_position = self.lines - 1;
                         } else {
-                            task_start -= 1;
-                            task_end -= 1;
+                            self.screen_position = self.result.tasks.len;
                         }
                     } else {
-                        screen_position -= 1;
+                        self.task_start -= 1;
+                        self.task_end -= 1;
                     }
+                } else {
+                    self.screen_position -= 1;
                 }
+            }
 
-                if (direction == 1) {
-                    if (screen_position == lines - 1) {
-                        if (task_end == result.tasks.len) {
-                            task_end = lines;
-                            task_start = 0;
-                            screen_position = 0;
-                        } else {
-                            task_start += 1;
-                            task_end += 1;
-                        }
-                    } else if (screen_position == result.tasks.len) {
-                        screen_position = 0;
+            if (direction == 1) {
+                if (self.screen_position == self.lines - 1) {
+                    if (self.task_end == self.result.tasks.len) {
+                        self.task_end = self.lines;
+                        self.task_start = 0;
+                        self.screen_position = 0;
                     } else {
-                        screen_position += 1;
+                        self.task_start += 1;
+                        self.task_end += 1;
                     }
-                }
-
-                const search_str = "Search: ";
-                @memcpy(render_buffer[0..search_str.len], search_str);
-                for (result.tasks[task_start..task_end], 0..) |task, index| {
-                    var buf: [128]u8 = undefined;
-                    const str = std.fmt.bufPrint(&buf, "{s}{s}", .{ if (screen_position == index) ">" else " ", task }) catch unreachable;
-                    const dest = render_buffer[(index + 1) * terminal.size.width ..][0..str.len];
-                    @memcpy(dest, str);
+                } else if (self.screen_position == self.result.tasks.len) {
+                    self.screen_position = 0;
+                } else {
+                    self.screen_position += 1;
                 }
             }
-        }
 
-        { // End frame?
-            if (redraw) {
-                for (0..terminal.size.height) |row| {
-                    terminal.setCursorPosition(0, @truncate(row)) catch {};
-                    terminal.write(render_buffer[row * terminal.size.width ..][0..terminal.size.width]) catch {};
-                    @memcpy(screen_buffer[row * terminal.size.width ..][0..terminal.size.width], render_buffer[row * terminal.size.width ..][0..terminal.size.width]);
-                }
-                redraw = false;
-            } else {
-                @branchHint(.likely);
-                for (0..terminal.size.height) |row| {
-                    const row_start: u32 = @intCast(row * terminal.size.width);
-                    const row_end: u32 = row_start + terminal.size.width;
-                    var col: u16 = 0;
-                    while (col < terminal.size.width) {
-                        var start: u32 = row_start + col;
-                        while (start < row_end and screen_buffer[start] == render_buffer[start]) : (start += 1) {}
-                        var end: u32 = start;
-                        while (end < row_end and screen_buffer[end] != render_buffer[end]) : (end += 1) {}
-                        terminal.setCursorPosition(@truncate(start - row_start), @truncate(row)) catch {};
-                        terminal.write(render_buffer[start..end]) catch {};
-                        @memcpy(screen_buffer[start..end], render_buffer[start..end]);
-                        col = @intCast(end - row_start);
-                    }
-                }
+            const search_str = "Search: ";
+            @memcpy(render_buffer[0..search_str.len], search_str);
+            for (self.result.tasks[self.task_start..self.task_end], 0..) |task, index| {
+                var buf: [128]u8 = undefined;
+                const str = std.fmt.bufPrint(&buf, "{s}{s}", .{ if (self.screen_position == index) ">" else " ", task }) catch unreachable;
+                const dest = render_buffer[(index + 1) * terminal.size.width ..][0..str.len];
+                @memcpy(dest, str);
             }
-            terminal.flush() catch {};
         }
+        return .success;
     }
-}
+};
+
+const Renderer = struct {
+    screen_buffer: []u8,
+    screen_buffer_capacity: usize,
+    render_buffer: []u8,
+    render_buffer_capacity: usize,
+    terminal: *Terminal,
+    redraw: bool = true,
+
+    pub const max_cells = 640 * 480;
+    pub fn init(terminal: *Terminal, allocator: Allocator) Renderer {
+        var renderer: Renderer = undefined;
+        const sbuffer = allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
+        const rbuffer = allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
+
+        renderer.screen_buffer = sbuffer[0 .. terminal.size.width * terminal.size.height];
+        renderer.render_buffer = rbuffer[0 .. terminal.size.width * terminal.size.height];
+        renderer.redraw = true;
+        renderer.terminal = terminal;
+        renderer.screen_buffer_capacity = max_cells;
+        renderer.render_buffer_capacity = max_cells;
+
+        terminal.clearScreen() catch {};
+        return renderer;
+    }
+
+    pub fn deinit(self: *Renderer, allocator: Allocator) void {
+        self.terminal.clearScreen() catch {};
+        allocator.free(self.screen_buffer);
+        allocator.free(self.render_buffer);
+    }
+
+    pub fn beginFrame(self: *Renderer, events: []const e.Event) void {
+        for (events) |event| {
+            switch (event) {
+                .resize => |resize| {
+                    const new_cells = resize.width * resize.height;
+                    if (new_cells > max_cells) {
+                        log.err("Resized to too large a size", .{});
+                        return;
+                    }
+                    self.screen_buffer.len = new_cells;
+                    self.render_buffer.len = new_cells;
+                    self.redraw = true;
+                    self.terminal.clearScreen() catch {};
+                },
+                else => {},
+            }
+        }
+        @memset(self.render_buffer, ' ');
+    }
+
+    pub fn endFrame(self: *Renderer) void {
+        if (self.redraw) {
+            for (0..self.terminal.size.height) |row| {
+                self.terminal.setCursorPosition(0, @truncate(row)) catch {};
+                self.terminal.write(self.render_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width]) catch {};
+                @memcpy(
+                    self.screen_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width],
+                    self.render_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width],
+                );
+            }
+            self.redraw = false;
+        } else {
+            @branchHint(.likely);
+            for (0..self.terminal.size.height) |row| {
+                const row_start: u32 = @intCast(row * self.terminal.size.width);
+                const row_end: u32 = row_start + self.terminal.size.width;
+                var col: u16 = 0;
+                while (col < self.terminal.size.width) {
+                    var start: u32 = row_start + col;
+                    while (start < row_end and self.screen_buffer[start] == self.render_buffer[start]) : (start += 1) {}
+                    var end: u32 = start;
+                    while (end < row_end and self.screen_buffer[end] != self.render_buffer[end]) : (end += 1) {}
+                    self.terminal.setCursorPosition(@truncate(start - row_start), @truncate(row)) catch {};
+                    self.terminal.write(self.render_buffer[start..end]) catch {};
+                    @memcpy(self.screen_buffer[start..end], self.render_buffer[start..end]);
+                    col = @intCast(end - row_start);
+                }
+            }
+        }
+        self.terminal.flush() catch {};
+    }
+};
 
 fn queryMode(terminal: *Terminal) void {
     terminal.write("\x1b[?1016$p") catch {};

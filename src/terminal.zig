@@ -90,7 +90,8 @@ pub const Terminal = struct {
 
     pub fn init(io: std.Io, config: TerminalConfig, write_buffer: []u8) error{Failed}!Terminal {
         var terminal: Terminal = undefined;
-        terminal.fd = std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch return error.Failed;
+        const file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch return error.Failed;
+        terminal.fd = file.handle; //std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch return error.Failed;
         terminal.stdin = std.Io.File.stdin().handle;
         terminal.original_state = std.posix.tcgetattr(terminal.fd) catch return error.Failed;
         terminal.writer = std.Io.File.Writer.initStreaming(std.Io.File{ .handle = terminal.fd }, io, write_buffer);
@@ -264,13 +265,17 @@ pub const Terminal = struct {
     }
 
     pub fn pushKittyKeyboardFlags(self: *Terminal, config: KittyConfig) error{WriteFailed}!void {
+        if (self.config.kitty_keyboard_flags) |_| return;
         try self.print("\x1b[>{d}u", .{@as(u8, @bitCast(config))});
         try self.flush();
+        self.config.kitty_keyboard_flags = config;
     }
 
     pub fn popKittyKeyboardFlags(self: *Terminal) error{WriteFailed}!void {
-        try self.write("\x1b[<u");
-        try self.flush();
+        if (self.config.kitty_keyboard_flags) |_| {
+            try self.write("\x1b[<u");
+            try self.flush();
+        }
     }
 
     pub fn moveCursorLines(self: *Terminal, dx: i16, dy: i16) error{WriteFailed}!void {
