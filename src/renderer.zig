@@ -90,6 +90,7 @@ pub const Scissor = struct {
 
         const utf8 = std.unicode.Utf8View.init(text) catch return 0;
         var iter = utf8.iterator();
+
         if (delimiter) |d| {
             while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
                 if (codepoint == d) break;
@@ -214,10 +215,8 @@ pub fn beginFrame(self: *Renderer, events: []const e.Event) Scissor {
 
 pub fn endFrame(self: *Renderer) void {
     if (self.redraw) {
-        log.info("redrawing", .{});
-        for (0..self.terminal.size.height) |row| {
+        for (0..self.render_buffer.height) |row| {
             self.terminal.setCursorPosition(0, @truncate(row)) catch {};
-
             const unicode_row = self.render_buffer.cells[row * self.render_buffer.width ..][0..self.render_buffer.width];
             for (unicode_row) |cell| {
                 var buf: [4]u8 = undefined;
@@ -229,19 +228,19 @@ pub fn endFrame(self: *Renderer) void {
     } else {
         @branchHint(.likely);
         for (0..self.render_buffer.height) |row| {
-            const row_start: u32 = @intCast(row * self.terminal.size.width);
-            const row_end: u32 = row_start + self.terminal.size.width;
+            const row_start: u32 = @intCast(row * self.render_buffer.width);
+            const row_end: u32 = row_start + self.render_buffer.width;
             var col: u16 = 0;
             while (col < self.render_buffer.width) {
                 var start: u32 = row_start + col;
-                while (start < row_end and !self.back_buffer.cells[start].eql(self.render_buffer.cells[start])) : (start += 1) {}
+                while (start < row_end and self.back_buffer.cells[start].eql(self.render_buffer.cells[start])) : (start += 1) {}
                 var end: u32 = start;
-                while (end < row_end and self.back_buffer.cells[end].eql(self.render_buffer.cells[end])) : (end += 1) {}
+                while (end < row_end and !self.back_buffer.cells[end].eql(self.render_buffer.cells[end])) : (end += 1) {}
                 self.terminal.setCursorPosition(@truncate(start - row_start), @truncate(row)) catch {};
                 const unicode_row = self.render_buffer.cells[start..end];
                 for (unicode_row) |cell| {
                     var buf: [4]u8 = undefined;
-                    const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch continue;
+                    const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch unreachable;
                     self.terminal.write(buf[0..len]) catch {};
                 }
                 col = @intCast(end - row_start);

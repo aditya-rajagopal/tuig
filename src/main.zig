@@ -46,7 +46,7 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
 
     while (!quit) {
-        const events = terminal.pollEvents(16) catch {
+        const events = terminal.pollEvents(100) catch {
             log.err("Failed to poll events", .{});
             return;
         };
@@ -66,6 +66,7 @@ const Application = struct {
     result: TestCase = undefined,
     mode: Mode = .spashscreen,
     splash_progress: u16 = 0,
+    splash_animation_mode: enum { start, move_to_top, done } = .start,
 
     const Mode = enum { spashscreen, tasklist };
     const Result = enum { success, quit, scene_change };
@@ -91,6 +92,7 @@ const Application = struct {
         };
         application.task_end = std.math.clamp(application.result.tasks.len, 0, application.lines);
         application.splash_progress = 0;
+        application.splash_animation_mode = .start;
         return application;
     }
 
@@ -138,34 +140,54 @@ const Application = struct {
                     switch (key.physical_key) {
                         .q => return .quit,
                         else => {
-                            self.mode = .tasklist;
-                            return .scene_change;
+                            if (self.splash_animation_mode == .start) {
+                                self.splash_animation_mode = .done;
+                                self.splash_progress = 0;
+                            } else {
+                                self.mode = .tasklist;
+                                return .scene_change;
+                            }
                         },
                     }
                 },
                 else => {},
             }
         }
-        {
-            const width = screen.width;
-            const height = screen.height;
-            const start_x = width / 2 - codepoint_width / 2;
-            const start_y = height / 2 - codepoint_height / 2;
-            const area = screen.initChild(@intCast(start_x), @intCast(start_y), self.splash_progress, codepoint_height);
-            var start: usize = 0;
-            // @FIXME this needs to have a sub-scissor
-            for (0..codepoint_height) |row| {
-                start += area.printLineDelimiter(
-                    0,
-                    @intCast(row),
-                    splash_text[start..],
-                    '\n',
-                    true,
-                );
-            }
-            if (self.splash_progress < codepoint_width) {
-                self.splash_progress += 1;
-            }
+        const width = screen.width;
+        const height = screen.height;
+        const start_x = width / 2 - codepoint_width / 2;
+
+        const area = loop: switch (self.splash_animation_mode) {
+            .start => blk: {
+                const start_y = height / 2 - codepoint_height / 2;
+                if (self.splash_progress < codepoint_width) {
+                    self.splash_progress += 1;
+                } else {
+                    self.splash_animation_mode = .move_to_top;
+                    self.splash_progress = @intCast(start_y);
+                    continue :loop .move_to_top;
+                }
+                break :blk screen.initChild(@intCast(start_x), @intCast(start_y), self.splash_progress, codepoint_height);
+            },
+            .move_to_top, .done => blk: {
+                if (self.splash_progress > 0) {
+                    self.splash_progress -= 1;
+                } else {
+                    self.splash_animation_mode = .done;
+                }
+                break :blk screen.initChild(@intCast(start_x), @intCast(self.splash_progress), codepoint_width, codepoint_height);
+            },
+        };
+        var start: usize = 0;
+        // @FIXME this needs to have a sub-scissor
+        for (0..codepoint_height) |row| {
+            start += area.renderLineDelimiter(
+                0,
+                @intCast(row),
+                splash_text[start..],
+                '\n',
+                true,
+            );
         }
         return .success;
     }
@@ -268,11 +290,12 @@ const Application = struct {
             }
 
             const search_str = "Search: ";
-            _ = screen.printLineDelimiter(0, 0, search_str, null, false);
+            _ = screen.renderLineDelimiter(0, 0, search_str, null, false);
             for (self.result.tasks[self.task_start..self.task_end], 0..) |task, index| {
-                var buf: [256]u8 = undefined;
+                var buf: [1024]u8 = undefined;
                 const str = std.fmt.bufPrint(&buf, "{s}{s}", .{ if (self.screen_position == index) ">" else " ", task }) catch unreachable;
-                _ = screen.renderLineDelimimer(0, @truncate(index + 1), str, null, false);
+                const len = screen.renderLineDelimiter(0, @intCast(index + 1), str, null, false);
+                assert(len == str.len);
             }
         }
         return .success;

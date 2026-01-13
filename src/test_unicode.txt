@@ -17,7 +17,6 @@ Currency: $ € £ ¥ ₹ ₽ ₩ ₺ ₴
 Special chars: © ® ™ § ¶ † ‡ • … ‰
 Arrows: ← ↑ → ↓ ↖ ↗ ↘ ↙
 Box drawing: ┌ ─ ┐ │ └ ┬ ┘ ├ ┼ ┤
-Brackets: ⟨ ⟩ 〈 〉 《 》 「 」 『 』 【 】
 Quotation marks: " " ' ' « » ‹ › „ "
 Accents: á é í ó ú à è ì ò ù â ê î ô û
 Umlauts: ä ö ü ß Ë Ï Ö Ü
@@ -34,8 +33,9 @@ Music: ♩ ♪ ♫ ♬ ♭ ♮ ♯ ☸
 Chess: ♔ ♕ ♖ ♗ ♘ ♙
 Cards: ♠ ♣ ♥ ♦
 Weather: ☀ ☁ ☂ ☃ ☄ ⚡ ❄ ☃ ☔
-Moon: ☾ ☽ 🌑 🌒 🌓 🌔 🌕 🌖 🌗 🌘
 Planets: ☿ ♀ ♁ ♂ ♃ ♄ ♅ ♆ ♇
+Moon: ☾ ☽ 🌑 🌒 🌓 🌔 🌕 🌖 🌗 🌘
+Brackets: ⟨ ⟩ 〈 〉 《 》 「 」 『 』 【 】
 Zodiac: ♈ ♉ ♊ ♋ ♌ ♍ ♎ ♏ ♐ ♑ ♒ ♓
 Time: ⏰ ⏱ ⏲ ⏳ 🕐 🕑 🕒 🕓 🕔 🕕 🕖 🕗 🕘 🕙 🕚 🕛
 Gender: ♀ ♂ ⚢ ⚣ ⚤ ⚥ ⚦ ⚧ ⚨ ⚩ ⚪ ⚫
