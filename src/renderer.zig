@@ -13,11 +13,115 @@ pub const Cell = struct {
     }
 };
 
+pub const Scissor = struct {
+    global_x: i17,
+    global_y: i17,
+    width: u16,
+    height: u16,
+    buffer: *FrameBuffer,
+
+    pub fn initChild(self: Scissor, offset_x: i17, offset_y: i17, width: u16, height: u16) Scissor {
+        assert(offset_x + width <= self.width);
+        assert(offset_y + height <= self.height);
+        return Scissor{
+            .global_x = self.global_x + offset_x,
+            .global_y = self.global_y + offset_y,
+            .width = width,
+            .height = height,
+            .buffer = self.buffer,
+        };
+    }
+
+    pub fn fillRectangle(self: Scissor, offset_x: u16, offset_y: u16, width: u16, height: u16, cell: Cell) void {
+        if (offset_x >= self.width or offset_y >= self.height) return;
+        if (width == 0 or height == 0) return;
+
+        const start_x_int: i17 = self.global_x + offset_x;
+        const end_x_int: i17 = start_x_int + width;
+        const start_y_int: i17 = self.global_y + offset_y;
+        const end_y_int: i17 = start_y_int + height;
+
+        if (start_x_int >= self.buffer.width) return;
+        if (start_y_int >= self.buffer.height) return;
+        if (end_x_int < 0) return;
+        if (end_y_int < 0) return;
+
+        const start_x: usize = std.math.clamp(start_x_int, 0, self.buffer.width - 1);
+        const end_x: usize = std.math.clamp(end_x_int, 0, self.buffer.width);
+        const start_y: usize = std.math.clamp(start_y_int, 0, self.buffer.height - 1);
+        const end_y: usize = std.math.clamp(end_y_int, 0, self.buffer.height);
+
+        if (start_x_int == 0 and end_x_int == self.buffer.width) {
+            const start = start_y * self.buffer.width;
+            const end = end_y * self.buffer.width;
+            @memset(self.buffer.cells[start..end], cell);
+        } else {
+            for (start_y..end_y) |row| {
+                const start = row * self.buffer.width;
+                @memset(self.buffer.cells[start..][start_x..end_x], cell);
+            }
+        }
+    }
+
+    pub fn fill(self: Scissor, cell: Cell) void {
+        self.fillRectangle(0, 0, self.width, self.height, cell);
+    }
+
+    pub fn renderLineDelimiter(
+        self: Scissor,
+        offset_x: u16,
+        offset_y: u16,
+        text: []const u8,
+        delimiter: ?u21,
+        consume_till_delimiter: bool,
+    ) usize {
+        if (offset_x >= self.width) return 0;
+        if (offset_y >= self.height) return 0;
+
+        var cursor_x: i17 = self.global_x + offset_x;
+        const cursor_y_int: i17 = self.global_y + offset_y;
+
+        if (cursor_x >= self.buffer.width) return 0;
+        if (cursor_y_int < 0 or cursor_y_int >= self.buffer.height) return 0;
+        const cursor_y: u16 = @intCast(cursor_y_int);
+
+        const limit_x: i17 = @min(self.global_x + self.width, self.buffer.width);
+        if (limit_x < 0) return 0;
+
+        const utf8 = std.unicode.Utf8View.init(text) catch return 0;
+        var iter = utf8.iterator();
+        if (delimiter) |d| {
+            while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
+                if (codepoint == d) break;
+                if (cursor_x >= limit_x) {
+                    if (consume_till_delimiter) continue else break;
+                }
+                if (cursor_x < 0) continue;
+
+                self.buffer.set(@intCast(cursor_x), cursor_y, codepoint);
+            }
+        } else {
+            while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
+                if (cursor_x < 0) continue;
+                if (cursor_x == limit_x) break;
+
+                self.buffer.set(@intCast(cursor_x), cursor_y, codepoint);
+            }
+        }
+        return iter.i;
+    }
+
+    pub fn clear(self: Scissor) void {
+        self.fill(Cell{ .codepoint = ' ' });
+    }
+};
+
 pub const FrameBuffer = struct {
     cells: []Cell,
     width: u16,
     height: u16,
     capacity: usize,
+
     pub fn init(allocator: Allocator, width: u16, height: u16, max_capacity: ?usize) error{OutOfMemory}!FrameBuffer {
         if (max_capacity) |max| {
             assert(max >= width * height);
@@ -42,34 +146,6 @@ pub const FrameBuffer = struct {
         assert(y < self.height);
         assert(y * self.width + x < self.cells.len);
         self.cells[y * self.width + x] = Cell{ .codepoint = codepoint };
-    }
-
-    pub fn renderTextDelimiter(
-        self: *FrameBuffer,
-        x: u16,
-        y: u16,
-        text: []const u8,
-        num_codepoints: ?u16,
-        delimiter: ?u21,
-    ) usize {
-        assert(x < self.width);
-        assert(y < self.height);
-        // @PERF this is probably slow
-        const utf8 = std.unicode.Utf8View.init(text) catch return 0;
-        var iter = utf8.iterator();
-        var codepoints_written: u16 = 0;
-        const limit = if (num_codepoints) |n| @min(n, self.width - x) else self.width - x;
-        while (iter.nextCodepoint()) |codepoint| {
-            // @INCOMPLETE text wrapping
-            if (codepoints_written >= limit) {
-                if (delimiter) |d| {
-                    if (codepoint == d) break else continue;
-                } else break;
-            }
-            self.set(codepoints_written + x, y, codepoint);
-            codepoints_written += 1;
-        }
-        return iter.i;
     }
 
     pub fn clear(self: *FrameBuffer) void {
@@ -105,7 +181,7 @@ pub fn deinit(self: *Renderer, allocator: Allocator) void {
     self.buffers[1].deinit(allocator);
 }
 
-pub fn beginFrame(self: *Renderer, events: []const e.Event) void {
+pub fn beginFrame(self: *Renderer, events: []const e.Event) Scissor {
     for (events) |event| {
         switch (event) {
             .resize => |resize| {
@@ -127,6 +203,13 @@ pub fn beginFrame(self: *Renderer, events: []const e.Event) void {
         }
     }
     self.render_buffer.clear();
+    return Scissor{
+        .global_x = 0,
+        .global_y = 0,
+        .width = self.terminal.size.width,
+        .height = self.terminal.size.height,
+        .buffer = self.render_buffer,
+    };
 }
 
 pub fn endFrame(self: *Renderer) void {

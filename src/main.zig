@@ -10,6 +10,7 @@ const TerminalConfig = t.TerminalConfig;
 const e = @import("event.zig");
 const Code = e.KeyEvent.Code;
 const Renderer = @import("renderer.zig");
+const Scissor = Renderer.Scissor;
 
 var global_tty: ?*Terminal = null;
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
@@ -50,10 +51,10 @@ pub fn main(_: std.process.Init.Minimal) void {
             return;
         };
 
-        renderer.beginFrame(events);
+        const screen = renderer.beginFrame(events);
         defer renderer.endFrame();
 
-        quit = app.updateAndRender(events, &renderer);
+        quit = app.updateAndRender(events, screen);
     }
 }
 
@@ -93,12 +94,12 @@ const Application = struct {
         return application;
     }
 
-    fn updateAndRender(self: *Application, events: []const e.Event, renderer: *Renderer) bool {
+    fn updateAndRender(self: *Application, events: []const e.Event, screen: Scissor) bool {
         const result: Result = .scene_change;
         loop: switch (result) {
             .scene_change => switch (self.mode) {
-                .spashscreen => continue :loop self.spashScreen(events, renderer),
-                .tasklist => continue :loop self.taskList(events, renderer),
+                .spashscreen => continue :loop self.spashScreen(events, screen),
+                .tasklist => continue :loop self.taskList(events, screen),
             },
             .quit => return true,
             .success => return false,
@@ -130,7 +131,7 @@ const Application = struct {
     };
     const codepoint_height = codepoint_count / (codepoint_width + 1);
 
-    fn spashScreen(self: *Application, events: []const e.Event, renderer: *Renderer) Result {
+    fn spashScreen(self: *Application, events: []const e.Event, screen: Scissor) Result {
         for (events) |event| {
             switch (event) {
                 .key_pressed, .key_repeat => |key| {
@@ -146,18 +147,20 @@ const Application = struct {
             }
         }
         {
-            const width = renderer.render_buffer.width;
-            const height = renderer.render_buffer.height;
+            const width = screen.width;
+            const height = screen.height;
             const start_x = width / 2 - codepoint_width / 2;
             const start_y = height / 2 - codepoint_height / 2;
+            const area = screen.initChild(@intCast(start_x), @intCast(start_y), self.splash_progress, codepoint_height);
             var start: usize = 0;
+            // @FIXME this needs to have a sub-scissor
             for (0..codepoint_height) |row| {
-                start += renderer.render_buffer.renderTextDelimiter(
-                    @intCast(start_x),
-                    @intCast(start_y + row),
+                start += area.printLineDelimiter(
+                    0,
+                    @intCast(row),
                     splash_text[start..],
-                    self.splash_progress,
                     '\n',
+                    true,
                 );
             }
             if (self.splash_progress < codepoint_width) {
@@ -167,7 +170,7 @@ const Application = struct {
         return .success;
     }
 
-    fn taskList(self: *Application, events: []const e.Event, renderer: *Renderer) Result {
+    fn taskList(self: *Application, events: []const e.Event, screen: Scissor) Result {
         var direction: i8 = 0;
         {
             for (events) |event| {
@@ -265,11 +268,11 @@ const Application = struct {
             }
 
             const search_str = "Search: ";
-            _ = renderer.render_buffer.renderTextDelimiter(0, 0, search_str, null, null);
+            _ = screen.printLineDelimiter(0, 0, search_str, null, false);
             for (self.result.tasks[self.task_start..self.task_end], 0..) |task, index| {
                 var buf: [256]u8 = undefined;
                 const str = std.fmt.bufPrint(&buf, "{s}{s}", .{ if (self.screen_position == index) ">" else " ", task }) catch unreachable;
-                _ = renderer.render_buffer.renderTextDelimiter(0, @truncate(index + 1), str, null, null);
+                _ = screen.renderLineDelimimer(0, @truncate(index + 1), str, null, false);
             }
         }
         return .success;
