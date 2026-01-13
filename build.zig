@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const exe_mod = b.createModule(.{
+    const example_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -17,14 +17,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const exe = b.addExecutable(.{
+    const example = b.addExecutable(.{
         .name = "testbed",
-        .root_module = exe_mod,
+        .root_module = example_mod,
     });
 
-    b.installArtifact(exe);
+    b.installArtifact(example);
     const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(example);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 
@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
+        .root_module = example.root_module,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    const check_exe = b.addExecutable(.{ .name = "check", .root_module = exe_mod });
+    const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
     check_step.dependOn(&check_exe.step);
 }
