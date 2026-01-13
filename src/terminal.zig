@@ -66,12 +66,14 @@ pub const TerminalConfig = struct {
     alt_screen: bool = false,
     mouse: ?MouseOptions = null,
     kitty_keyboard_flags: ?KittyConfig = null,
+    disable_cursor: bool = true,
 
     pub const tui_default = TerminalConfig{
         .raw = true,
         .alt_screen = true,
         .mouse = .default,
         .kitty_keyboard_flags = .{ .disambiguate_escape_codes = true, .report_all_keys_as_escape_codes = true, .report_event_types = true },
+        .disable_cursor = false,
     };
     pub const raw_terminal = TerminalConfig{ .raw = true };
     pub const default_terminal = TerminalConfig{};
@@ -110,6 +112,9 @@ pub const Terminal = struct {
         terminal.config.kitty_keyboard_flags = null;
         if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.Failed;
 
+        terminal.config.disable_cursor = false;
+        if (config.disable_cursor) terminal.setCursorVisible(false) catch return error.Failed;
+
         return terminal;
     }
 
@@ -118,6 +123,7 @@ pub const Terminal = struct {
         if (self.config.alt_screen) self.unsetAlternateScreen();
         if (self.config.mouse) |_| self.disableMouse();
         if (self.config.kitty_keyboard_flags) |_| self.popKittyKeyboardFlags() catch {};
+        if (self.config.disable_cursor) self.setCursorVisible(true) catch {};
     }
 
     pub fn write(self: *Terminal, bytes: []const u8) error{WriteFailed}!void {
@@ -155,8 +161,10 @@ pub const Terminal = struct {
     pub fn setCursorVisible(self: *Terminal, visible: bool) error{WriteFailed}!void {
         if (visible) {
             try self.write("\x1b[?25h");
+            self.config.disable_cursor = false;
         } else {
             try self.write("\x1b[?25l");
+            self.config.disable_cursor = true;
         }
         try self.flush();
     }

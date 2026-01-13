@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.tui);
@@ -36,7 +37,11 @@ pub fn main(_: std.process.Init.Minimal) void {
 
     var quit = false;
     var app = Application.init(&terminal);
-    var renderer = Renderer.init(&terminal, std.heap.page_allocator);
+    var renderer: Renderer = undefined;
+    renderer.init(&terminal, std.heap.page_allocator) catch {
+        log.err("Failed to initialize renderer", .{});
+        return;
+    };
 
     while (!quit) {
         const events = terminal.pollEvents(16) catch {
@@ -47,7 +52,7 @@ pub fn main(_: std.process.Init.Minimal) void {
         renderer.beginFrame(events);
         defer renderer.endFrame();
 
-        quit = app.updateAndRender(events, renderer.render_buffer, &terminal);
+        quit = app.updateAndRender(events, &renderer);
     }
 }
 
@@ -58,7 +63,7 @@ const Application = struct {
     lines: usize = 0,
     result: TestCase = undefined,
     mode: Mode = .spashscreen,
-    splash_progress: u32 = 0,
+    splash_progress: u16 = 0,
 
     const Mode = enum { spashscreen, tasklist };
     const Result = enum { success, quit, scene_change };
@@ -68,11 +73,11 @@ const Application = struct {
     };
 
     pub fn init(terminal: *Terminal) Application {
-        var ctx = Application{
+        var application = Application{
             .lines = terminal.size.height - 1,
         };
-        const text: []const u8 = @embedFile("test.txt");
-        ctx.result = comptime blk: {
+        const text: []const u8 = @embedFile("test_unicode.txt");
+        application.result = comptime blk: {
             @setEvalBranchQuota(10000);
             var result: []const []const u8 = &.{};
             var iter = std.mem.splitScalar(u8, text, '\n');
@@ -82,45 +87,49 @@ const Application = struct {
             const tasks = result;
             break :blk TestCase{ .tasks = tasks };
         };
-        ctx.task_end = std.math.clamp(ctx.result.tasks.len, 0, ctx.lines);
-        return ctx;
+        application.task_end = std.math.clamp(application.result.tasks.len, 0, application.lines);
+        application.splash_progress = 0;
+        return application;
     }
 
-    fn updateAndRender(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) bool {
+    fn updateAndRender(self: *Application, events: []const e.Event, renderer: *Renderer) bool {
         const result: Result = .scene_change;
         loop: switch (result) {
             .scene_change => switch (self.mode) {
-                .spashscreen => continue :loop self.spashscreen(events, render_buffer, terminal),
-                .tasklist => continue :loop self.taskList(events, render_buffer, terminal),
+                .spashscreen => continue :loop self.spashScreen(events, renderer),
+                .tasklist => continue :loop self.taskList(events, renderer),
             },
             .quit => return true,
             .success => return false,
         }
     }
 
-    // const splash_text =
-    //     \\████████╗██╗   ██╗██╗ ██████╗
-    //     \\╚══██╔══╝██║   ██║██║██╔════╝
-    //     \\   ██║   ██║   ██║██║██║  ███╗
-    //     \\   ██║   ██║   ██║██║██║   ██║
-    //     \\   ██║   ╚██████╔╝██║╚██████╔╝
-    //     \\   ╚═╝    ╚═════╝ ╚═╝ ╚═════╝
-    // ;
     const splash_text =
-        \\_________         _________ _______ 
-        \\\__   __/|\     /|\__   __/(  ____ \
-        \\   ) (   | )   ( |   ) (   | (    \/
-        \\   | |   | |   | |   | |   | |      
-        \\   | |   | |   | |   | |   | | ____ 
-        \\   | |   | |   | |   | |   | | \_  )
-        \\   | |   | (___) |___) (___| (___) |
-        \\   )_(   (_______)\_______/(_______)
+        \\████████╗██╗   ██╗██╗ ██████╗
+        \\╚══██╔══╝██║   ██║██║██╔════╝
+        \\   ██║   ██║   ██║██║██║  ███╗
+        \\   ██║   ██║   ██║██║██║   ██║
+        \\   ██║   ╚██████╔╝██║╚██████╔╝
+        \\   ╚═╝    ╚═════╝ ╚═╝ ╚═════╝
     ;
 
-    const splash_width = std.mem.findScalar(u8, splash_text, '\n').?;
-    const splash_height = splash_text.len / (splash_width + 1) + 1;
+    const codepoint_count = blk: {
+        @setEvalBranchQuota(10000);
+        break :blk std.unicode.utf8CountCodepoints(splash_text) catch @compileError("Invalid splash text");
+    };
+    const codepoint_width = blk: {
+        @setEvalBranchQuota(10000);
+        var iter = std.unicode.Utf8View.initComptime(splash_text).iterator();
+        var count: usize = 0;
+        while (iter.nextCodepoint()) |codepoint| {
+            if (codepoint == '\n') break;
+            count += 1;
+        }
+        break :blk count;
+    };
+    const codepoint_height = codepoint_count / (codepoint_width + 1);
 
-    fn spashscreen(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) Result {
+    fn spashScreen(self: *Application, events: []const e.Event, renderer: *Renderer) Result {
         for (events) |event| {
             switch (event) {
                 .key_pressed, .key_repeat => |key| {
@@ -136,25 +145,28 @@ const Application = struct {
             }
         }
         {
-            const width = terminal.size.width;
-            const height = terminal.size.height;
-            const start_x = width / 2 - splash_width / 2;
-            const start_y = height / 2 - splash_height / 2;
-            for (0..splash_height) |row| {
-                const start = (row + start_y) * width + start_x;
-                @memcpy(
-                    render_buffer[start..][0..self.splash_progress],
-                    splash_text[row * (splash_width + 1) ..][0..self.splash_progress],
+            const width = renderer.render_buffer.width;
+            const height = renderer.render_buffer.height;
+            const start_x = width / 2 - codepoint_width / 2;
+            const start_y = height / 2 - codepoint_height / 2;
+            var start: usize = 0;
+            for (0..codepoint_height) |row| {
+                start += renderer.render_buffer.renderTextDelimiter(
+                    @intCast(start_x),
+                    @intCast(start_y + row),
+                    splash_text[start..],
+                    self.splash_progress,
+                    '\n',
                 );
             }
-            if (self.splash_progress < splash_width) {
+            if (self.splash_progress < codepoint_width) {
                 self.splash_progress += 1;
             }
         }
         return .success;
     }
 
-    fn taskList(self: *Application, events: []const e.Event, render_buffer: []u8, terminal: *Terminal) Result {
+    fn taskList(self: *Application, events: []const e.Event, renderer: *Renderer) Result {
         var direction: i8 = 0;
         {
             for (events) |event| {
@@ -252,47 +264,114 @@ const Application = struct {
             }
 
             const search_str = "Search: ";
-            @memcpy(render_buffer[0..search_str.len], search_str);
+            _ = renderer.render_buffer.renderTextDelimiter(0, 0, search_str, null, null);
             for (self.result.tasks[self.task_start..self.task_end], 0..) |task, index| {
-                var buf: [128]u8 = undefined;
+                var buf: [256]u8 = undefined;
                 const str = std.fmt.bufPrint(&buf, "{s}{s}", .{ if (self.screen_position == index) ">" else " ", task }) catch unreachable;
-                const dest = render_buffer[(index + 1) * terminal.size.width ..][0..str.len];
-                @memcpy(dest, str);
+                _ = renderer.render_buffer.renderTextDelimiter(0, @truncate(index + 1), str, null, null);
             }
         }
         return .success;
     }
 };
 
+pub const Cell = struct {
+    codepoint: u21,
+
+    pub fn eql(self: Cell, other: Cell) bool {
+        return self.codepoint == other.codepoint;
+    }
+};
+
+pub const FrameBuffer = struct {
+    cells: []Cell,
+    width: u16,
+    height: u16,
+    capacity: usize,
+    pub fn init(allocator: Allocator, width: u16, height: u16, max_capacity: ?usize) error{OutOfMemory}!FrameBuffer {
+        if (max_capacity) |max| {
+            assert(max >= width * height);
+        }
+        var buffer: FrameBuffer = undefined;
+        const capacity = max_capacity orelse width * height;
+        // @FIXME look at allignemnt
+        buffer.cells = try allocator.alloc(Cell, capacity);
+        buffer.width = width;
+        buffer.height = height;
+        buffer.capacity = capacity;
+        buffer.cells.len = width * height;
+        return buffer;
+    }
+
+    pub fn deinit(self: *FrameBuffer, allocator: Allocator) void {
+        allocator.free(self.cells);
+    }
+
+    pub fn set(self: *FrameBuffer, x: u16, y: u16, codepoint: u21) void {
+        assert(x < self.width);
+        assert(y < self.height);
+        assert(y * self.width + x < self.cells.len);
+        self.cells[y * self.width + x] = Cell{ .codepoint = codepoint };
+    }
+
+    pub fn renderTextDelimiter(
+        self: *FrameBuffer,
+        x: u16,
+        y: u16,
+        text: []const u8,
+        num_codepoints: ?u16,
+        delimiter: ?u21,
+    ) usize {
+        assert(x < self.width);
+        assert(y < self.height);
+        // @PERF this is probably slow
+        const utf8 = std.unicode.Utf8View.init(text) catch return 0;
+        var iter = utf8.iterator();
+        var codepoints_written: u16 = 0;
+        const limit = if (num_codepoints) |n| @min(n, self.width - x) else self.width - x;
+        while (iter.nextCodepoint()) |codepoint| {
+            // @INCOMPLETE text wrapping
+            if (codepoints_written >= limit) {
+                if (delimiter) |d| {
+                    if (codepoint == d) break else continue;
+                } else break;
+            }
+            self.set(codepoints_written + x, y, codepoint);
+            codepoints_written += 1;
+        }
+        return iter.i;
+    }
+
+    pub fn clear(self: *FrameBuffer) void {
+        @memset(self.cells, Cell{ .codepoint = ' ' });
+    }
+};
+
 const Renderer = struct {
-    screen_buffer: []u8,
-    screen_buffer_capacity: usize,
-    render_buffer: []u8,
-    render_buffer_capacity: usize,
+    buffers: [2]FrameBuffer,
+    render_buffer: *FrameBuffer,
+    back_buffer: *FrameBuffer,
     terminal: *Terminal,
     redraw: bool = true,
 
     pub const max_cells = 640 * 480;
-    pub fn init(terminal: *Terminal, allocator: Allocator) Renderer {
-        var renderer: Renderer = undefined;
-        const sbuffer = allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
-        const rbuffer = allocator.alignedAlloc(u8, .fromByteUnits(128), max_cells) catch unreachable;
-
-        renderer.screen_buffer = sbuffer[0 .. terminal.size.width * terminal.size.height];
-        renderer.render_buffer = rbuffer[0 .. terminal.size.width * terminal.size.height];
-        renderer.redraw = true;
-        renderer.terminal = terminal;
-        renderer.screen_buffer_capacity = max_cells;
-        renderer.render_buffer_capacity = max_cells;
+    pub fn init(self: *Renderer, terminal: *Terminal, allocator: Allocator) error{OutOfMemory}!void {
+        self.buffers[0] = try FrameBuffer.init(allocator, terminal.size.width, terminal.size.height, max_cells);
+        self.buffers[1] = try FrameBuffer.init(allocator, terminal.size.width, terminal.size.height, max_cells);
+        self.render_buffer = &self.buffers[0];
+        self.back_buffer = &self.buffers[1];
+        self.render_buffer.clear();
+        self.back_buffer.clear();
+        self.redraw = true;
+        self.terminal = terminal;
 
         terminal.clearScreen() catch {};
-        return renderer;
     }
 
     pub fn deinit(self: *Renderer, allocator: Allocator) void {
         self.terminal.clearScreen() catch {};
-        allocator.free(self.screen_buffer);
-        allocator.free(self.render_buffer);
+        self.buffers[0].deinit(allocator);
+        self.buffers[1].deinit(allocator);
     }
 
     pub fn beginFrame(self: *Renderer, events: []const e.Event) void {
@@ -304,47 +383,63 @@ const Renderer = struct {
                         log.err("Resized to too large a size", .{});
                         return;
                     }
-                    self.screen_buffer.len = new_cells;
-                    self.render_buffer.len = new_cells;
+                    self.buffers[0].cells.len = new_cells;
+                    self.buffers[1].cells.len = new_cells;
+                    self.buffers[0].width = resize.width;
+                    self.buffers[0].height = resize.height;
+                    self.buffers[1].width = resize.width;
+                    self.buffers[1].height = resize.height;
                     self.redraw = true;
                     self.terminal.clearScreen() catch {};
                 },
                 else => {},
             }
         }
-        @memset(self.render_buffer, ' ');
+        self.render_buffer.clear();
     }
 
     pub fn endFrame(self: *Renderer) void {
         if (self.redraw) {
+            log.info("redrawing", .{});
             for (0..self.terminal.size.height) |row| {
                 self.terminal.setCursorPosition(0, @truncate(row)) catch {};
-                self.terminal.write(self.render_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width]) catch {};
-                @memcpy(
-                    self.screen_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width],
-                    self.render_buffer[row * self.terminal.size.width ..][0..self.terminal.size.width],
-                );
+
+                const unicode_row = self.render_buffer.cells[row * self.render_buffer.width ..][0..self.render_buffer.width];
+                for (unicode_row) |cell| {
+                    var buf: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch continue;
+                    self.terminal.write(buf[0..len]) catch {};
+                }
             }
             self.redraw = false;
         } else {
             @branchHint(.likely);
-            for (0..self.terminal.size.height) |row| {
+            for (0..self.render_buffer.height) |row| {
                 const row_start: u32 = @intCast(row * self.terminal.size.width);
                 const row_end: u32 = row_start + self.terminal.size.width;
                 var col: u16 = 0;
-                while (col < self.terminal.size.width) {
+                while (col < self.render_buffer.width) {
                     var start: u32 = row_start + col;
-                    while (start < row_end and self.screen_buffer[start] == self.render_buffer[start]) : (start += 1) {}
+                    while (start < row_end and !self.back_buffer.cells[start].eql(self.render_buffer.cells[start])) : (start += 1) {}
                     var end: u32 = start;
-                    while (end < row_end and self.screen_buffer[end] != self.render_buffer[end]) : (end += 1) {}
+                    while (end < row_end and self.back_buffer.cells[end].eql(self.render_buffer.cells[end])) : (end += 1) {}
                     self.terminal.setCursorPosition(@truncate(start - row_start), @truncate(row)) catch {};
-                    self.terminal.write(self.render_buffer[start..end]) catch {};
-                    @memcpy(self.screen_buffer[start..end], self.render_buffer[start..end]);
+                    const unicode_row = self.render_buffer.cells[start..end];
+                    for (unicode_row) |cell| {
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch continue;
+                        self.terminal.write(buf[0..len]) catch {};
+                    }
                     col = @intCast(end - row_start);
                 }
             }
         }
         self.terminal.flush() catch {};
+        self.swapBuffers();
+    }
+
+    pub fn swapBuffers(self: *Renderer) void {
+        std.mem.swap(*FrameBuffer, &self.back_buffer, &self.render_buffer);
     }
 };
 
