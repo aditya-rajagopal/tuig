@@ -149,12 +149,12 @@ pub const Terminal = struct {
     }
 
     pub fn saveCurrentCursorPosition(self: *Terminal) error{WriteFailed}!void {
-        try self.print("\x1b[s");
+        try self.write("\x1b[s");
         try self.flush();
     }
 
     pub fn restoreCursorPosition(self: *Terminal) error{WriteFailed}!void {
-        try self.print("\x1b[u");
+        try self.write("\x1b[u");
         try self.flush();
     }
 
@@ -288,8 +288,8 @@ pub const Terminal = struct {
 
     pub fn moveCursorLines(self: *Terminal, dx: i16, dy: i16) error{WriteFailed}!void {
         if (dx == 0 and dy == 0) return;
-        if (dx > 0) try self.write("\x1b[{d}C", .{dx}) else try self.write("\x1b[{d}D", .{-dx});
-        if (dy > 0) try self.write("\x1b[{d}B", .{dy}) else try self.write("\x1b[{d}A", .{-dy});
+        if (dx > 0) try self.print("\x1b[{d}C", .{dx}) else try self.print("\x1b[{d}D", .{-dx});
+        if (dy > 0) try self.print("\x1b[{d}B", .{dy}) else try self.print("\x1b[{d}A", .{-dy});
     }
 
     pub fn pollEvents(self: *Terminal, timeout_ms: i32) error{PollFailed}![]Event {

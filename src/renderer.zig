@@ -46,10 +46,10 @@ pub const Scissor = struct {
         if (end_x_int < 0) return;
         if (end_y_int < 0) return;
 
-        const start_x: usize = std.math.clamp(start_x_int, 0, self.buffer.width - 1);
-        const end_x: usize = std.math.clamp(end_x_int, 0, self.buffer.width);
-        const start_y: usize = std.math.clamp(start_y_int, 0, self.buffer.height - 1);
-        const end_y: usize = std.math.clamp(end_y_int, 0, self.buffer.height);
+        const start_x: usize = @intCast(std.math.clamp(start_x_int, 0, self.buffer.width - 1));
+        const end_x: usize = @intCast(std.math.clamp(end_x_int, 0, self.buffer.width));
+        const start_y: usize = @intCast(std.math.clamp(start_y_int, 0, self.buffer.height - 1));
+        const end_y: usize = @intCast(std.math.clamp(end_y_int, 0, self.buffer.height));
 
         if (start_x_int == 0 and end_x_int == self.buffer.width) {
             const start = start_y * self.buffer.width;
