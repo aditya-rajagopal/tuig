@@ -1,5 +1,5 @@
 const std = @import("std");
-const t = @import("types.zig");
+const t = @import("unicode_types.zig");
 const helpers = @import("helpers.zig");
 const cut = helpers.cut;
 const cutScalar = helpers.cutScalar;
