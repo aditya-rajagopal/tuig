@@ -1,8 +1,9 @@
 const t = @import("terminal.zig");
 pub const Terminal = t.Terminal;
 pub const TerminalConfig = t.TerminalConfig;
+pub const Renderer = @import("renderer.zig");
+
 pub const event = @import("event.zig");
-pub const renderer = @import("renderer.zig");
 pub const unicode = @import("unicode/root.zig");
 
 test "All" {

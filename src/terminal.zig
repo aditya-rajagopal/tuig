@@ -66,14 +66,14 @@ pub const TerminalConfig = struct {
     alt_screen: bool = false,
     mouse: ?MouseOptions = null,
     kitty_keyboard_flags: ?KittyConfig = null,
-    disable_cursor: bool = true,
+    cursor_visable: bool = true,
 
     pub const tui_default = TerminalConfig{
         .raw = true,
         .alt_screen = true,
         .mouse = .default,
         .kitty_keyboard_flags = .{ .disambiguate_escape_codes = true, .report_all_keys_as_escape_codes = true, .report_event_types = true },
-        .disable_cursor = false,
+        .cursor_visable = true,
     };
     pub const raw_terminal = TerminalConfig{ .raw = true };
     pub const default_terminal = TerminalConfig{};
@@ -112,8 +112,7 @@ pub const Terminal = struct {
         terminal.config.kitty_keyboard_flags = null;
         if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.Failed;
 
-        terminal.config.disable_cursor = false;
-        if (config.disable_cursor) terminal.setCursorVisible(false) catch return error.Failed;
+        terminal.setCursorVisible(config.cursor_visable) catch return error.Failed;
 
         return terminal;
     }
@@ -123,7 +122,7 @@ pub const Terminal = struct {
         if (self.config.alt_screen) self.unsetAlternateScreen();
         if (self.config.mouse) |_| self.disableMouse();
         if (self.config.kitty_keyboard_flags) |_| self.popKittyKeyboardFlags() catch {};
-        if (self.config.disable_cursor) self.setCursorVisible(true) catch {};
+        if (!self.config.cursor_visable) self.setCursorVisible(true) catch {};
     }
 
     pub fn write(self: *Terminal, bytes: []const u8) error{WriteFailed}!void {
@@ -161,10 +160,10 @@ pub const Terminal = struct {
     pub fn setCursorVisible(self: *Terminal, visible: bool) error{WriteFailed}!void {
         if (visible) {
             try self.write("\x1b[?25h");
-            self.config.disable_cursor = false;
+            self.config.cursor_visable = true;
         } else {
             try self.write("\x1b[?25l");
-            self.config.disable_cursor = true;
+            self.config.cursor_visable = false;
         }
         try self.flush();
     }
@@ -382,3 +381,30 @@ pub const Terminal = struct {
         return true;
     }
 };
+
+fn queryMode(terminal: *Terminal) void {
+    terminal.write("\x1b[?1016$p") catch {};
+    terminal.flush() catch {};
+
+    var buf: [32]u8 = undefined;
+    var fds = [_]std.posix.pollfd{
+        .{
+            .fd = terminal.stdin,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        },
+    };
+    const poll_result = std.posix.poll(&fds, 100) catch return;
+
+    if (poll_result == 0) return;
+
+    if (fds[0].revents & std.posix.POLL.IN == 0) return;
+
+    const n = std.posix.read(terminal.fd, &buf) catch return;
+    terminal.write("Respose: ") catch {};
+    for (buf[0..n]) |c| {
+        if (c == '\x1b') terminal.write("\\x1b") catch {} else terminal.print("{c}", .{c}) catch {};
+    }
+    terminal.write("\r\n") catch {};
+    terminal.flush() catch {};
+}

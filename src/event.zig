@@ -372,7 +372,7 @@ pub const MouseEvent = struct {
     y: u16,
 };
 
-const Mods = packed struct(u8) {
+pub const Mods = packed struct(u8) {
     shift: bool = false,
     alt: bool = false,
     ctrl: bool = false,

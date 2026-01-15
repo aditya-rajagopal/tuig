@@ -5,7 +5,6 @@ const helpers = @import("helpers.zig");
 const t = @import("unicode_types.zig");
 const u = @import("unicode_info.zig");
 const UnicodeInfo = u.UnicodeInfo;
-const MAX_CODEPOINT = u.MAX_CODEPOINT;
 const Data = u.Data;
 const parser = @import("parser.zig");
 const export_types = @import("export/types.zig");

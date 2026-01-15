@@ -1,6 +1,8 @@
 # 0.1.0
+- (2026-01-15) Add a function to scissor to blit from a FrameBuffer
+- (2026-01-15) Add a utf8 decoder based on the DFA implementation by Bjoern Hoehrmann.
+- (2026-01-14) Add a generator to parse Unicode data files and generate lookup tables for width and grapheme breaks.
 - (2026-01-12) Added unicode support for text rendering
 - (2026-01-06) [minty_core_jw2](./.gila/done/minty_core_jw2/minty_core_jw2.md) fixed bug in event handling where multiple events in quick succession caused broken polling
 - (2026-01-04) Added CSI escape sequence parsing
 - (2026-01-04) Added Mouse event parsing
-
