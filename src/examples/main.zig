@@ -25,7 +25,6 @@ pub fn main(_: std.process.Init.Minimal) void {
 
     var write_buffer: [4096]u8 align(4096) = undefined;
     var config: TerminalConfig = .tui_default;
-    config.mouse.?.sgr = false;
     config.cursor_visable = false;
     var terminal = Terminal.init(io, config, &write_buffer) catch |err| {
         log.err("Failed to initialize terminal: {s}", .{@errorName(err)});

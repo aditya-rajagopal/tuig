@@ -5,6 +5,11 @@ const log = std.log.scoped(.tui);
 const e = @import("event.zig");
 const Terminal = @import("terminal.zig").Terminal;
 
+pub const Position = struct {
+    x: u16,
+    y: u16,
+};
+
 pub const Context = struct {
     frame_arena: *std.heap.ArenaAllocator = undefined,
     events: []const e.Event = undefined,
@@ -12,6 +17,11 @@ pub const Context = struct {
     key_pressed: ?e.KeyEvent = null,
     resize: ?e.ResizeEvent = null,
     mouse_scroll: i8 = 0,
+    mouse_x: u16 = 0,
+    mouse_y: u16 = 0,
+    mouse_down: MouseState = .{},
+    mouse_pressed: MouseState = .{},
+    mouse_released: MouseState = .{},
 
     pub fn isKeyPressed(self: Context, code: e.KeyEvent.Code) bool {
         if (self.key_pressed) |key| {
@@ -20,14 +30,16 @@ pub const Context = struct {
             return false;
         }
     }
-};
 
-test "Print size" {
-    std.debug.print("sizeof(Context.Mouse): {d}\n", .{@sizeOf(Context.Mouse)});
-    std.debug.print("Alignof(Context.Mouse): {d}\n", .{@alignOf(Context.Mouse)});
-    std.debug.print("sizeof(Context): {d}\n", .{@sizeOf(Context)});
-    std.debug.print("Alignof(Context): {d}\n", .{@alignOf(Context)});
-}
+    pub fn isHovered(self: Context, scissor: Scissor) ?Position {
+        if (scissor.contains(self.mouse_x, self.mouse_y)) {
+            return .{
+                .x = @intCast(@as(i17, self.mouse_x) - scissor.global_x),
+                .y = @intCast(@as(i17, self.mouse_y) - scissor.global_y),
+            };
+        } else return null;
+    }
+};
 
 pub const Cell = struct {
     codepoint: u21,
@@ -54,6 +66,20 @@ pub const Scissor = struct {
             .height = height,
             .buffer = self.buffer,
         };
+    }
+
+    pub fn set(self: Scissor, x: u16, y: u16, codepoint: u21) void {
+        if (x >= self.width or y >= self.height) return;
+        const global_x: i17 = self.global_x + x;
+        const global_y: i17 = self.global_y + y;
+        if (global_x < 0 or global_y < 0) return;
+        if (global_x >= self.buffer.width or global_y >= self.buffer.height) return;
+
+        self.buffer.set(@intCast(global_x), @intCast(global_y), codepoint);
+    }
+
+    pub fn contains(self: Scissor, x: u16, y: u16) bool {
+        return x >= self.global_x and y >= self.global_y and x < self.global_x + self.width and y < self.global_y + self.height;
     }
 
     pub fn fillRectangle(self: Scissor, offset_x: u16, offset_y: u16, width: u16, height: u16, cell: Cell) void {
@@ -256,6 +282,16 @@ back_buffer: *FrameBuffer,
 terminal: *Terminal,
 redraw: bool = true,
 arena: std.heap.ArenaAllocator,
+mouse_x: u16 = 0,
+mouse_y: u16 = 0,
+current_mouse_down: MouseState = .{},
+previous_mouse_down: MouseState = .{},
+
+pub const MouseState = packed struct {
+    left: bool = false,
+    right: bool = false,
+    middle: bool = false,
+};
 
 // @HACK this is temporary
 pub const max_cells = 640 * 480;
@@ -274,6 +310,8 @@ pub fn init(self: *Renderer, terminal: *Terminal, allocator: Allocator, arena_pr
         _ = try self.arena.allocator().alloc(u8, n);
         _ = self.arena.reset(.retain_capacity);
     }
+    self.current_mouse_down = .{};
+    self.previous_mouse_down = .{};
 
     terminal.clearScreen() catch {};
 }
@@ -294,11 +332,50 @@ pub fn beginFrame(self: *Renderer, events: []const e.Event) Context {
             .key_pressed, .key_repeat => |key| {
                 ctx.key_pressed = key;
             },
-            .mouse_scroll_up => {
+            .mouse_scroll_up => |info| {
+                self.mouse_x = info.x - 1;
+                self.mouse_y = info.y - 1;
                 ctx.mouse_scroll += 1;
             },
-            .mouse_scroll_down => {
+            .mouse_scroll_down => |info| {
+                self.mouse_x = info.x - 1;
+                self.mouse_y = info.y - 1;
                 ctx.mouse_scroll -= 1;
+            },
+            .mouse_move => |info| {
+                self.mouse_x = info.x - 1;
+                self.mouse_y = info.y - 1;
+            },
+            .mouse_left_pressed,
+            .mouse_left_released,
+            .mouse_right_pressed,
+            .mouse_right_released,
+            .mouse_drag_left,
+            .mouse_drag_middle,
+            .mouse_drag_right,
+            .mouse_middle_pressed,
+            .mouse_middle_released,
+            .mouse_released,
+            => |info| {
+                self.mouse_x = info.x - 1;
+                self.mouse_y = info.y - 1;
+                switch (event) {
+                    .mouse_left_pressed => self.current_mouse_down.left = true,
+                    .mouse_left_released => self.current_mouse_down.left = false,
+                    .mouse_right_pressed => self.current_mouse_down.right = true,
+                    .mouse_right_released => self.current_mouse_down.right = false,
+                    .mouse_middle_pressed => self.current_mouse_down.middle = true,
+                    .mouse_middle_released => self.current_mouse_down.middle = false,
+                    .mouse_drag_left => self.current_mouse_down.left = true,
+                    .mouse_drag_middle => self.current_mouse_down.middle = true,
+                    .mouse_drag_right => self.current_mouse_down.right = true,
+                    .mouse_released => {
+                        self.current_mouse_down.left = false;
+                        self.current_mouse_down.right = false;
+                        self.current_mouse_down.middle = false;
+                    },
+                    else => unreachable,
+                }
             },
             .resize => |resize| {
                 ctx.resize = resize;
@@ -320,6 +397,19 @@ pub fn beginFrame(self: *Renderer, events: []const e.Event) Context {
         }
     }
     self.render_buffer.clear();
+    ctx.mouse_x = self.mouse_x;
+    ctx.mouse_y = self.mouse_y;
+
+    ctx.mouse_down.left = self.current_mouse_down.left and self.previous_mouse_down.left;
+    ctx.mouse_down.right = self.current_mouse_down.right and self.previous_mouse_down.right;
+    ctx.mouse_down.middle = self.current_mouse_down.middle and self.previous_mouse_down.middle;
+    ctx.mouse_pressed.left = self.current_mouse_down.left and !self.previous_mouse_down.left;
+    ctx.mouse_pressed.right = self.current_mouse_down.right and !self.previous_mouse_down.right;
+    ctx.mouse_pressed.middle = self.current_mouse_down.middle and !self.previous_mouse_down.middle;
+    ctx.mouse_released.left = !self.current_mouse_down.left and self.previous_mouse_down.left;
+    ctx.mouse_released.right = !self.current_mouse_down.right and self.previous_mouse_down.right;
+    ctx.mouse_released.middle = !self.current_mouse_down.middle and self.previous_mouse_down.middle;
+
     ctx.scissor = Scissor{
         .global_x = 0,
         .global_y = 0,
@@ -367,6 +457,7 @@ pub fn endFrame(self: *Renderer) void {
     self.terminal.flush() catch {};
     self.swapBuffers();
     _ = self.arena.reset(.retain_capacity);
+    self.previous_mouse_down = self.current_mouse_down;
 }
 
 pub fn swapBuffers(self: *Renderer) void {
