@@ -2,8 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const tuig = @import("tuig");
-const Renderer = tuig.Renderer;
-const Context = Renderer.Context;
+const r = tuig.renderer;
+const Context = r.Context;
 
 const SplashScreen = @This();
 

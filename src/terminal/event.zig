@@ -1,5 +1,8 @@
 const std = @import("std");
-const assert = std.debug.assert;
+
+const stdx = @import("stdx");
+const assert = stdx.inlineAssert;
+const cutScalar = stdx.cutScalar;
 
 pub fn parseEvent(data: []const u8, consumed_bytes: *usize) Event {
     assert(data.len > 0);
@@ -22,7 +25,7 @@ pub fn parseEvent(data: []const u8, consumed_bytes: *usize) Event {
     return .none;
 }
 
-pub fn parseAscii(c: u8) Event {
+fn parseAscii(c: u8) Event {
     const key_event: KeyEvent = blk: switch (c) {
         0x00 => .{ .code = @enumFromInt('@'), .mods = .{ .ctrl = true }, .physical_key = .@"2" },
         0x1b => .{ .code = .escape, .mods = .{}, .physical_key = .escape },
@@ -45,7 +48,7 @@ pub fn parseAscii(c: u8) Event {
     return .{ .key_pressed = key_event };
 }
 
-pub fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
+fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
     if (data.len < 3) return .none;
     assert(data[0] == '\x1b');
     assert(data[1] == 'O');
@@ -76,7 +79,7 @@ pub fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
     return event;
 }
 
-pub fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
+fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
     if (data.len < 3) return .none;
     assert(data[0] == '\x1b');
     assert(data[1] == '[');
@@ -231,7 +234,7 @@ pub fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
     };
 }
 
-pub fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
+fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
     assert(csi[0] == '\x1b');
     assert(csi[1] == '[');
     const m = csi.len - 1;
@@ -873,14 +876,4 @@ test "mouse events" {
     };
 
     try testTerminalSequences(&test_cases);
-}
-
-pub fn cut(comptime T: type, haystack: []const T, needle: []const T) ?struct { []const T, []const T } {
-    const index = std.mem.find(T, haystack, needle) orelse return null;
-    return .{ haystack[0..index], haystack[index + needle.len ..] };
-}
-
-pub fn cutScalar(comptime T: type, haystack: []const T, needle: T) ?struct { []const T, []const T } {
-    const index = std.mem.findScalar(T, haystack, needle) orelse return null;
-    return .{ haystack[0..index], haystack[index + 1 ..] };
 }

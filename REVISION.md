@@ -1,4 +1,5 @@
 # 0.1.0
+- (2026-01-18) Refactored to individual modules
 - (2026-01-15) Added RenderContext as well as handling of events within the renderer
 - (2026-01-15) Added a function to scissor to blit from a FrameBuffer
 - (2026-01-15) Added a utf8 decoder based on the DFA implementation by Bjoern Hoehrmann.

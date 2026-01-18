@@ -4,10 +4,35 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const stdx = b.dependency("stdx", .{ .target = target }).module("stdx");
+
     const unicode = b.addModule("unicode", .{
         .root_source_file = b.path("src/unicode/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
+    const terminal = b.addModule("terminal", .{
+        .root_source_file = b.path("src/terminal/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
+    const renderer = b.addModule("renderer", .{
+        .root_source_file = b.path("src/renderer/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "unicode", .module = unicode },
+            .{ .name = "stdx", .module = stdx },
+            .{ .name = "terminal", .module = terminal },
+        },
     });
 
     const mod = b.addModule("tuig", .{
@@ -15,6 +40,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "unicode", .module = unicode },
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "stdx", .module = stdx },
+            .{ .name = "terminal", .module = terminal },
         },
     });
 
@@ -24,6 +52,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "tuig", .module = mod },
+            .{ .name = "stdx", .module = stdx },
         },
     });
 

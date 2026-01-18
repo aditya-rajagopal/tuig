@@ -3,7 +3,12 @@
     .version = "0.0.1",
     .fingerprint = 0xf0ca6679acbbed1b, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0-dev.2040+c475f1fcd",
-    .dependencies = .{},
+    .dependencies = .{
+        .stdx = .{
+            .url = "git+https://github.com/aditya-rajagopal/stdx.git#2c3ebd4aab6b70738c483b0cef18ada22b6a4beb",
+            .hash = "stdx-0.0.0-JEHEYdR5BADZlji0BkJEjyOcLoBlwzQy9msP-piqYtpb",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

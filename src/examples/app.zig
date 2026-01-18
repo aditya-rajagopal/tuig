@@ -1,11 +1,12 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
+const stdx = @import("stdx");
+const assert = stdx.inlineAssert;
 const tg = @import("tuig");
-const Renderer = tg.Renderer;
-const Scissor = Renderer.Scissor;
-const Context = Renderer.Context;
+const r = tg.renderer;
+const Scissor = r.Scissor;
+const Context = r.Context;
 
 const SplashScreen = @import("splash_screen.zig");
 const List = @import("list.zig");
@@ -25,7 +26,16 @@ pub fn init(window_height: u16) Application {
     return application;
 }
 
-pub const options: []const []const u8 = &.{ "Lists", "Table", "Buttons" };
+pub const options: []const []const u8 = &.{
+    "Lists",
+    "Table",
+    "Buttons",
+    "Text Input",
+    "Checkbox",
+    "Spinner",
+    "Slider",
+    "Styled Text",
+};
 
 pub fn updateAndRender(self: *Application, ctx: Context) bool {
     loop: switch (self.mode) {

@@ -90,8 +90,11 @@ pub const Terminal = struct {
 
     pub const Size = struct { width: u16, height: u16 };
 
-    pub fn init(io: std.Io, config: TerminalConfig, write_buffer: []u8) error{Failed}!Terminal {
-        var terminal: Terminal = undefined;
+    pub var global_tty: ?*Terminal = null;
+
+    pub fn init(terminal: *Terminal, config: TerminalConfig, write_buffer: []u8) error{Failed}!void {
+        var threaded = std.Io.Threaded.init_single_threaded;
+        const io = threaded.ioBasic();
         const file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch return error.Failed;
         terminal.fd = file.handle; //std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch return error.Failed;
         terminal.stdin = std.Io.File.stdin().handle;
@@ -114,15 +117,20 @@ pub const Terminal = struct {
 
         terminal.setCursorVisible(config.cursor_visable) catch return error.Failed;
 
-        return terminal;
+        global_tty = terminal;
     }
 
     pub fn deinit(self: *Terminal) void {
-        if (self.config.raw) self.unmakeRaw();
-        if (self.config.alt_screen) self.unsetAlternateScreen();
-        if (self.config.mouse) |_| self.disableMouse();
+        // IMPORTANT(adi): This order is important as we need to disable keyboard flag before leaving alternate screen
         if (self.config.kitty_keyboard_flags) |_| self.popKittyKeyboardFlags() catch {};
+        if (self.config.mouse) |_| self.disableMouse();
+        if (self.config.alt_screen) self.unsetAlternateScreen();
+        if (self.config.raw) self.unmakeRaw();
         if (!self.config.cursor_visable) self.setCursorVisible(true) catch {};
+
+        var threaded = std.Io.Threaded.init_single_threaded;
+        const io = threaded.ioBasic();
+        (std.Io.File{ .handle = self.fd }).close(io);
     }
 
     pub fn write(self: *Terminal, bytes: []const u8) error{WriteFailed}!void {
@@ -307,6 +315,7 @@ pub const Terminal = struct {
 
         var fds = [_]std.posix.pollfd{
             .{
+                // FIXME: In macos you cant poll dev/tty. It needs select
                 .fd = self.stdin,
                 .events = std.posix.POLL.IN,
                 .revents = 0,
@@ -316,24 +325,20 @@ pub const Terminal = struct {
         var buf: [1024]u8 = undefined;
         var write_head: usize = 0;
         reading_stdin: while (true) {
+            // FIXME: In macos you cant poll dev/tty. It needs select
             const poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollFailed;
 
-            if (poll_result == 0) break :reading_stdin;
-            if (fds[0].revents & std.posix.POLL.IN == 0) break :reading_stdin;
+            if (poll_result == 0) {
+                break :reading_stdin;
+            }
+            if (fds[0].revents & std.posix.POLL.IN == 0) {
+                break :reading_stdin;
+            }
 
             const n = std.posix.read(self.fd, buf[write_head..]) catch return error.PollFailed;
-            if (n == 0) break :reading_stdin;
-
-            // self.write("Read from stdin: { ") catch {};
-            // for (buf[0..n]) |c| {
-            //     if (c == '\x1b') {
-            //         self.write("\\x1b, ") catch {};
-            //         continue;
-            //     }
-            //     self.print("{c}, ", .{c}) catch return error.PollFailed;
-            // }
-            // self.write(" }\n") catch {};
-            // self.flush() catch {};
+            if (n == 0) {
+                break :reading_stdin;
+            }
 
             var data: []const u8 = buf[0..n];
             while (data.len > 0) {
