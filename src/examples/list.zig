@@ -5,6 +5,8 @@ const tuig = @import("tuig");
 const r = tuig.renderer;
 const Context = r.Context;
 
+const app = @import("app.zig");
+
 const List = @This();
 
 screen_position: usize = 0,
@@ -15,7 +17,7 @@ list: []const []const u8 = &.{},
 
 const text: []const u8 = @embedFile("test_ascii.txt");
 
-pub fn reset(self: *List, window_height: u16) void {
+pub fn init(self: *List, window_height: u16) void {
     self.list = comptime blk: {
         @setEvalBranchQuota(10000);
         var result: []const []const u8 = &.{};
@@ -28,6 +30,15 @@ pub fn reset(self: *List, window_height: u16) void {
     self.lines = window_height - 1;
     self.display_window_start = 0;
     self.display_window_end = std.math.clamp(self.list.len, 0, self.lines);
+}
+
+pub fn deinit(self: *List) void {
+    _ = self;
+}
+
+pub fn reset(self: *List, memory_pool: *app.MemoryPool) error{Failed}!void {
+    _ = memory_pool;
+    _ = self;
 }
 
 const TaskListResult = enum { quit, noop, back };

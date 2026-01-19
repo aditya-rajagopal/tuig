@@ -39,7 +39,10 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
 
     var quit = false;
-    var app = Application.init(terminal.size.height);
+    var app = Application.init(terminal.size.height) catch {
+        log.err("Failed to initialize application", .{});
+        return;
+    };
     while (!quit) {
         const events = terminal.pollEvents(16) catch {
             log.err("Failed to poll events", .{});

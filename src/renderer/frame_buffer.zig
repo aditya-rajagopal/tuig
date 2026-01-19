@@ -41,6 +41,13 @@ pub fn set(self: *FrameBuffer, x: u16, y: u16, codepoint: u21) void {
     self.cells[y * self.width + x] = Cell{ .codepoint = codepoint };
 }
 
+pub fn get(self: FrameBuffer, x: u16, y: u16) u21 {
+    assert(x < self.width);
+    assert(y < self.height);
+    assert(y * self.width + x < self.cells.len);
+    return self.cells[y * self.width + x].codepoint;
+}
+
 pub fn clear(self: *FrameBuffer) void {
     @memset(self.cells, Cell{ .codepoint = ' ' });
 }

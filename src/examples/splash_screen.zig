@@ -5,6 +5,8 @@ const tuig = @import("tuig");
 const r = tuig.renderer;
 const Context = r.Context;
 
+const app = @import("app.zig");
+
 const SplashScreen = @This();
 
 const splash_text =
@@ -43,10 +45,21 @@ pub const SplashScreenResult = union(enum) {
     noop,
 };
 
-pub fn reset(self: *SplashScreen) void {
+pub fn init(self: *SplashScreen) void {
     self.splash_animation_mode = .start;
     self.splash_progress = 0;
     self.options_width = null;
+    self.selection = 0;
+}
+
+pub fn deinit(self: *SplashScreen) void {
+    _ = self;
+}
+
+pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool) error{Failed}!void {
+    _ = memory_pool;
+    self.splash_animation_mode = .done;
+    self.splash_progress = 0;
 }
 
 pub fn updateAndRender(self: *SplashScreen, ctx: Context, options: []const []const u8) SplashScreenResult {

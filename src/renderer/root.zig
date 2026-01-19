@@ -5,8 +5,8 @@ pub const Cell = @import("cell.zig");
 pub const FrameBuffer = @import("frame_buffer.zig");
 
 const t = @import("types.zig");
-const Position = t.Position;
-const MouseState = t.MouseState;
+pub const Position = t.Position;
+pub const MouseState = t.MouseState;
 
 const std = @import("std");
 test {

@@ -15,6 +15,7 @@ height: u16,
 buffer: *FrameBuffer,
 
 pub fn initChild(self: Scissor, offset_x: i17, offset_y: i17, width: u16, height: u16) Scissor {
+    // @TODO This is probably unnecssary.
     assert(offset_x + width <= self.width);
     assert(offset_y + height <= self.height);
     return Scissor{
@@ -24,6 +25,16 @@ pub fn initChild(self: Scissor, offset_x: i17, offset_y: i17, width: u16, height
         .height = height,
         .buffer = self.buffer,
     };
+}
+
+pub fn get(self: Scissor, x: u16, y: u16) u21 {
+    if (x >= self.width or y >= self.height) return 0;
+    const global_x: i17 = self.global_x + x;
+    const global_y: i17 = self.global_y + y;
+    if (global_x < 0 or global_y < 0) return 0;
+    if (global_x >= self.buffer.width or global_y >= self.buffer.height) return 0;
+
+    return self.buffer.get(@intCast(global_x), @intCast(global_y));
 }
 
 pub fn set(self: Scissor, x: u16, y: u16, codepoint: u21) void {
