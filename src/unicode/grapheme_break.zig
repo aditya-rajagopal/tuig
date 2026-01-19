@@ -1047,4 +1047,3 @@ const break_table: [1023]GraphemeBreakTestResult align(std.atomic.cache_line) = 
     .{ .is_break = false, .state = .{ .extended_pictographic = true, .regional_indicator = false } }, // Invalid -> Invalid state:[extended_pict = true, regiona_indicator = false]
     .{ .is_break = false, .state = .{ .extended_pictographic = true, .regional_indicator = false } }, // Invalid -> Invalid state:[extended_pict = false, regiona_indicator = true]
 };
-

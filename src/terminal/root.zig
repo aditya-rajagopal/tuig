@@ -11,8 +11,6 @@ pub const TerminalConfig = terminal.TerminalConfig;
 pub const KittyConfig = terminal.KittyConfig;
 pub const MouseOptions = terminal.MouseOptions;
 
-pub var global_tty: ?*Terminal = null;
-
 const std = @import("std");
 test {
     _ = std.testing.refAllDecls(@This());

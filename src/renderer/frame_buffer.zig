@@ -34,7 +34,7 @@ pub fn deinit(self: *FrameBuffer, allocator: Allocator) void {
     allocator.free(self.cells);
 }
 
-pub fn set(self: *FrameBuffer, x: u16, y: u16, codepoint: u21) void {
+pub inline fn set(self: *FrameBuffer, x: u16, y: u16, codepoint: u21) void {
     assert(x < self.width);
     assert(y < self.height);
     assert(y * self.width + x < self.cells.len);
