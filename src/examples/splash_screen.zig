@@ -56,7 +56,8 @@ pub fn deinit(self: *SplashScreen) void {
     _ = self;
 }
 
-pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool) error{Failed}!void {
+pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
+    _ = ctx;
     _ = memory_pool;
     self.splash_animation_mode = .done;
     self.splash_progress = 0;

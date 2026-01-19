@@ -36,9 +36,13 @@ pub fn deinit(self: *List) void {
     _ = self;
 }
 
-pub fn reset(self: *List, memory_pool: *app.MemoryPool) error{Failed}!void {
+pub fn reset(self: *List, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
     _ = memory_pool;
-    _ = self;
+    const window_height = ctx.scissor.height;
+    self.lines = window_height - 1;
+    self.display_window_start = 0;
+    self.display_window_end = std.math.clamp(self.list.len, 0, self.lines);
+    self.screen_position = 0;
 }
 
 const TaskListResult = enum { quit, noop, back };

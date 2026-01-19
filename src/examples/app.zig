@@ -101,7 +101,7 @@ pub fn updateAndRender(self: *Application, ctx: Context) bool {
             }
             self.mode = .{ .render_scene = scene };
             const result = switch (scene) {
-                inline else => |s| @field(self, @tagName(s)).reset(&self.memory),
+                inline else => |s| @field(self, @tagName(s)).reset(&self.memory, ctx),
             };
             if (result == error.Failed) return true;
             return false;

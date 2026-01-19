@@ -48,7 +48,8 @@ pub fn deinit(self: *Snake) void {
     self.timer = null;
 }
 
-pub fn reset(self: *Snake, memory_pool: *app.MemoryPool) error{Failed}!void {
+pub fn reset(self: *Snake, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
+    _ = ctx;
     self.state = .waiting;
     self.frame_rate = 300 * 1000 * 1000;
     self.scene_arena = app.MemoryPool.ArenaAllocator.init(memory_pool);
