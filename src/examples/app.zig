@@ -14,7 +14,11 @@ const Snake = @import("snake.zig");
 
 const Application = @This();
 
-pub const MemoryPool = stdx.BufferPoolExtra(.{ .block_size = 1 * 1024 * 1024, .size_limit = 5, .metrics = true });
+pub const MemoryPool = stdx.BufferPoolExtra(.{
+    .block_size = 1 * 1024 * 1024,
+    .size_limit = 5,
+    .metrics = true,
+});
 
 mode: Modes,
 current_scene: Scenes = .splash_screen,
@@ -32,7 +36,6 @@ const Modes = union(enum) {
 const Scenes = enum(u8) {
     splash_screen = 0,
     snake = 1,
-    list = 2,
 };
 
 pub fn init(window_height: u16) !Application {
@@ -47,7 +50,6 @@ pub fn init(window_height: u16) !Application {
 
 pub const options: []const []const u8 = &.{
     "Snake Game",
-    "Ascii Lists",
 };
 
 pub fn updateAndRender(self: *Application, ctx: Context) bool {
@@ -81,13 +83,6 @@ pub fn updateAndRender(self: *Application, ctx: Context) bool {
             },
             .snake => {
                 switch (self.snake.updateAndRender(ctx)) {
-                    .quit => return true,
-                    .noop => return false,
-                    .back => continue :loop .{ .transition_to = .splash_screen },
-                }
-            },
-            .list => {
-                switch (self.list.updateAndRender(ctx)) {
                     .quit => return true,
                     .noop => return false,
                     .back => continue :loop .{ .transition_to = .splash_screen },
