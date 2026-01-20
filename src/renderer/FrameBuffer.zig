@@ -5,6 +5,7 @@ const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
 const Cell = @import("Cell.zig");
+const Scissor = @import("Scissor.zig");
 
 const FrameBuffer = @This();
 
@@ -34,20 +35,30 @@ pub fn deinit(self: *FrameBuffer, allocator: Allocator) void {
     allocator.free(self.cells);
 }
 
-pub inline fn set(self: *FrameBuffer, x: u16, y: u16, codepoint: u21) void {
-    assert(x < self.width);
-    assert(y < self.height);
-    assert(y * self.width + x < self.cells.len);
-    self.cells[y * self.width + x] = Cell{ .codepoint = codepoint };
+pub fn scissor(self: *FrameBuffer) Scissor {
+    return Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = self.width,
+        .height_global = self.height,
+        .buffer = self,
+    };
 }
 
-pub fn get(self: FrameBuffer, x: u16, y: u16) u21 {
+pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
     assert(x < self.width);
     assert(y < self.height);
     assert(y * self.width + x < self.cells.len);
-    return self.cells[y * self.width + x].codepoint;
+    self.cells[y * self.width + x] = cell;
+}
+
+pub fn get(self: FrameBuffer, x: u16, y: u16) Cell {
+    assert(x < self.width);
+    assert(y < self.height);
+    assert(y * self.width + x < self.cells.len);
+    return self.cells[y * self.width + x];
 }
 
 pub fn clear(self: *FrameBuffer) void {
-    @memset(self.cells, Cell{ .codepoint = ' ' });
+    @memset(self.cells, .empty);
 }

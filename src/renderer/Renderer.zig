@@ -146,13 +146,7 @@ pub fn beginFrame(self: *Renderer, events: []const Event) Context {
     ctx.mouse_released.right = !self.current_mouse_down.right and self.previous_mouse_down.right;
     ctx.mouse_released.middle = !self.current_mouse_down.middle and self.previous_mouse_down.middle;
 
-    ctx.scissor = Scissor{
-        .x_global = 0,
-        .y_global = 0,
-        .width_global = self.terminal.size.width,
-        .height_global = self.terminal.size.height,
-        .buffer = self.render_buffer,
-    };
+    ctx.scissor = self.render_buffer.scissor();
     return ctx;
 }
 
@@ -246,7 +240,7 @@ test "FrameBuffer.set writes cell at correct position" {
     var fb = try FrameBuffer.init(allocator, 10, 5, null);
     defer fb.deinit(allocator);
 
-    fb.set(3, 2, 'X');
+    fb.set(3, 2, Cell{ .codepoint = 'X' });
 
     // Position (3, 2) = index 2 * 10 + 3 = 23
     try std.testing.expectEqual(@as(u21, 'X'), fb.cells[23].codepoint);
@@ -258,9 +252,9 @@ test "FrameBuffer.clear fills with spaces" {
     defer fb.deinit(allocator);
 
     // Set some cells first
-    fb.set(0, 0, 'A');
-    fb.set(2, 1, 'B');
-    fb.set(4, 2, 'C');
+    fb.set(0, 0, Cell{ .codepoint = 'A' });
+    fb.set(2, 1, Cell{ .codepoint = 'B' });
+    fb.set(4, 2, Cell{ .codepoint = 'C' });
 
     fb.clear();
 
@@ -554,12 +548,12 @@ test "Scissor.blitFrom copies source buffer" {
     dest_fb.clear();
 
     // Fill source with pattern
-    src_fb.set(0, 0, 'A');
-    src_fb.set(1, 0, 'B');
-    src_fb.set(2, 0, 'C');
-    src_fb.set(0, 1, 'D');
-    src_fb.set(1, 1, 'E');
-    src_fb.set(2, 1, 'F');
+    src_fb.set(0, 0, Cell{ .codepoint = 'A' });
+    src_fb.set(1, 0, Cell{ .codepoint = 'B' });
+    src_fb.set(2, 0, Cell{ .codepoint = 'C' });
+    src_fb.set(0, 1, Cell{ .codepoint = 'D' });
+    src_fb.set(1, 1, Cell{ .codepoint = 'E' });
+    src_fb.set(2, 1, Cell{ .codepoint = 'F' });
 
     const scissor = Scissor{
         .x_global = 0,
@@ -596,7 +590,7 @@ test "Scissor.blitFrom clips at destination bounds" {
     // Fill source
     for (0..4) |y| {
         for (0..4) |x| {
-            src_fb.set(@intCast(x), @intCast(y), 'X');
+            src_fb.set(@intCast(x), @intCast(y), Cell{ .codepoint = 'X' });
         }
     }
 

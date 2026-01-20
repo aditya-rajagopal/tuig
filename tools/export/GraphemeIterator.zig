@@ -10,7 +10,7 @@ const Property = t.Property;
 const graphemeBreak = @import("grapheme_break.zig").graphemeBreak;
 const graphemeBreakClass = @import("grapheme_break.zig").graphemeBreakClass;
 const getProperty = @import("properties.zig").getProperty;
-const UTF8Decoder = @import("utf8.zig");
+const UTF8Decoder = @import("UTF8Decoder.zig");
 
 const GraphemeIterator = @This();
 

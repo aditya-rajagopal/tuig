@@ -131,7 +131,7 @@ fn renderWaiting(self: *Snake, ctx: Context) void {
 fn newFood(self: *Snake, scissor: Scissor) void {
     self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
     self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
-    while (scissor.get(self.food_position.x, self.food_position.y) != ' ') {
+    while (scissor.get(self.food_position.x, self.food_position.y).?.codepoint != ' ') {
         self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
         self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
     }
@@ -151,7 +151,7 @@ fn initSnake(self: *Snake, scissor: Scissor) void {
 
 fn renderSnake(self: *Snake, game_area: Scissor) void {
     for (self.components.items) |component| {
-        _ = game_area.set(component.x, component.y, '+');
+        _ = game_area.set(component.x, component.y, Cell{ .codepoint = '+' });
     }
 }
 
@@ -171,16 +171,16 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
             if (head.x == game_area.width_global - 1) head.x = 0 else head.x += 1;
         },
     }
-    const space = game_area.get(head.x, head.y);
-    if (space == '+') {
+    const space = game_area.get(head.x, head.y).?;
+    if (space.codepoint == '+') {
         self.transitonTo(.game_over);
-    } else if (space == 'O') {
+    } else if (space.codepoint == 'O') {
         self.eaten_food.appendAssumeCapacity(head);
         self.score += 1;
         self.newFood(game_area);
     }
     self.components.appendAssumeCapacity(head);
-    game_area.set(head.x, head.y, '+');
+    game_area.set(head.x, head.y, Cell{ .codepoint = '+' });
 
     const tail = self.components.items[0];
     if (self.eaten_food.items.len > 0) {
@@ -189,11 +189,11 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
             _ = self.eaten_food.orderedRemove(0);
         } else {
             _ = self.components.orderedRemove(0);
-            game_area.set(tail.x, tail.y, ' ');
+            game_area.set(tail.x, tail.y, .empty);
         }
     } else {
         _ = self.components.orderedRemove(0);
-        game_area.set(tail.x, tail.y, ' ');
+        game_area.set(tail.x, tail.y, .empty);
     }
 }
 
@@ -204,17 +204,17 @@ fn drawBox(area: Scissor, x: i17, y: i17, width: u16, height: u16, title: []cons
     whole_area.fillRow(0, Cell{ .codepoint = '─' });
     whole_area.fillRow(height - 1, Cell{ .codepoint = '─' });
     for (1..width - 2) |column| {
-        whole_area.set(@intCast(column), 0, '─');
-        whole_area.set(@intCast(column), height - 1, '─');
+        whole_area.set(@intCast(column), 0, Cell{ .codepoint = '─' });
+        whole_area.set(@intCast(column), height - 1, Cell{ .codepoint = '─' });
     }
     for (0..height - 1) |row| {
-        whole_area.set(0, @intCast(row), '│');
-        whole_area.set(width - 1, @intCast(row), '│');
+        whole_area.set(0, @intCast(row), Cell{ .codepoint = '│' });
+        whole_area.set(width - 1, @intCast(row), Cell{ .codepoint = '│' });
     }
-    whole_area.set(0, 0, '┌');
-    whole_area.set(width - 1, 0, '┐');
-    whole_area.set(0, height - 1, '└');
-    whole_area.set(width - 1, height - 1, '┘');
+    whole_area.set(0, 0, Cell{ .codepoint = '┌' });
+    whole_area.set(width - 1, 0, Cell{ .codepoint = '┐' });
+    whole_area.set(0, height - 1, Cell{ .codepoint = '└' });
+    whole_area.set(width - 1, height - 1, Cell{ .codepoint = '┘' });
 
     const text_area = whole_area.initChild(2, 0, width - 4, height);
     _ = text_area.renderLineDelimiter(0, 0, title, null, false);
@@ -268,7 +268,7 @@ fn renderPlaying(self: *Snake, ctx: Context) void {
         }
     }
 
-    _ = game_area.set(self.food_position.x, self.food_position.y, 'O');
+    _ = game_area.set(self.food_position.x, self.food_position.y, Cell{ .codepoint = 'O' });
     self.renderSnake(game_area);
     if (self.frame_ticked) {
         self.moveSnake(game_area);

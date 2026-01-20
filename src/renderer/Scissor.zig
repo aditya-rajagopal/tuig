@@ -36,24 +36,24 @@ pub fn inner(self: Scissor) Scissor {
     };
 }
 
-pub fn get(self: Scissor, x: u16, y: u16) u21 {
-    if (x >= self.width_global or y >= self.height_global) return 0;
+pub fn get(self: Scissor, x: u16, y: u16) ?Cell {
+    if (x >= self.width_global or y >= self.height_global) return null;
     const global_x: i17 = self.x_global + x;
     const global_y: i17 = self.y_global + y;
-    if (global_x < 0 or global_y < 0) return 0;
-    if (global_x >= self.buffer.width or global_y >= self.buffer.height) return 0;
+    if (global_x < 0 or global_y < 0) return null;
+    if (global_x >= self.buffer.width or global_y >= self.buffer.height) return null;
 
     return self.buffer.get(@intCast(global_x), @intCast(global_y));
 }
 
-pub fn set(self: Scissor, x: u16, y: u16, codepoint: u21) void {
+pub fn set(self: Scissor, x: u16, y: u16, cell: Cell) void {
     if (x >= self.width_global or y >= self.height_global) return;
     const global_x: i17 = self.x_global + x;
     const global_y: i17 = self.y_global + y;
     if (global_x < 0 or global_y < 0) return;
     if (global_x >= self.buffer.width or global_y >= self.buffer.height) return;
 
-    self.buffer.set(@intCast(global_x), @intCast(global_y), codepoint);
+    self.buffer.set(@intCast(global_x), @intCast(global_y), cell);
 }
 
 pub fn contains(self: Scissor, x: u16, y: u16) bool {
@@ -163,21 +163,21 @@ pub fn renderLineDelimiter(
             }
             if (cursor_x < 0) continue;
 
-            self.buffer.set(@intCast(cursor_x), cursor_y, codepoint);
+            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .codepoint = codepoint });
         }
     } else {
         while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
             if (cursor_x < 0) continue;
             if (cursor_x == limit_x) break;
 
-            self.buffer.set(@intCast(cursor_x), cursor_y, codepoint);
+            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .codepoint = codepoint });
         }
     }
     return iter.i;
 }
 
 pub fn clear(self: Scissor) void {
-    self.fill(Cell{ .codepoint = ' ' });
+    self.fill(.empty);
 }
 
 /// Copy cells from a source FrameBuffer to this scissor at the given offset.
