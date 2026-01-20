@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
-const Cell = @import("cell.zig");
+const Cell = @import("Cell.zig");
 
 const FrameBuffer = @This();
 

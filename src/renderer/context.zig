@@ -6,7 +6,7 @@ const KeyEvent = term.KeyEvent;
 const MouseEvent = term.MouseEvent;
 const ResizeEvent = term.ResizeEvent;
 
-const Scissor = @import("scissor.zig");
+const Scissor = @import("Scissor.zig");
 const t = @import("types.zig");
 const Position = t.Position;
 const MouseState = t.MouseState;
@@ -36,8 +36,8 @@ pub fn isKeyPressed(self: Context, code: KeyEvent.Code) bool {
 pub fn isHovered(self: Context, scissor: Scissor) ?Position {
     if (scissor.contains(self.mouse_x, self.mouse_y)) {
         return .{
-            .x = @intCast(@as(i17, self.mouse_x) - scissor.global_x),
-            .y = @intCast(@as(i17, self.mouse_y) - scissor.global_y),
+            .x = @intCast(@as(i17, self.mouse_x) - scissor.x_global),
+            .y = @intCast(@as(i17, self.mouse_y) - scissor.y_global),
         };
     } else return null;
 }

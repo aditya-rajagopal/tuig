@@ -23,9 +23,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const info = try UnicodeInfo.init(std.heap.page_allocator);
     const times = try parser.parseUCDFiles(io, info);
 
-    try std.Io.Dir.cwd().copyFile("src/tools/export/types.zig", std.Io.Dir.cwd(), "src/unicode/types.zig", io, .{});
-    try std.Io.Dir.cwd().copyFile("src/tools/export/root.zig", std.Io.Dir.cwd(), "src/unicode/root.zig", io, .{});
-    try std.Io.Dir.cwd().copyFile("src/tools/export/utf8.zig", std.Io.Dir.cwd(), "src/unicode/utf8.zig", io, .{});
+    try std.Io.Dir.cwd().copyFile("tools/export/types.zig", std.Io.Dir.cwd(), "src/unicode/types.zig", io, .{});
+    try std.Io.Dir.cwd().copyFile("tools/export/root.zig", std.Io.Dir.cwd(), "src/unicode/root.zig", io, .{});
+    try std.Io.Dir.cwd().copyFile("tools/export/utf8.zig", std.Io.Dir.cwd(), "src/unicode/utf8.zig", io, .{});
 
     const table_time = try generatePropertyLookupTable(io, std.heap.page_allocator, "src/unicode/properties.zig", info);
     const grapheme_time = try generateGraphemeBreakLookupTable(io, std.heap.page_allocator, "src/unicode/grapheme_break.zig");
@@ -75,7 +75,7 @@ pub fn generateGraphemeBreakLookupTable(
                 const result = isGraphemeBreak(combination.gbc1, combination.gbc2, &state);
                 results[combination.asUsize()] = .{
                     .is_break = result,
-                    .state = combination.state,
+                    .state = state,
                 };
             }
         }
@@ -92,7 +92,20 @@ pub fn generateGraphemeBreakLookupTable(
         \\const GraphemeBreakTestResult = t.GraphemeBreakTestResult;
         \\const GraphemeBreakCombination = t.GraphemeBreakCombination;
         \\const GraphemeBreakState = t.GraphemeBreakState;
+        \\const GraphemeBoundryClass = t.GraphemeBoundryClass;
         \\const getProperty = @import("properties.zig").getProperty;
+        \\
+        \\pub inline fn graphemeBreakClass(prev: GraphemeBoundryClass, next: GraphemeBoundryClass, state: *GraphemeBreakState) bool {{
+        \\    const result = break_table[
+        \\        (GraphemeBreakCombination{{
+        \\            .state = state.*,
+        \\            .gbc1 = prev,
+        \\            .gbc2 = next,
+        \\        }}).asUsize()
+        \\    ];
+        \\    state.* = result.state;
+        \\    return result.is_break;
+        \\}}
         \\
         \\pub fn graphemeBreak(prev_cp: u21, next_cp: u21, state: *GraphemeBreakState) bool {{
         \\    const result = break_table[

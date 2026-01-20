@@ -43,8 +43,10 @@ const transitions = [_]u8{
     12, 36, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
 };
 
-codepoint: u21 = 0,
-state: State = .accept,
+codepoint: u21,
+state: State,
+
+pub const start: UTF8Decoder = .{ .codepoint = 0, .state = .accept };
 
 pub inline fn decode(self: *UTF8Decoder, byte: u8) struct { ?u21, bool } {
     const class = character_classes[byte];
@@ -79,7 +81,7 @@ pub inline fn decode(self: *UTF8Decoder, byte: u8) struct { ?u21, bool } {
 const std = @import("std");
 
 test "UTF8Decoder ASCII" {
-    var d: UTF8Decoder = .{};
+    var d: UTF8Decoder = .start;
     const test_case = "All your codebase are belong to us";
     var decoded_string: [test_case.len]u8 = undefined;
     for (test_case, 0..) |byte, i| {
@@ -97,7 +99,7 @@ test "UTF8Decoder Single Codepoint" {
         expected: u21,
 
         fn decodeCodepoint(s: []const u8) !u21 {
-            var d: UTF8Decoder = .{};
+            var d: UTF8Decoder = .start;
 
             for (s) |byte| {
                 const codepoint, const consumed = d.decode(byte);
@@ -122,7 +124,7 @@ test "UTF8Decoder Single Codepoint" {
 }
 
 test "UTF8Decoder mixed string" {
-    var d: UTF8Decoder = .{};
+    var d: UTF8Decoder = .start;
 
     // "Héllo 世界!" - mix of ASCII, 2-byte, and 3-byte sequences
     const input = "H\xC3\xA9llo \xE4\xB8\x96\xE7\x95\x8C!";
@@ -145,7 +147,7 @@ test "UTF8Decoder mixed string" {
 }
 
 test "UTF8Decoder invalid leading byte" {
-    var d: UTF8Decoder = .{};
+    var d: UTF8Decoder = .start;
 
     // Starting with a continuation byte (0x80-0xBF) is invalid
     const codepoint, const consumed = d.decode(0x80);
@@ -159,7 +161,7 @@ test "UTF8Decoder invalid leading byte" {
 }
 
 test "UTF8Decoder truncated sequence" {
-    var d: UTF8Decoder = .{};
+    var d: UTF8Decoder = .start;
     const input = "\xC3A"; // Start a 2-byte sequence but follow with ASCII
     const expected = [2]u21{ 0xFFFD, 'A' };
     var output: [2]u21 = undefined;
@@ -180,7 +182,7 @@ test "UTF8Decoder truncated sequence" {
 }
 
 test "UTF8Decoder invalid continuation" {
-    var d: UTF8Decoder = .{};
+    var d: UTF8Decoder = .start;
     const input = "\xE4\xB8\xFF"; // Start a 3-byte sequence but last byte is invalid
     const expected = [2]u21{ 0xFFFD, 0xFFFD };
     var output: [3]u21 = undefined;

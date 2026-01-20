@@ -11,10 +11,10 @@ const MouseEvent = term.MouseEvent;
 
 const t = @import("types.zig");
 const MouseState = t.MouseState;
-const Context = @import("context.zig");
-const FrameBuffer = @import("frame_buffer.zig");
-const Scissor = @import("scissor.zig");
-const Cell = @import("cell.zig");
+const Context = @import("Context.zig");
+const FrameBuffer = @import("FrameBuffer.zig");
+const Scissor = @import("Scissor.zig");
+const Cell = @import("Cell.zig");
 
 const Renderer = @This();
 
@@ -147,10 +147,10 @@ pub fn beginFrame(self: *Renderer, events: []const Event) Context {
     ctx.mouse_released.middle = !self.current_mouse_down.middle and self.previous_mouse_down.middle;
 
     ctx.scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = self.terminal.size.width,
-        .height = self.terminal.size.height,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = self.terminal.size.width,
+        .height_global = self.terminal.size.height,
         .buffer = self.render_buffer,
     };
     return ctx;
@@ -275,19 +275,19 @@ test "Scissor.initChild creates correct child region" {
     defer fb.deinit(allocator);
 
     const parent = Scissor{
-        .global_x = 5,
-        .global_y = 3,
-        .width = 15,
-        .height = 7,
+        .x_global = 5,
+        .y_global = 3,
+        .width_global = 15,
+        .height_global = 7,
         .buffer = &fb,
     };
 
     const child = parent.initChild(2, 1, 10, 4);
 
-    try std.testing.expectEqual(@as(i17, 7), child.global_x);
-    try std.testing.expectEqual(@as(i17, 4), child.global_y);
-    try std.testing.expectEqual(@as(u16, 10), child.width);
-    try std.testing.expectEqual(@as(u16, 4), child.height);
+    try std.testing.expectEqual(@as(i17, 7), child.x_global);
+    try std.testing.expectEqual(@as(i17, 4), child.y_global);
+    try std.testing.expectEqual(@as(u16, 10), child.width_global);
+    try std.testing.expectEqual(@as(u16, 4), child.height_global);
     try std.testing.expect(child.buffer == &fb);
 }
 
@@ -299,10 +299,10 @@ test "Scissor.fill fills entire scissor region" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 2,
-        .global_y = 1,
-        .width = 4,
-        .height = 2,
+        .x_global = 2,
+        .y_global = 1,
+        .width_global = 4,
+        .height_global = 2,
         .buffer = &fb,
     };
 
@@ -328,10 +328,10 @@ test "Scissor.clear fills with spaces" {
     @memset(fb.cells, Cell{ .codepoint = 'X' });
 
     const scissor = Scissor{
-        .global_x = 1,
-        .global_y = 1,
-        .width = 3,
-        .height = 2,
+        .x_global = 1,
+        .y_global = 1,
+        .width_global = 3,
+        .height_global = 2,
         .buffer = &fb,
     };
 
@@ -354,10 +354,10 @@ test "Scissor.fillRectangle fills partial region" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -380,10 +380,10 @@ test "Scissor.fillRectangle clips to buffer bounds" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -407,10 +407,10 @@ test "Scissor.fillRectangle returns early for zero dimensions" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -433,10 +433,10 @@ test "Scissor.renderLineDelimiter renders text" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 20,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 20,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -460,10 +460,10 @@ test "Scissor.renderLineDelimiter stops at delimiter" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 20,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 20,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -485,10 +485,10 @@ test "Scissor.renderLineDelimiter clips to scissor width" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 5,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 5,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -509,10 +509,10 @@ test "Scissor.renderLineDelimiter returns 0 for out of bounds" {
     defer fb.deinit(allocator);
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -530,10 +530,10 @@ test "Scissor.renderLineDelimiter handles unicode" {
     fb.clear();
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 20,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 20,
+        .height_global = 5,
         .buffer = &fb,
     };
 
@@ -562,10 +562,10 @@ test "Scissor.blitFrom copies source buffer" {
     src_fb.set(2, 1, 'F');
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &dest_fb,
     };
 
@@ -601,10 +601,10 @@ test "Scissor.blitFrom clips at destination bounds" {
     }
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 5,
-        .height = 3,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 5,
+        .height_global = 3,
         .buffer = &dest_fb,
     };
 
@@ -630,10 +630,10 @@ test "Scissor.blitFrom returns early for out of bounds offset" {
     @memset(src_fb.cells, Cell{ .codepoint = 'X' });
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 5,
-        .height = 3,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 5,
+        .height_global = 3,
         .buffer = &dest_fb,
     };
 
@@ -657,10 +657,10 @@ test "Scissor.blitFrom handles empty source" {
     @memset(dest_fb.cells, Cell{ .codepoint = 'Y' });
 
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 5,
-        .height = 3,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 5,
+        .height_global = 3,
         .buffer = &dest_fb,
     };
 
@@ -681,18 +681,18 @@ test "Scissor with negative global coordinates handles fillRectangle" {
 
     // Scissor with negative global position (partially off-screen)
     const scissor = Scissor{
-        .global_x = -2,
-        .global_y = -1,
-        .width = 6,
-        .height = 4,
+        .x_global = -2,
+        .y_global = -1,
+        .width_global = 6,
+        .height_global = 4,
         .buffer = &fb,
     };
 
     scissor.fillRectangle(0, 0, 6, 4, Cell{ .codepoint = '#' });
 
     // Only visible portion should be filled
-    // global_x + offset_x = -2 + 0 = -2, clips to 0
-    // global_y + offset_y = -1 + 0 = -1, clips to 0
+    // x_global + offset_x = -2 + 0 = -2, clips to 0
+    // y_global + offset_y = -1 + 0 = -1, clips to 0
     // end_x = -2 + 6 = 4
     // end_y = -1 + 4 = 3
     for (0..5) |y| {
@@ -712,10 +712,10 @@ test "Scissor.fillRectangle uses optimized memset for full-width rows" {
 
     // Scissor covering full width
     const scissor = Scissor{
-        .global_x = 0,
-        .global_y = 0,
-        .width = 10,
-        .height = 5,
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
         .buffer = &fb,
     };
 

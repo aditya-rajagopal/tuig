@@ -1,8 +1,8 @@
-pub const Renderer = @import("renderer.zig");
-pub const Context = @import("context.zig");
-pub const Scissor = @import("scissor.zig");
-pub const Cell = @import("cell.zig");
-pub const FrameBuffer = @import("frame_buffer.zig");
+pub const Renderer = @import("Renderer.zig");
+pub const Context = @import("Context.zig");
+pub const Scissor = @import("Scissor.zig");
+pub const Cell = @import("Cell.zig");
+pub const FrameBuffer = @import("FrameBuffer.zig");
 
 const t = @import("types.zig");
 pub const Position = t.Position;

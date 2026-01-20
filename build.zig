@@ -71,14 +71,26 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
+    const terminal_tests = b.addTest(.{
+        .root_module = terminal,
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
     });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    const run_terminal_tests = b.addRunArtifact(terminal_tests);
+    const renderer_tests = b.addTest(.{
+        .root_module = renderer,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_renderer_tests = b.addRunArtifact(renderer_tests);
+    const unicode_tests = b.addTest(.{
+        .root_module = unicode,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_unicode_tests = b.addRunArtifact(unicode_tests);
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_terminal_tests.step);
+    test_step.dependOn(&run_renderer_tests.step);
+    test_step.dependOn(&run_unicode_tests.step);
 
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");

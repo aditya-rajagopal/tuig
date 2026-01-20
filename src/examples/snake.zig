@@ -111,7 +111,7 @@ pub fn updateAndRender(self: *Snake, ctx: Context) SnakeResult {
 
 fn renderWaiting(self: *Snake, ctx: Context) void {
     const frame = frames[self.frame_tick % frames.len];
-    const x = @divFloor(@as(i17, ctx.scissor.width) - @as(i17, @intCast(title_width)), 2);
+    const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(title_width)), 2);
     const y = 1;
     const region = ctx.scissor.initChild(@intCast(x), y, title_width, title_height);
     for (0..title_height) |row| {
@@ -121,26 +121,26 @@ fn renderWaiting(self: *Snake, ctx: Context) void {
     }
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Press `ENTER` to start", .{}) catch unreachable;
-    const msg_x = @divFloor(@as(i17, ctx.scissor.width) - @as(i17, @intCast(score.len)), 2);
-    const msg_y = ctx.scissor.height - 1;
+    const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(score.len)), 2);
+    const msg_y = ctx.scissor.height_global - 1;
     const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(score.len), 1);
     _ = msg_region.renderLineDelimiter(0, 0, score, null, false);
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.playing);
 }
 
 fn newFood(self: *Snake, scissor: Scissor) void {
-    self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width - 1);
-    self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height - 1);
+    self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
+    self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
     while (scissor.get(self.food_position.x, self.food_position.y) != ' ') {
-        self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width - 1);
-        self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height - 1);
+        self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
+        self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
     }
 }
 
 fn initSnake(self: *Snake, scissor: Scissor) void {
     const num_components = 4;
-    const y = scissor.height / 2;
-    const x = (scissor.width - num_components) / 2;
+    const y = scissor.height_global / 2;
+    const x = (scissor.width_global - num_components) / 2;
     for (0..num_components) |i| {
         self.components.appendAssumeCapacity(.{
             .x = @intCast(x + i),
@@ -159,16 +159,16 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
     var head = self.components.getLast();
     switch (self.next_direction) {
         .up => {
-            if (head.y == 0) head.y = game_area.height - 1 else head.y -= 1;
+            if (head.y == 0) head.y = game_area.height_global - 1 else head.y -= 1;
         },
         .down => {
-            if (head.y == game_area.height - 1) head.y = 0 else head.y += 1;
+            if (head.y == game_area.height_global - 1) head.y = 0 else head.y += 1;
         },
         .left => {
-            if (head.x == 0) head.x = game_area.width - 1 else head.x -= 1;
+            if (head.x == 0) head.x = game_area.width_global - 1 else head.x -= 1;
         },
         .right => {
-            if (head.x == game_area.width - 1) head.x = 0 else head.x += 1;
+            if (head.x == game_area.width_global - 1) head.x = 0 else head.x += 1;
         },
     }
     const space = game_area.get(head.x, head.y);
@@ -222,20 +222,20 @@ fn drawBox(area: Scissor, x: i17, y: i17, width: u16, height: u16, title: []cons
 }
 
 fn renderPlaying(self: *Snake, ctx: Context) void {
-    if (ctx.scissor.width < gameplay_area_x or ctx.scissor.height < gameplay_area_y) {
+    if (ctx.scissor.width_global < gameplay_area_x or ctx.scissor.height_global < gameplay_area_y) {
         var buf: [128]u8 = undefined;
-        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ gameplay_area_x, gameplay_area_y, ctx.scissor.width, ctx.scissor.height }) catch unreachable;
-        const x = @divFloor(@as(i17, ctx.scissor.width) - @as(i17, @intCast(str.len)), 2);
-        const y = (ctx.scissor.height - 1) / 2;
+        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ gameplay_area_x, gameplay_area_y, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
+        const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
+        const y = (ctx.scissor.height_global - 1) / 2;
         const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
         _ = area.renderLineDelimiter(0, 0, str, null, false);
         return;
     }
-    assert(ctx.scissor.width >= gameplay_area_x);
-    assert(ctx.scissor.height >= gameplay_area_y);
+    assert(ctx.scissor.width_global >= gameplay_area_x);
+    assert(ctx.scissor.height_global >= gameplay_area_y);
 
-    const x = @divFloor(@as(i17, ctx.scissor.width) - @as(i17, gameplay_area_x), 2);
-    const y = @divFloor(@as(i17, ctx.scissor.height) - @as(i17, gameplay_area_y), 2);
+    const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, gameplay_area_x), 2);
+    const y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, gameplay_area_y), 2);
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
 
@@ -281,8 +281,8 @@ fn renderGameOver(self: *Snake, ctx: Context) void {
     self.components.clearRetainingCapacity();
     const frame = game_over_frames[self.frame_tick % frames.len];
     const region = ctx.scissor;
-    const start_x = (region.width - game_over_title_width) / 2;
-    const start_y = (region.height - game_over_title_height) / 2;
+    const start_x = (region.width_global - game_over_title_width) / 2;
+    const start_y = (region.height_global - game_over_title_height) / 2;
 
     const area = region.initChild(@intCast(start_x), @intCast(start_y), game_over_title_width, game_over_title_height);
 
@@ -293,13 +293,13 @@ fn renderGameOver(self: *Snake, ctx: Context) void {
     }
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
-    const x = (region.width - score.len) / 2;
+    const x = (region.width_global - score.len) / 2;
     const y = start_y + game_over_title_height + 3;
     const score_area = region.initChild(@intCast(x), @intCast(y), @intCast(score.len), 1);
     _ = score_area.renderLineDelimiter(0, 0, score, null, false);
     const msg = std.fmt.bufPrint(&buf, "Press `ENTER` to restart", .{}) catch unreachable;
-    const msg_x = @divFloor(@as(i17, ctx.scissor.width) - @as(i17, @intCast(msg.len)), 2);
-    const msg_y = ctx.scissor.height - 1;
+    const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(msg.len)), 2);
+    const msg_y = ctx.scissor.height_global - 1;
     const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(msg.len), 1);
     _ = msg_region.renderLineDelimiter(0, 0, msg, null, false);
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.waiting);

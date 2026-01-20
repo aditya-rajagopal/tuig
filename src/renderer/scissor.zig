@@ -3,46 +3,43 @@ const std = @import("std");
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
-const FrameBuffer = @import("frame_buffer.zig");
-const Cell = @import("cell.zig");
+const FrameBuffer = @import("FrameBuffer.zig");
+const Cell = @import("Cell.zig");
 
 const Scissor = @This();
 
-global_x: i17,
-global_y: i17,
-width: u16,
-height: u16,
+x_global: i17,
+y_global: i17,
+width_global: u16,
+height_global: u16,
 buffer: *FrameBuffer,
 
-pub fn initChild(self: Scissor, offset_x: i17, offset_y: i17, width: u16, height: u16) Scissor {
-    // @TODO This is probably unnecssary.
-    assert(offset_x + width <= self.width);
-    assert(offset_y + height <= self.height);
+pub fn initChild(self: Scissor, x_offset: i17, y_offset: i17, width: u16, height: u16) Scissor {
     return Scissor{
-        .global_x = self.global_x + offset_x,
-        .global_y = self.global_y + offset_y,
-        .width = width,
-        .height = height,
+        .x_global = self.x_global + x_offset,
+        .y_global = self.y_global + y_offset,
+        .width_global = width,
+        .height_global = height,
         .buffer = self.buffer,
     };
 }
 
 pub fn inner(self: Scissor) Scissor {
-    assert(self.width > 2);
-    assert(self.height > 2);
+    assert(self.width_global > 2);
+    assert(self.height_global > 2);
     return Scissor{
-        .global_x = self.global_x + 1,
-        .global_y = self.global_y + 1,
-        .width = self.width - 2,
-        .height = self.height - 2,
+        .x_global = self.x_global + 1,
+        .y_global = self.y_global + 1,
+        .width_global = self.width_global - 2,
+        .height_global = self.height_global - 2,
         .buffer = self.buffer,
     };
 }
 
 pub fn get(self: Scissor, x: u16, y: u16) u21 {
-    if (x >= self.width or y >= self.height) return 0;
-    const global_x: i17 = self.global_x + x;
-    const global_y: i17 = self.global_y + y;
+    if (x >= self.width_global or y >= self.height_global) return 0;
+    const global_x: i17 = self.x_global + x;
+    const global_y: i17 = self.y_global + y;
     if (global_x < 0 or global_y < 0) return 0;
     if (global_x >= self.buffer.width or global_y >= self.buffer.height) return 0;
 
@@ -50,9 +47,9 @@ pub fn get(self: Scissor, x: u16, y: u16) u21 {
 }
 
 pub fn set(self: Scissor, x: u16, y: u16, codepoint: u21) void {
-    if (x >= self.width or y >= self.height) return;
-    const global_x: i17 = self.global_x + x;
-    const global_y: i17 = self.global_y + y;
+    if (x >= self.width_global or y >= self.height_global) return;
+    const global_x: i17 = self.x_global + x;
+    const global_y: i17 = self.y_global + y;
     if (global_x < 0 or global_y < 0) return;
     if (global_x >= self.buffer.width or global_y >= self.buffer.height) return;
 
@@ -60,15 +57,15 @@ pub fn set(self: Scissor, x: u16, y: u16, codepoint: u21) void {
 }
 
 pub fn contains(self: Scissor, x: u16, y: u16) bool {
-    return x >= self.global_x and y >= self.global_y and x < self.global_x + self.width and y < self.global_y + self.height;
+    return x >= self.x_global and y >= self.y_global and x < self.x_global + self.width_global and y < self.y_global + self.height_global;
 }
 
 pub fn fillRow(self: Scissor, row: u16, cell: Cell) void {
-    if (row >= self.height) return;
+    if (row >= self.height_global) return;
 
-    const x_start_int = self.global_x;
-    const x_end_int = x_start_int + self.width;
-    const y_int = self.global_y + row;
+    const x_start_int = self.x_global;
+    const x_end_int = x_start_int + self.width_global;
+    const y_int = self.y_global + row;
 
     if (y_int >= self.buffer.height or y_int < 0) return;
     if (x_end_int < 0 or x_start_int >= self.buffer.width) return;
@@ -83,10 +80,10 @@ pub fn fillRow(self: Scissor, row: u16, cell: Cell) void {
 }
 
 pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
-    if (column >= self.width) return;
-    const x_int = self.global_x + column;
-    const y_start_int = self.global_y;
-    const y_end_int = self.global_y + self.height;
+    if (column >= self.width_global) return;
+    const x_int = self.x_global + column;
+    const y_start_int = self.y_global;
+    const y_end_int = self.y_global + self.height_global;
     if (x_int >= self.buffer.width or x_int < 0) return;
     if (y_end_int < 0 or y_start_int >= self.buffer.height) return;
 
@@ -95,17 +92,17 @@ pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
     const x: usize = @intCast(x_int);
 
     for (y_start..y_end) |row| {
-        @call(.always_inline, FrameBuffer.set, .{ self.buffer, x, row, cell });
+        @call(.always_inline, FrameBuffer.set, .{ self.buffer, @as(u16, @intCast(x)), @as(u16, @intCast(row)), cell.codepoint });
     }
 }
 
-pub fn fillRectangle(self: Scissor, offset_x: u16, offset_y: u16, width: u16, height: u16, cell: Cell) void {
-    if (offset_x >= self.width or offset_y >= self.height) return;
+pub fn fillRectangle(self: Scissor, x_offset: u16, y_offset: u16, width: u16, height: u16, cell: Cell) void {
+    if (x_offset >= self.width_global or y_offset >= self.height_global) return;
     if (width == 0 or height == 0) return;
 
-    const start_x_int: i17 = self.global_x + offset_x;
+    const start_x_int: i17 = self.x_global + x_offset;
     const end_x_int: i17 = start_x_int + width;
-    const start_y_int: i17 = self.global_y + offset_y;
+    const start_y_int: i17 = self.y_global + y_offset;
     const end_y_int: i17 = start_y_int + height;
 
     if (start_x_int >= self.buffer.width) return;
@@ -131,28 +128,28 @@ pub fn fillRectangle(self: Scissor, offset_x: u16, offset_y: u16, width: u16, he
 }
 
 pub fn fill(self: Scissor, cell: Cell) void {
-    self.fillRectangle(0, 0, self.width, self.height, cell);
+    self.fillRectangle(0, 0, self.width_global, self.height_global, cell);
 }
 
 pub fn renderLineDelimiter(
     self: Scissor,
-    offset_x: u16,
-    offset_y: u16,
+    x_offset: u16,
+    y_offset: u16,
     text: []const u8,
     delimiter: ?u21,
     consume_till_delimiter: bool,
 ) usize {
-    if (offset_x >= self.width) return 0;
-    if (offset_y >= self.height) return 0;
+    if (x_offset >= self.width_global) return 0;
+    if (y_offset >= self.height_global) return 0;
 
-    var cursor_x: i17 = self.global_x + offset_x;
-    const cursor_y_int: i17 = self.global_y + offset_y;
+    var cursor_x: i17 = self.x_global + x_offset;
+    const cursor_y_int: i17 = self.y_global + y_offset;
 
     if (cursor_x >= self.buffer.width) return 0;
     if (cursor_y_int < 0 or cursor_y_int >= self.buffer.height) return 0;
     const cursor_y: u16 = @intCast(cursor_y_int);
 
-    const limit_x: i17 = @min(self.global_x + self.width, self.buffer.width);
+    const limit_x: i17 = @min(self.x_global + self.width_global, self.buffer.width);
     if (limit_x < 0) return 0;
 
     const utf8 = std.unicode.Utf8View.init(text) catch return 0;
@@ -187,20 +184,20 @@ pub fn clear(self: Scissor) void {
 ///
 /// Useful for compositing temporary render buffers into the main buffer.
 /// Handles clipping at scissor and buffer boundaries.
-pub fn blitFrom(self: Scissor, source: *const FrameBuffer, offset_x: u16, offset_y: u16) void {
-    if (offset_x >= self.width or offset_y >= self.height) return;
+pub fn blitFrom(self: Scissor, source: *const FrameBuffer, x_offset: u16, y_offset: u16) void {
+    if (x_offset >= self.width_global or y_offset >= self.height_global) return;
     if (source.width == 0 or source.height == 0) return;
 
-    const dest_x_start: i17 = self.global_x + @as(i17, offset_x);
-    const dest_y_start: i17 = self.global_y + @as(i17, offset_y);
+    const dest_x_start: i17 = self.x_global + @as(i17, x_offset);
+    const dest_y_start: i17 = self.y_global + @as(i17, y_offset);
 
     // Early exit if completely outside buffer
     if (dest_x_start >= self.buffer.width) return;
     if (dest_y_start >= self.buffer.height) return;
 
     // Calculate clipped region
-    const copy_width: u16 = @min(source.width, self.width - offset_x);
-    const copy_height: u16 = @min(source.height, self.height - offset_y);
+    const copy_width: u16 = @min(source.width, self.width_global - x_offset);
+    const copy_height: u16 = @min(source.height, self.height_global - y_offset);
 
     // Calculate source start offset (for negative dest coordinates)
     var src_x_start: u16 = 0;

@@ -81,8 +81,8 @@ pub fn updateAndRender(self: *SplashScreen, ctx: Context, options: []const []con
             },
         }
     }
-    const width = ctx.scissor.width;
-    const height = ctx.scissor.height;
+    const width = ctx.scissor.width_global;
+    const height = ctx.scissor.height_global;
     const start_x = width / 2 - codepoint_width / 2;
     const start_y = height / 2 - codepoint_height / 2;
 
@@ -132,7 +132,7 @@ pub fn updateAndRender(self: *SplashScreen, ctx: Context, options: []const []con
             }
         }
         assert(self.options_width != null);
-        const options_x = (ctx.scissor.width - self.options_width.?) / 2 + 1;
+        const options_x = (ctx.scissor.width_global - self.options_width.?) / 2 + 1;
 
         const options_scissor = ctx.scissor.initChild(
             @intCast(options_x - 1),

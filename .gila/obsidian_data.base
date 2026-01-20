@@ -32,10 +32,10 @@ views:
       - property: priority_value
         direction: ASC
     columnSize:
-      note.title: 538
+      note.title: 490
       note.priority: 73
-      note.priority_value: 77
-      note.tags: 96
+      note.priority_value: 59
+      note.tags: 148
       note.status: 71
       note.created: 178
   - type: table
@@ -51,5 +51,5 @@ views:
       - completed
     columnSize:
       note.title: 424
-      note.tags: 268
+      note.tags: 146
       note.completed: 212
