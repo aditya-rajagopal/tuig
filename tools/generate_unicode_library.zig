@@ -25,7 +25,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     try std.Io.Dir.cwd().copyFile("tools/export/types.zig", std.Io.Dir.cwd(), "src/unicode/types.zig", io, .{});
     try std.Io.Dir.cwd().copyFile("tools/export/root.zig", std.Io.Dir.cwd(), "src/unicode/root.zig", io, .{});
-    try std.Io.Dir.cwd().copyFile("tools/export/utf8.zig", std.Io.Dir.cwd(), "src/unicode/utf8.zig", io, .{});
+    try std.Io.Dir.cwd().copyFile("tools/export/UTF8Decoder.zig", std.Io.Dir.cwd(), "src/unicode/UTF8Decoder.zig", io, .{});
+    try std.Io.Dir.cwd().copyFile("tools/export/GraphemeIterator.zig", std.Io.Dir.cwd(), "src/unicode/GraphemeIterator.zig", io, .{});
 
     const table_time = try generatePropertyLookupTable(io, std.heap.page_allocator, "src/unicode/properties.zig", info);
     const grapheme_time = try generateGraphemeBreakLookupTable(io, std.heap.page_allocator, "src/unicode/grapheme_break.zig");

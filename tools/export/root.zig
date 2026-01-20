@@ -13,7 +13,8 @@ pub const GraphemeBoundryClass = types.GraphemeBoundryClass;
 pub const getProperty = @import("properties.zig").getProperty;
 pub const graphemeBreak = @import("grapheme_break.zig").graphemeBreak;
 
-pub const UTF8Decoder = @import("utf8.zig");
+pub const UTF8Decoder = @import("UTF8Decoder.zig");
+pub const GraphemeIterator = @import("GraphemeIterator.zig");
 
 const std = @import("std");
 test {
