@@ -1,4 +1,6 @@
 # 0.1.0
+- (2026-01-20) Added memory pool to renderer and ArenaAllocator based on the memory pool to Context
+- (2026-01-20) Added grapheme buffer, stdx.GrowingBuffers for cells, graphemes, and maps.
 - (2026-01-20) Added a very rudimentary grapheme iterator
 - (2026-01-18) Refactored to individual modules
 - (2026-01-15) Added RenderContext as well as handling of events within the renderer
