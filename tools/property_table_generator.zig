@@ -201,7 +201,7 @@ fn getWidth(
     }
 }
 
-pub fn getFromProperties(
+pub fn getGraphemeBoundryClas(
     cp: u21,
     emoji: t.Emoji,
     props: t.DerivedCoreProperties,
@@ -214,7 +214,7 @@ pub fn getFromProperties(
     } else if (emoji.Emoji_Modifier_Base) {
         assert(grapheme_break == .Other);
         assert(emoji.Extended_Pictographic);
-        return .extended_pictographic_base;
+        return .emoji_modifier_base;
     } else if (emoji.Extended_Pictographic) {
         assert(grapheme_break == .Other);
         return .extended_pictographic;
@@ -223,7 +223,7 @@ pub fn getFromProperties(
             .None => {
                 switch (grapheme_break) {
                     .Extend => {
-                        if (cp == zero_width_non_joiner) return .extend else {
+                        if (cp == zero_width_non_joiner) return .zwnj else {
                             std.log.err("Invalid grapheme break 0x{x} with `Extend` GraphemeBreakProperty and None InCB", .{cp});
                             unreachable;
                         }
@@ -246,16 +246,16 @@ pub fn getFromProperties(
                     return .zwj;
                 } else {
                     assert(grapheme_break == .Extend);
-                    return .extend;
+                    return .InCB_extend;
                 }
             },
             .Consonant => {
                 assert(grapheme_break == .Other);
-                return .invalid;
+                return .InCB_consonant;
             },
             .Linker => {
                 assert(grapheme_break == .Extend);
-                return .extend;
+                return .InCB_linker;
             },
         }
     }
@@ -269,6 +269,6 @@ pub fn getProperty(
     assert(cp <= max_codepoint);
     return .{
         .width = getWidth(cp, data),
-        .grapheme_boundary_class = getFromProperties(cp, data.emoji, data.derived_core_properties, data.grapheme_break),
+        .grapheme_boundary_class = getGraphemeBoundryClas(cp, data.emoji, data.derived_core_properties, data.grapheme_break),
     };
 }

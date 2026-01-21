@@ -22,7 +22,7 @@ const Codepoint = packed struct(u32) {
     codepoint: u21 = 0,
     prop: t.Property = .{},
     bytes: u3 = 0,
-    _: u2 = 0,
+    _: u1 = 0,
 };
 
 pub const empty: GraphemeIterator = .{ .text = &.{}, .i = 0, .cursor = .{} };
@@ -90,7 +90,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidS
     var width: u16 = 0;
     var consumed: usize = 0;
     var prev: GraphemeBoundryClass = .invalid;
-    var state: t.GraphemeBreakState = .{};
+    var state: t.GraphemeBreakState = .default;
     var i: usize = 0;
     defer self.i += consumed;
 

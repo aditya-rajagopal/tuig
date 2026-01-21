@@ -6,9 +6,12 @@ pub const max_codepoint = 0x10FFFF;
 pub const zero_width_joiner = 0x200D;
 pub const zero_width_non_joiner = 0x200C;
 
-pub const GraphemeBreakState = packed struct(u2) {
-    extended_pictographic: bool = false,
-    regional_indicator: bool = false,
+pub const GraphemeBreakState = enum(u3) {
+    default,
+    regional_indicator,
+    extended_pictographic,
+    InCB_consonant,
+    InCB_linker,
 };
 
 pub const GraphemeBreakTestResult = packed struct {
@@ -16,13 +19,14 @@ pub const GraphemeBreakTestResult = packed struct {
     state: GraphemeBreakState,
 };
 
-pub const GraphemeBreakCombination = packed struct(u10) {
+pub const GraphemeBreakCombination = packed struct(u13) {
     state: GraphemeBreakState,
     gbc1: GraphemeBoundryClass,
     gbc2: GraphemeBoundryClass,
 
     pub fn asUsize(self: @This()) usize {
-        return @intCast(@as(u10, @bitCast(self)));
+        const classes = std.meta.fields(GraphemeBoundryClass).len;
+        return @intFromEnum(self.state) * classes * classes + @intFromEnum(self.gbc1) * classes + @intFromEnum(self.gbc2);
     }
 };
 
@@ -39,16 +43,15 @@ pub const Property = packed struct {
     }
 };
 
-// Reference:
-// https://github.com/ghostty-org/ghostty/blob/2fd3efd6cdf0629f57572af58dff0ae9115ce919/src/unicode/props.zig#L50
-pub const GraphemeBoundryClass = enum(u4) {
+// Reference: LICENSE(MIT)
+// https://github.com/jacobsandlund/uucode/blob/ad6f8813b9163bfc93626ebbc0f1023e11c51de7/src/x/types_x/grapheme.zig
+pub const GraphemeBoundryClass = enum(u5) {
     // We will not need these as we can premeturely discard them
     // CR,
     // LF,
     // Control,
     invalid,
     prepend,
-    extend,
     regional_indicator,
     spacing_mark,
     L,
@@ -57,14 +60,61 @@ pub const GraphemeBoundryClass = enum(u4) {
     LV,
     LVT,
     zwj,
+    zwnj,
     extended_pictographic,
-    extended_pictographic_base, // \p{ExtendedPictographic} & \p{Emoji_Modifier_Base}
-    emoji_modifier, // \p{Emoji_Modifier}
+    emoji_modifier_base,
+    emoji_modifier,
+    InCB_extend,
+    InCB_linker,
+    InCB_consonant,
+
+    /// Check if the break class is a valid class to continue an extended pictograph
+    pub fn isValidExtendedPictographic(self: GraphemeBoundryClass) bool {
+        return switch (self) {
+            .zwj,
+            .extended_pictographic,
+            .emoji_modifier,
+            .emoji_modifier_base,
+            .zwnj,
+            .InCB_extend,
+            .InCB_linker,
+            => return true,
+            else => return false,
+        };
+    }
+
+    pub fn isValidIndic(self: GraphemeBoundryClass) bool {
+        return switch (self) {
+            .zwj, // This is the same as indic_conjunct_break_extend
+            .InCB_extend,
+            .InCB_linker,
+            .InCB_consonant,
+            => return true,
+            else => return false,
+        };
+    }
+
+    /// Check if this class can extend an indic sequence
+    pub fn isIndicExtend(self: GraphemeBoundryClass) bool {
+        return switch (self) {
+            .zwj,
+            .InCB_extend,
+            => return true,
+            else => return false,
+        };
+    }
 
     pub fn isExtendedPictographic(self: GraphemeBoundryClass) bool {
-        switch (self) {
-            .extended_pictographic, .extended_pictographic_base => return true,
+        return switch (self) {
+            .extended_pictographic, .emoji_modifier_base => return true,
             else => return false,
-        }
+        };
+    }
+
+    pub fn isExtention(self: GraphemeBoundryClass) bool {
+        return switch (self) {
+            .zwnj, .InCB_extend, .InCB_linker => return true,
+            else => return false,
+        };
     }
 };
