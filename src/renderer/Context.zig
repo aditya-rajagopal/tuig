@@ -6,14 +6,16 @@ const KeyEvent = term.KeyEvent;
 const MouseEvent = term.MouseEvent;
 const ResizeEvent = term.ResizeEvent;
 
-const Scissor = @import("Scissor.zig");
 const t = @import("types.zig");
 const Position = t.Position;
 const MouseState = t.MouseState;
 
+const Scissor = @import("Scissor.zig");
+const MemoryPool = @import("Renderer.zig").MemoryPool;
+
 const Context = @This();
 
-frame_arena: *std.heap.ArenaAllocator = undefined,
+frame_arena: *MemoryPool.ArenaAllocator,
 events: []const Event = undefined,
 scissor: Scissor = undefined,
 key_pressed: ?KeyEvent = null,

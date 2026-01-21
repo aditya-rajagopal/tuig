@@ -1,20 +1,37 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const log = std.log.scoped(.tui);
-
+const stdx = @import("stdx");
 const term = @import("terminal");
 const Terminal = term.Terminal;
 const Event = term.Event;
 const KeyEvent = term.KeyEvent;
 const MouseEvent = term.MouseEvent;
 
-const t = @import("types.zig");
-const MouseState = t.MouseState;
+const Cell = @import("root.zig").Cell;
 const Context = @import("Context.zig");
 const FrameBuffer = @import("FrameBuffer.zig");
 const Scissor = @import("Scissor.zig");
-const Cell = @import("Cell.zig");
+const t = @import("types.zig");
+const MouseState = t.MouseState;
+
+const log = std.log.scoped(.tui);
+
+const Options = struct {
+    memory_pool: stdx.BufferPoolOptions,
+
+    pub const default = Options{
+        .memory_pool = .{
+            .block_size = stdx.MB(8),
+            .size_limit = 256,
+        },
+    };
+};
+
+const root = @import("root");
+const renderer_options: Options = if (@hasDecl(root, "renderer_options")) root.renderer_options else .default;
+
+pub const MemoryPool = stdx.BufferPoolExtra(renderer_options.memory_pool);
 
 const Renderer = @This();
 
@@ -23,42 +40,38 @@ render_buffer: *FrameBuffer,
 back_buffer: *FrameBuffer,
 terminal: *Terminal,
 redraw: bool = true,
-arena: std.heap.ArenaAllocator,
 mouse_x: u16 = 0,
 mouse_y: u16 = 0,
 current_mouse_down: MouseState = .{},
 previous_mouse_down: MouseState = .{},
+memory_pool: MemoryPool,
+arena: MemoryPool.ArenaAllocator,
 
-// @HACK this is temporary
-pub const max_cells = 640 * 480;
-
-pub fn init(self: *Renderer, terminal: *Terminal, allocator: Allocator, arena_preheat: ?usize) error{OutOfMemory}!void {
-    self.buffers[0] = try FrameBuffer.init(allocator, terminal.size.width, terminal.size.height, max_cells);
-    self.buffers[1] = try FrameBuffer.init(allocator, terminal.size.width, terminal.size.height, max_cells);
+pub fn init(self: *Renderer, terminal: *Terminal, options: FrameBuffer.Options) error{ OutOfMemory, ReserveFailed }!void {
+    self.buffers[0] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
+    self.buffers[1] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
     self.render_buffer = &self.buffers[0];
     self.back_buffer = &self.buffers[1];
     self.render_buffer.clear();
     self.back_buffer.clear();
     self.redraw = true;
     self.terminal = terminal;
-    self.arena = std.heap.ArenaAllocator.init(allocator);
-    if (arena_preheat) |n| {
-        _ = try self.arena.allocator().alloc(u8, n);
-        _ = self.arena.reset(.retain_capacity);
-    }
     self.current_mouse_down = .{};
     self.previous_mouse_down = .{};
+    self.memory_pool = try MemoryPool.init();
+    self.arena = MemoryPool.ArenaAllocator.init(&self.memory_pool);
 
     terminal.clearScreen() catch {};
 }
 
-pub fn deinit(self: *Renderer, allocator: Allocator) void {
+pub fn deinit(self: *Renderer) void {
     self.terminal.clearScreen() catch {};
-    self.buffers[0].deinit(allocator);
-    self.buffers[1].deinit(allocator);
+    self.buffers[0].deinit();
+    self.buffers[1].deinit();
+    self.arena.deinit();
 }
 
-pub fn beginFrame(self: *Renderer, events: []const Event) Context {
+pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Context {
     var ctx: Context = .{
         .frame_arena = &self.arena,
         .events = events,
@@ -115,13 +128,13 @@ pub fn beginFrame(self: *Renderer, events: []const Event) Context {
             },
             .resize => |resize| {
                 ctx.resize = resize;
-                const new_cells = resize.width * resize.height;
-                if (new_cells > max_cells) {
+                const new_cells = @as(usize, resize.width) * @as(usize, resize.height);
+                if (new_cells > self.buffers[0].cells.max_elements_count) {
                     log.err("Resized to too large a size", .{});
-                    return;
+                    return error.OutOfMemory;
                 }
-                self.buffers[0].cells.len = new_cells;
-                self.buffers[1].cells.len = new_cells;
+                try self.buffers[0].cells.ensureTotalCapacity(new_cells);
+                try self.buffers[1].cells.ensureTotalCapacity(new_cells);
                 self.buffers[0].width = resize.width;
                 self.buffers[0].height = resize.height;
                 self.buffers[1].width = resize.width;
@@ -154,7 +167,7 @@ pub fn endFrame(self: *Renderer) void {
     if (self.redraw) {
         for (0..self.render_buffer.height) |row| {
             self.terminal.setCursorPosition(0, @truncate(row)) catch {};
-            const unicode_row = self.render_buffer.cells[row * self.render_buffer.width ..][0..self.render_buffer.width];
+            const unicode_row = self.render_buffer.cells.reserved_pages[row * self.render_buffer.width ..][0..self.render_buffer.width];
             for (unicode_row) |cell| {
                 var buf: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch continue;
@@ -170,11 +183,11 @@ pub fn endFrame(self: *Renderer) void {
             var col: u16 = 0;
             while (col < self.render_buffer.width) {
                 var start: u32 = row_start + col;
-                while (start < row_end and self.back_buffer.cells[start].eql(self.render_buffer.cells[start])) : (start += 1) {}
+                while (start < row_end and self.back_buffer.cells.reserved_pages[start].eql(self.render_buffer.cells.reserved_pages[start])) : (start += 1) {}
                 var end: u32 = start;
-                while (end < row_end and !self.back_buffer.cells[end].eql(self.render_buffer.cells[end])) : (end += 1) {}
+                while (end < row_end and !self.back_buffer.cells.reserved_pages[end].eql(self.render_buffer.cells.reserved_pages[end])) : (end += 1) {}
                 self.terminal.setCursorPosition(@truncate(start - row_start), @truncate(row)) catch {};
-                const unicode_row = self.render_buffer.cells[start..end];
+                const unicode_row = self.render_buffer.cells.reserved_pages[start..end];
                 for (unicode_row) |cell| {
                     var buf: [4]u8 = undefined;
                     const len = std.unicode.utf8Encode(cell.codepoint, &buf) catch unreachable;
@@ -186,7 +199,7 @@ pub fn endFrame(self: *Renderer) void {
     }
     self.terminal.flush() catch {};
     self.swapBuffers();
-    _ = self.arena.reset(.retain_capacity);
+    self.arena.reset();
     self.previous_mouse_down = self.current_mouse_down;
 }
 
@@ -216,40 +229,27 @@ test "Cell.eql works with unicode codepoints" {
     try std.testing.expect(!emoji1.eql(emoji3));
 }
 
-test "FrameBuffer.init allocates correct size" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
-
-    try std.testing.expectEqual(@as(u16, 10), fb.width);
-    try std.testing.expectEqual(@as(u16, 5), fb.height);
-    try std.testing.expectEqual(@as(usize, 50), fb.cells.len);
-}
-
-test "FrameBuffer.init with max_capacity allocates extra space" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, 100);
-    defer fb.deinit(allocator);
-
-    try std.testing.expectEqual(@as(usize, 100), fb.capacity);
-    try std.testing.expectEqual(@as(usize, 50), fb.cells.len);
-}
-
 test "FrameBuffer.set writes cell at correct position" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 100,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.set(3, 2, Cell{ .codepoint = 'X' });
-
-    // Position (3, 2) = index 2 * 10 + 3 = 23
-    try std.testing.expectEqual(@as(u21, 'X'), fb.cells[23].codepoint);
+    try std.testing.expectEqual(@as(u21, 'X'), fb.cells.reserved_pages[23].codepoint);
 }
 
 test "FrameBuffer.clear fills with spaces" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 5, 3, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 100,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     // Set some cells first
     fb.set(0, 0, Cell{ .codepoint = 'A' });
@@ -258,15 +258,19 @@ test "FrameBuffer.clear fills with spaces" {
 
     fb.clear();
 
-    for (fb.cells) |cell| {
+    for (fb.cells.reserved_pages[0 .. fb.width * fb.height]) |cell| {
         try std.testing.expectEqual(@as(u21, ' '), cell.codepoint);
     }
 }
 
 test "Scissor.initChild creates correct child region" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 20, 10, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(20, 10, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     const parent = Scissor{
         .x_global = 5,
@@ -286,9 +290,13 @@ test "Scissor.initChild creates correct child region" {
 }
 
 test "Scissor.fill fills entire scissor region" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -308,18 +316,22 @@ test "Scissor.fill fills entire scissor region" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 2 and x < 6 and y >= 1 and y < 3) '#' else ' ';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }
 
 test "Scissor.clear fills with spaces" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     // Fill buffer with non-space chars
-    @memset(fb.cells, Cell{ .codepoint = 'X' });
+    @memset(fb.cells.reserved_pages, Cell{ .codepoint = 'X' });
 
     const scissor = Scissor{
         .x_global = 1,
@@ -335,15 +347,19 @@ test "Scissor.clear fills with spaces" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 1 and x < 4 and y >= 1 and y < 3) ' ' else 'X';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }
 
 test "Scissor.fillRectangle fills partial region" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -361,15 +377,19 @@ test "Scissor.fillRectangle fills partial region" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 2 and x < 5 and y >= 1 and y < 3) '*' else ' ';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }
 
 test "Scissor.fillRectangle clips to buffer bounds" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -388,15 +408,19 @@ test "Scissor.fillRectangle clips to buffer bounds" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 8 and y >= 3) '+' else ' ';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }
 
 test "Scissor.fillRectangle returns early for zero dimensions" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -408,21 +432,22 @@ test "Scissor.fillRectangle returns early for zero dimensions" {
         .buffer = &fb,
     };
 
-    // Zero width
     scissor.fillRectangle(0, 0, 0, 5, Cell{ .codepoint = 'X' });
-    // Zero height
     scissor.fillRectangle(0, 0, 5, 0, Cell{ .codepoint = 'X' });
 
-    // Nothing should change
-    for (fb.cells) |cell| {
+    for (fb.cells.reserved_pages[0 .. fb.width * fb.height]) |cell| {
         try std.testing.expectEqual(@as(u21, ' '), cell.codepoint);
     }
 }
 
 test "Scissor.renderLineDelimiter renders text" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 20, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(20, 10, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -438,18 +463,21 @@ test "Scissor.renderLineDelimiter renders text" {
 
     try std.testing.expectEqual(@as(usize, 5), consumed);
 
-    // Check "Hello" at position (2, 1)
-    try std.testing.expectEqual(@as(u21, 'H'), fb.cells[1 * 20 + 2].codepoint);
-    try std.testing.expectEqual(@as(u21, 'e'), fb.cells[1 * 20 + 3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'l'), fb.cells[1 * 20 + 4].codepoint);
-    try std.testing.expectEqual(@as(u21, 'l'), fb.cells[1 * 20 + 5].codepoint);
-    try std.testing.expectEqual(@as(u21, 'o'), fb.cells[1 * 20 + 6].codepoint);
+    try std.testing.expectEqual(@as(u21, 'H'), fb.cells.reserved_pages[1 * 20 + 2].codepoint);
+    try std.testing.expectEqual(@as(u21, 'e'), fb.cells.reserved_pages[1 * 20 + 3].codepoint);
+    try std.testing.expectEqual(@as(u21, 'l'), fb.cells.reserved_pages[1 * 20 + 4].codepoint);
+    try std.testing.expectEqual(@as(u21, 'l'), fb.cells.reserved_pages[1 * 20 + 5].codepoint);
+    try std.testing.expectEqual(@as(u21, 'o'), fb.cells.reserved_pages[1 * 20 + 6].codepoint);
 }
 
 test "Scissor.renderLineDelimiter stops at delimiter" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 20, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -465,16 +493,20 @@ test "Scissor.renderLineDelimiter stops at delimiter" {
 
     try std.testing.expectEqual(@as(usize, 4), consumed); // "foo\n"
 
-    try std.testing.expectEqual(@as(u21, 'f'), fb.cells[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'o'), fb.cells[1].codepoint);
-    try std.testing.expectEqual(@as(u21, 'o'), fb.cells[2].codepoint);
-    try std.testing.expectEqual(@as(u21, ' '), fb.cells[3].codepoint); // Not overwritten
+    try std.testing.expectEqual(@as(u21, 'f'), fb.cells.reserved_pages[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'o'), fb.cells.reserved_pages[1].codepoint);
+    try std.testing.expectEqual(@as(u21, 'o'), fb.cells.reserved_pages[2].codepoint);
+    try std.testing.expectEqual(@as(u21, ' '), fb.cells.reserved_pages[3].codepoint); // Not overwritten
 }
 
 test "Scissor.renderLineDelimiter clips to scissor width" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 20, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -489,18 +521,22 @@ test "Scissor.renderLineDelimiter clips to scissor width" {
     _ = scissor.renderLineDelimiter(0, 0, "Hello World", null, false);
 
     // Only "Hello" should be rendered (5 chars)
-    try std.testing.expectEqual(@as(u21, 'H'), fb.cells[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'e'), fb.cells[1].codepoint);
-    try std.testing.expectEqual(@as(u21, 'l'), fb.cells[2].codepoint);
-    try std.testing.expectEqual(@as(u21, 'l'), fb.cells[3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'o'), fb.cells[4].codepoint);
-    try std.testing.expectEqual(@as(u21, ' '), fb.cells[5].codepoint); // Beyond scissor
+    try std.testing.expectEqual(@as(u21, 'H'), fb.cells.reserved_pages[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'e'), fb.cells.reserved_pages[1].codepoint);
+    try std.testing.expectEqual(@as(u21, 'l'), fb.cells.reserved_pages[2].codepoint);
+    try std.testing.expectEqual(@as(u21, 'l'), fb.cells.reserved_pages[3].codepoint);
+    try std.testing.expectEqual(@as(u21, 'o'), fb.cells.reserved_pages[4].codepoint);
+    try std.testing.expectEqual(@as(u21, ' '), fb.cells.reserved_pages[5].codepoint); // Beyond scissor
 }
 
 test "Scissor.renderLineDelimiter returns 0 for out of bounds" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     const scissor = Scissor{
         .x_global = 0,
@@ -510,16 +546,18 @@ test "Scissor.renderLineDelimiter returns 0 for out of bounds" {
         .buffer = &fb,
     };
 
-    // offset_x beyond width
     try std.testing.expectEqual(@as(usize, 0), scissor.renderLineDelimiter(15, 0, "test", null, false));
-    // offset_y beyond height
     try std.testing.expectEqual(@as(usize, 0), scissor.renderLineDelimiter(0, 10, "test", null, false));
 }
 
 test "Scissor.renderLineDelimiter handles unicode" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 20, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -533,143 +571,19 @@ test "Scissor.renderLineDelimiter handles unicode" {
 
     _ = scissor.renderLineDelimiter(0, 0, "日本語", null, false);
 
-    try std.testing.expectEqual(@as(u21, '日'), fb.cells[0].codepoint);
-    try std.testing.expectEqual(@as(u21, '本'), fb.cells[1].codepoint);
-    try std.testing.expectEqual(@as(u21, '語'), fb.cells[2].codepoint);
-}
-
-test "Scissor.blitFrom copies source buffer" {
-    const allocator = std.testing.allocator;
-    var dest_fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer dest_fb.deinit(allocator);
-    var src_fb = try FrameBuffer.init(allocator, 3, 2, null);
-    defer src_fb.deinit(allocator);
-
-    dest_fb.clear();
-
-    // Fill source with pattern
-    src_fb.set(0, 0, Cell{ .codepoint = 'A' });
-    src_fb.set(1, 0, Cell{ .codepoint = 'B' });
-    src_fb.set(2, 0, Cell{ .codepoint = 'C' });
-    src_fb.set(0, 1, Cell{ .codepoint = 'D' });
-    src_fb.set(1, 1, Cell{ .codepoint = 'E' });
-    src_fb.set(2, 1, Cell{ .codepoint = 'F' });
-
-    const scissor = Scissor{
-        .x_global = 0,
-        .y_global = 0,
-        .width_global = 10,
-        .height_global = 5,
-        .buffer = &dest_fb,
-    };
-
-    scissor.blitFrom(&src_fb, 2, 1);
-
-    // Check source was copied to (2, 1)
-    try std.testing.expectEqual(@as(u21, 'A'), dest_fb.cells[1 * 10 + 2].codepoint);
-    try std.testing.expectEqual(@as(u21, 'B'), dest_fb.cells[1 * 10 + 3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'C'), dest_fb.cells[1 * 10 + 4].codepoint);
-    try std.testing.expectEqual(@as(u21, 'D'), dest_fb.cells[2 * 10 + 2].codepoint);
-    try std.testing.expectEqual(@as(u21, 'E'), dest_fb.cells[2 * 10 + 3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'F'), dest_fb.cells[2 * 10 + 4].codepoint);
-
-    // Check rest is still spaces
-    try std.testing.expectEqual(@as(u21, ' '), dest_fb.cells[0].codepoint);
-    try std.testing.expectEqual(@as(u21, ' '), dest_fb.cells[1 * 10 + 0].codepoint);
-}
-
-test "Scissor.blitFrom clips at destination bounds" {
-    const allocator = std.testing.allocator;
-    var dest_fb = try FrameBuffer.init(allocator, 5, 3, null);
-    defer dest_fb.deinit(allocator);
-    var src_fb = try FrameBuffer.init(allocator, 4, 4, null);
-    defer src_fb.deinit(allocator);
-
-    dest_fb.clear();
-
-    // Fill source
-    for (0..4) |y| {
-        for (0..4) |x| {
-            src_fb.set(@intCast(x), @intCast(y), Cell{ .codepoint = 'X' });
-        }
-    }
-
-    const scissor = Scissor{
-        .x_global = 0,
-        .y_global = 0,
-        .width_global = 5,
-        .height_global = 3,
-        .buffer = &dest_fb,
-    };
-
-    // Blit at position (3, 1) - will clip to destination bounds
-    scissor.blitFrom(&src_fb, 3, 1);
-
-    // Only positions (3,1), (4,1), (3,2), (4,2) should be filled
-    try std.testing.expectEqual(@as(u21, ' '), dest_fb.cells[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'X'), dest_fb.cells[1 * 5 + 3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'X'), dest_fb.cells[1 * 5 + 4].codepoint);
-    try std.testing.expectEqual(@as(u21, 'X'), dest_fb.cells[2 * 5 + 3].codepoint);
-    try std.testing.expectEqual(@as(u21, 'X'), dest_fb.cells[2 * 5 + 4].codepoint);
-}
-
-test "Scissor.blitFrom returns early for out of bounds offset" {
-    const allocator = std.testing.allocator;
-    var dest_fb = try FrameBuffer.init(allocator, 5, 3, null);
-    defer dest_fb.deinit(allocator);
-    var src_fb = try FrameBuffer.init(allocator, 2, 2, null);
-    defer src_fb.deinit(allocator);
-
-    dest_fb.clear();
-    @memset(src_fb.cells, Cell{ .codepoint = 'X' });
-
-    const scissor = Scissor{
-        .x_global = 0,
-        .y_global = 0,
-        .width_global = 5,
-        .height_global = 3,
-        .buffer = &dest_fb,
-    };
-
-    // Offset beyond scissor bounds
-    scissor.blitFrom(&src_fb, 10, 0);
-    scissor.blitFrom(&src_fb, 0, 10);
-
-    // Nothing should change
-    for (dest_fb.cells) |cell| {
-        try std.testing.expectEqual(@as(u21, ' '), cell.codepoint);
-    }
-}
-
-test "Scissor.blitFrom handles empty source" {
-    const allocator = std.testing.allocator;
-    var dest_fb = try FrameBuffer.init(allocator, 5, 3, null);
-    defer dest_fb.deinit(allocator);
-    var src_fb = try FrameBuffer.init(allocator, 0, 0, null);
-    defer src_fb.deinit(allocator);
-
-    @memset(dest_fb.cells, Cell{ .codepoint = 'Y' });
-
-    const scissor = Scissor{
-        .x_global = 0,
-        .y_global = 0,
-        .width_global = 5,
-        .height_global = 3,
-        .buffer = &dest_fb,
-    };
-
-    scissor.blitFrom(&src_fb, 0, 0);
-
-    // Nothing should change
-    for (dest_fb.cells) |cell| {
-        try std.testing.expectEqual(@as(u21, 'Y'), cell.codepoint);
-    }
+    try std.testing.expectEqual(@as(u21, '日'), fb.cells.reserved_pages[0].codepoint);
+    try std.testing.expectEqual(@as(u21, '本'), fb.cells.reserved_pages[1].codepoint);
+    try std.testing.expectEqual(@as(u21, '語'), fb.cells.reserved_pages[2].codepoint);
 }
 
 test "Scissor with negative global coordinates handles fillRectangle" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -692,15 +606,19 @@ test "Scissor with negative global coordinates handles fillRectangle" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x < 4 and y < 3) '#' else ' ';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }
 
 test "Scissor.fillRectangle uses optimized memset for full-width rows" {
-    const allocator = std.testing.allocator;
-    var fb = try FrameBuffer.init(allocator, 10, 5, null);
-    defer fb.deinit(allocator);
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
 
     fb.clear();
 
@@ -720,7 +638,7 @@ test "Scissor.fillRectangle uses optimized memset for full-width rows" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (y >= 1 and y < 3) '=' else ' ';
-            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
         }
     }
 }

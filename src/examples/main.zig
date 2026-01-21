@@ -19,9 +19,6 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) nor
 }
 
 pub fn main(_: std.process.Init.Minimal) void {
-    // var threaded = std.Io.Threaded.init_single_threaded;
-    // const io = threaded.ioBasic();
-
     var write_buffer: [4096]u8 align(4096) = undefined;
     var config: TerminalConfig = .tui_default;
     config.cursor_visable = false;
@@ -33,7 +30,7 @@ pub fn main(_: std.process.Init.Minimal) void {
     defer terminal.deinit();
 
     var renderer: Renderer = undefined;
-    renderer.init(&terminal, std.heap.page_allocator, 1 * 1024 * 1024) catch {
+    renderer.init(&terminal, .default_screen) catch {
         log.err("Failed to initialize renderer", .{});
         return;
     };
@@ -49,7 +46,10 @@ pub fn main(_: std.process.Init.Minimal) void {
             return;
         };
 
-        const ctx = renderer.beginFrame(events);
+        const ctx = renderer.beginFrame(events) catch {
+            log.err("Failed to begin frame", .{});
+            return;
+        };
         defer renderer.endFrame();
 
         quit = app.updateAndRender(ctx);

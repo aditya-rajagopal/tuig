@@ -4,9 +4,9 @@ const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
 const FrameBuffer = @import("FrameBuffer.zig");
-const Cell = @import("Cell.zig");
+const Cell = @import("root.zig").Cell;
 
-const Scissor = @This();
+pub const Scissor = @This();
 
 x_global: i17,
 y_global: i17,
@@ -76,7 +76,7 @@ pub fn fillRow(self: Scissor, row: u16, cell: Cell) void {
 
     const start: usize = y * self.buffer.width + x_start;
     const end: usize = y * self.buffer.width + x_end;
-    @memset(self.buffer.cells[start..end], cell);
+    @memset(self.buffer.cells.reserved_pages[start..end], cell);
 }
 
 pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
@@ -118,11 +118,11 @@ pub fn fillRectangle(self: Scissor, x_offset: u16, y_offset: u16, width: u16, he
     if (start_x_int == 0 and end_x_int == self.buffer.width) {
         const start = start_y * self.buffer.width;
         const end = end_y * self.buffer.width;
-        @memset(self.buffer.cells[start..end], cell);
+        @memset(self.buffer.cells.reserved_pages[start..end], cell);
     } else {
         for (start_y..end_y) |row| {
             const start = row * self.buffer.width;
-            @memset(self.buffer.cells[start..][start_x..end_x], cell);
+            @memset(self.buffer.cells.reserved_pages[start..][start_x..end_x], cell);
         }
     }
 }
@@ -178,72 +178,4 @@ pub fn renderLineDelimiter(
 
 pub fn clear(self: Scissor) void {
     self.fill(.empty);
-}
-
-/// Copy cells from a source FrameBuffer to this scissor at the given offset.
-///
-/// Useful for compositing temporary render buffers into the main buffer.
-/// Handles clipping at scissor and buffer boundaries.
-pub fn blitFrom(self: Scissor, source: *const FrameBuffer, x_offset: u16, y_offset: u16) void {
-    if (x_offset >= self.width_global or y_offset >= self.height_global) return;
-    if (source.width == 0 or source.height == 0) return;
-
-    const dest_x_start: i17 = self.x_global + @as(i17, x_offset);
-    const dest_y_start: i17 = self.y_global + @as(i17, y_offset);
-
-    // Early exit if completely outside buffer
-    if (dest_x_start >= self.buffer.width) return;
-    if (dest_y_start >= self.buffer.height) return;
-
-    // Calculate clipped region
-    const copy_width: u16 = @min(source.width, self.width_global - x_offset);
-    const copy_height: u16 = @min(source.height, self.height_global - y_offset);
-
-    // Calculate source start offset (for negative dest coordinates)
-    var src_x_start: u16 = 0;
-    var src_y_start: u16 = 0;
-    var actual_dest_x: u16 = undefined;
-    var actual_dest_y: u16 = undefined;
-
-    if (dest_x_start < 0) {
-        src_x_start = @intCast(-dest_x_start);
-        actual_dest_x = 0;
-    } else {
-        actual_dest_x = @intCast(dest_x_start);
-    }
-
-    if (dest_y_start < 0) {
-        src_y_start = @intCast(-dest_y_start);
-        actual_dest_y = 0;
-    } else {
-        actual_dest_y = @intCast(dest_y_start);
-    }
-
-    // Calculate actual copy dimensions after clipping
-    const actual_copy_width = copy_width -| src_x_start;
-    const actual_copy_height = copy_height -| src_y_start;
-
-    if (actual_copy_width == 0 or actual_copy_height == 0) return;
-
-    // Clip to destination buffer bounds
-    const final_width = @min(actual_copy_width, self.buffer.width - actual_dest_x);
-    const final_height = @min(actual_copy_height, self.buffer.height - actual_dest_y);
-
-    // Copy row by row
-    for (0..final_height) |row| {
-        const src_row = src_y_start + @as(u16, @intCast(row));
-        const dest_row = actual_dest_y + @as(u16, @intCast(row));
-
-        if (src_row >= source.height or dest_row >= self.buffer.height) break;
-
-        const src_start = @as(usize, src_row) * source.width + src_x_start;
-        const dest_start = @as(usize, dest_row) * self.buffer.width + actual_dest_x;
-
-        const src_end = src_start + final_width;
-        const dest_end = dest_start + final_width;
-
-        if (src_end <= source.cells.len and dest_end <= self.buffer.cells.len) {
-            @memcpy(self.buffer.cells[dest_start..dest_end], source.cells[src_start..src_end]);
-        }
-    }
 }
