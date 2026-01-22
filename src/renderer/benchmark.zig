@@ -15,6 +15,11 @@ const BenchmarkMode = enum(u8) {
     fixed_scissor = 2,
 };
 
+const Function = enum(u8) {
+    print = 0,
+    assume_no_grapheme = 1,
+};
+
 /// Benchmark configuration
 const Config = struct {
     iterations: usize = 10000,
@@ -24,6 +29,7 @@ const Config = struct {
     buffer_height: u16 = 128,
     chunk_size: usize = 4096,
     print: bool = false,
+    function: Function = .print,
 };
 
 /// Statistics collected during benchmark
@@ -55,6 +61,15 @@ pub fn main(init: std.process.Init) !void {
 
     if (args.len > 3) {
         config.print = true;
+    }
+
+    if (args.len > 4) {
+        const function = std.fmt.parseInt(u8, args[4], 10) catch 0;
+        config.function = switch (function) {
+            0 => .print,
+            1 => .assume_no_grapheme,
+            else => .print,
+        };
     }
 
     var buffer: [4096]u8 align(std.atomic.cache_line) = undefined;
@@ -201,9 +216,11 @@ fn runBenchmark(text: []const u8, config: Config) !BenchmarkResult {
 
         var codepoint_buffer: [64]u21 = undefined;
         var timer = try std.time.Timer.start();
-        const result = scissor.print(&codepoint_buffer, chunk, start_x, start_y, options) catch {
-            unreachable;
-        };
+        const result = if (config.function == .print)
+            scissor.print(&codepoint_buffer, chunk, start_x, start_y, options) catch unreachable
+        else
+            scissor.printAssumeNoGrapheme(chunk, start_x, start_y, options);
+
         elapsed_ns += timer.read();
 
         stats.total_graphemes += result.graphemes_rendered;

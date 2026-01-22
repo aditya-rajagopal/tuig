@@ -9,6 +9,8 @@ const GraphemeIterator = @import("unicode").GraphemeIterator;
 const Context = @import("Context.zig");
 const t = @import("types.zig");
 const Position = t.Position;
+const UTF8Decoder = @import("unicode").UTF8Decoder;
+const getProperty = @import("unicode").getProperty;
 
 pub const Scissor = @This();
 
@@ -220,15 +222,15 @@ pub fn print(
     self: Scissor,
     codepoint_buffer: []u21,
     text: []const u8,
-    start_x: u16,
-    start_y: u16,
+    x: u16,
+    y: u16,
     options: PrintOptions,
 ) PrintError!PrintResult {
     var result = PrintResult{
         .bytes_consumed = 0,
         .lines_used = 0,
-        .final_x = start_x,
-        .final_y = start_y,
+        .final_x = x,
+        .final_y = y,
         .graphemes_rendered = 0,
     };
 
@@ -241,10 +243,11 @@ pub fn print(
         return result;
     }
 
-    var cursor_x: u16 = start_x;
-    var cursor_y: u16 = start_y;
+    var cursor_x: u16 = x;
+    var cursor_y: u16 = y;
 
     var iter = GraphemeIterator.init(text) catch return result; // Empty input, return zeros
+
     while (iter.next(codepoint_buffer)) |grapheme_result| : (cursor_x += grapheme_result.width) {
         result.bytes_consumed += grapheme_result.bytes.len;
         if (cursor_x >= self.width_global) {
@@ -293,20 +296,13 @@ pub fn print(
                 const remaining_columns = self.width_global - cursor_x;
                 spaces_to_tab = @min(remaining_columns, spaces_to_tab);
 
-                // Render each space
                 for (0..spaces_to_tab) |_| {
-                    // Render space if within visible bounds
                     const x_global: i17 = self.x_global + @as(i17, cursor_x);
 
                     if (x_global >= left_bound and x_global < right_bound and
                         y_global >= top_bound and y_global < bottom_bound)
                     {
-                        const space_cell = Cell{
-                            .codepoint = ' ',
-                            .tag = .codepoint,
-                            .width = .narrow,
-                        };
-                        self.buffer.set(@intCast(x_global), @intCast(y_global), space_cell);
+                        self.buffer.set(@intCast(x_global), @intCast(y_global), .empty);
                         result.graphemes_rendered += 1;
                     }
                     cursor_x += 1;
@@ -381,6 +377,198 @@ pub fn print(
     }
     result.final_x = cursor_x;
     result.final_y = cursor_y;
+    // lines_used tracks wraps during the loop; add 1 for the initial line if we rendered anything
+    if (result.graphemes_rendered > 0) {
+        result.lines_used += 1;
+        const y_global: i17 = self.y_global + cursor_y;
+        if (y_global >= bottom_bound) {
+            result.lines_used -= 1;
+        }
+    }
+
+    return result;
+}
+
+/// IMPORTANT: Caller guarantees text contains only single-codepoint characters.
+/// Multi-codepoint graphemes (combining marks, emoji sequences, ZWJ) will render
+/// incorrectly - use `Scissor.print()` for arbitrary Unicode text.
+///
+/// This is usually about 2x faster than `Scissor.print()` for simple text.
+pub fn printAssumeNoGrapheme(
+    self: Scissor,
+    text: []const u8,
+    x: u16,
+    y: u16,
+    options: PrintOptions,
+) PrintResult {
+    var result = PrintResult{
+        .bytes_consumed = 0,
+        .lines_used = 0,
+        .final_x = x,
+        .final_y = y,
+        .graphemes_rendered = 0,
+    };
+
+    const left_bound: i17 = @max(self.x_global, 0);
+    const right_bound: i17 = @min(self.x_global + self.width_global, @as(i17, self.buffer.width));
+    const top_bound: i17 = @max(self.y_global, 0);
+    const bottom_bound: i17 = @min(self.y_global + self.height_global, @as(i17, self.buffer.height));
+    if (right_bound <= left_bound or bottom_bound <= top_bound or right_bound <= 0 or bottom_bound <= 0) {
+        // Scissor is outside of buffer bounds
+        return result;
+    }
+
+    var cursor_x: u16 = x;
+    var cursor_y: u16 = y;
+
+    var utf8: UTF8Decoder = .start;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        const codepoint_opt, const consumed = utf8.decode(text[i]);
+
+        // Handle invalid UTF-8
+        const codepoint = if (!consumed) blk: {
+            @branchHint(.unlikely);
+            assert(codepoint_opt != null and codepoint_opt.? == 0xFFFD);
+            // Don't increment bytes_consumed here - the byte wasn't consumed.
+            // The replacement character is for the incomplete sequence, and
+            // this byte will be re-processed as the start of a new sequence.
+            break :blk @as(u21, 0xFFFD);
+        } else blk: {
+            i += 1;
+            result.bytes_consumed += 1;
+            if (codepoint_opt) |cp| {
+                break :blk cp;
+            } else {
+                continue;
+            }
+        };
+
+        if (cursor_x >= self.width_global) {
+            if (options.wrap) {
+                // Wrap to next line before rendering the wide char
+                cursor_x = 0;
+                cursor_y += 1;
+                result.lines_used += 1;
+            } else {
+                // No wrap: stop rendering
+                break;
+            }
+        }
+
+        switch (codepoint) {
+            '\n' => {
+                cursor_x = 0;
+                cursor_y += 1;
+                result.lines_used += 1;
+                continue;
+            },
+            '\t' => {
+                var spaces_to_tab: u8 = if (options.tab_width == 0)
+                    continue
+                else
+                    options.tab_width - @as(u8, @intCast(@mod(cursor_x, options.tab_width)));
+
+                const y_global: i17 = self.y_global + cursor_y;
+
+                if (y_global >= bottom_bound) {
+                    break;
+                }
+                const remaining_columns = self.width_global - cursor_x;
+                spaces_to_tab = @min(remaining_columns, spaces_to_tab);
+
+                for (0..spaces_to_tab) |_| {
+                    const x_global: i17 = self.x_global + @as(i17, cursor_x);
+
+                    if (x_global >= left_bound and x_global < right_bound and
+                        y_global >= top_bound and y_global < bottom_bound)
+                    {
+                        self.buffer.set(@intCast(x_global), @intCast(y_global), .empty);
+                        result.graphemes_rendered += 1;
+                    }
+                    cursor_x += 1;
+                }
+                continue;
+            },
+            0x00...0x08, // Except \t
+            0x0B...0x0C,
+            0x0E...0x1F, // C0 except LF (0x0A)
+            0x0D, // CR
+            0x7F, // DEL
+            0x80...0x9F, // C1
+            => {
+                continue;
+            },
+            else => {
+                @branchHint(.likely);
+            },
+        }
+
+        // Most commanly you will have ascii text that is 1 cell wide.
+        const width = if (codepoint <= 0x7F) 1 else getProperty(codepoint).width;
+
+        if (width == 0) {
+            continue;
+        } else if (width == 2 and self.width_global - cursor_x == 1) {
+            @branchHint(.unlikely);
+            if (options.wrap) {
+                cursor_x = 0;
+                cursor_y += 1;
+                result.lines_used += 1;
+            } else {
+                // ignore the wide character.
+                cursor_x += width;
+                continue;
+            }
+        }
+
+        const x_global: i17 = self.x_global + cursor_x;
+        const y_global: i17 = self.y_global + cursor_y;
+
+        if (x_global < left_bound or x_global >= right_bound or y_global < top_bound) {
+            @branchHint(.unlikely);
+            cursor_x += width;
+            continue;
+        }
+        if (y_global >= bottom_bound) {
+            @branchHint(.unlikely);
+            break;
+        }
+
+        const cell = Cell{
+            .codepoint = codepoint,
+            .tag = .codepoint,
+            .width = if (width == 2) .wide_start else .narrow,
+        };
+
+        self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
+
+        if (width == 2) {
+            @branchHint(.unlikely);
+            assert(x_global + 1 < self.width_global);
+            const second_x: i17 = x_global + 1;
+            assert(second_x < right_bound);
+            const end_cell = Cell{
+                .codepoint = ' ',
+                .tag = .codepoint,
+                .width = .wide_end,
+            };
+            self.buffer.set(@intCast(second_x), @intCast(y_global), end_cell);
+        }
+
+        result.graphemes_rendered += 1;
+        cursor_x += width;
+    }
+
+    // Finalize result
+    if (cursor_x >= self.width_global) {
+        cursor_x = 0;
+        cursor_y += 1;
+    }
+    result.final_x = cursor_x;
+    result.final_y = cursor_y;
+    result.bytes_consumed = i;
     // lines_used tracks wraps during the loop; add 1 for the initial line if we rendered anything
     if (result.graphemes_rendered > 0) {
         result.lines_used += 1;
@@ -1604,4 +1792,535 @@ test "print exact boundary - wide char fills last two cells" {
     try tc.expectCellAt(2, 0, 0x4E2D); // 中
     try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCellWidth(3, 0, .wide_end);
+}
+
+test "printAssumeNoGrapheme basic ASCII" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 0, .default);
+
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed);
+    try testing.expectEqual(@as(u16, 1), result.lines_used);
+    try testing.expectEqual(@as(u16, 5), result.final_x);
+    try testing.expectEqual(@as(u16, 0), result.final_y);
+    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
+
+    try tc.expectCellAt(0, 0, 'H');
+    try tc.expectCellAt(1, 0, 'e');
+    try tc.expectCellAt(2, 0, 'l');
+    try tc.expectCellAt(3, 0, 'l');
+    try tc.expectCellAt(4, 0, 'o');
+
+    // All should be narrow width
+    try tc.expectCellWidth(0, 0, .narrow);
+    try tc.expectCellWidth(4, 0, .narrow);
+}
+
+test "printAssumeNoGrapheme ASCII with offset" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "Hi", 3, 2, .default);
+
+    try testing.expectEqual(@as(usize, 2), result.bytes_consumed);
+    try testing.expectEqual(@as(u16, 5), result.final_x);
+    try testing.expectEqual(@as(u16, 2), result.final_y);
+
+    // Cells at offset should be set
+    try tc.expectCellAt(3, 2, 'H');
+    try tc.expectCellAt(4, 2, 'i');
+
+    // Original cells should still be space
+    try tc.expectCellAt(0, 0, ' ');
+    try tc.expectCellAt(2, 2, ' ');
+}
+
+test "printAssumeNoGrapheme ASCII truncates at right edge" {
+    var tc = try TestContext.init(5, 5);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .default);
+
+    // Should only render "Hello" (5 chars)
+    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result.lines_used);
+
+    try tc.expectCellAt(0, 0, 'H');
+    try tc.expectCellAt(1, 0, 'e');
+    try tc.expectCellAt(2, 0, 'l');
+    try tc.expectCellAt(3, 0, 'l');
+    try tc.expectCellAt(4, 0, 'o');
+}
+
+test "printAssumeNoGrapheme outside buffer returns early" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // Start below the buffer
+    const result = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 10, .default);
+
+    try testing.expectEqual(@as(usize, 0), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result.lines_used);
+}
+
+test "printAssumeNoGrapheme wraps at scissor edge" {
+    var tc = try TestContext.init(5, 3);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJ", 0, 0, .{ .wrap = true, .tab_width = 4 });
+
+    // Row 0: A B C D E
+    // Row 1: F G H I J
+    try testing.expectEqual(@as(usize, 10), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+    try testing.expectEqual(@as(u16, 0), result.final_x);
+    try testing.expectEqual(@as(u16, 2), result.final_y);
+
+    // Row 0
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(4, 0, 'E');
+
+    // Row 1
+    try tc.expectCellAt(0, 1, 'F');
+    try tc.expectCellAt(4, 1, 'J');
+}
+
+test "printAssumeNoGrapheme stops at bottom with wrap" {
+    var tc = try TestContext.init(5, 2);
+    defer tc.deinit();
+
+    // 15 chars but only 2 rows available (10 cells max)
+    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJKLMNO", 0, 0, .{ .wrap = true, .tab_width = 4 });
+
+    // Should only render 10 chars (2 lines of 5)
+    try testing.expectEqual(@as(usize, 10), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+
+    // Row 0
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(4, 0, 'E');
+
+    // Row 1
+    try tc.expectCellAt(0, 1, 'F');
+    try tc.expectCellAt(4, 1, 'J');
+}
+
+test "printAssumeNoGrapheme wrap disabled truncates" {
+    var tc = try TestContext.init(5, 3);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    // Should only render "Hello" (5 chars)
+    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result.lines_used);
+
+    try tc.expectCellAt(0, 0, 'H');
+    try tc.expectCellAt(4, 0, 'o');
+
+    // Row 1 should still be empty
+    try tc.expectCellAt(0, 1, ' ');
+}
+
+test "printAssumeNoGrapheme wrap with offset" {
+    var tc = try TestContext.init(5, 3);
+    defer tc.deinit();
+
+    // Start at x=3, so first line has 2 chars, then wrap
+    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFG", 3, 0, .{ .wrap = true, .tab_width = 4 });
+
+    // Row 0: _ _ _ A B
+    // Row 1: C D E F G
+    try testing.expectEqual(@as(usize, 7), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+    try testing.expectEqual(@as(u16, 0), result.final_x);
+    try testing.expectEqual(@as(u16, 2), result.final_y);
+
+    // Row 0
+    try tc.expectCellAt(3, 0, 'A');
+    try tc.expectCellAt(4, 0, 'B');
+
+    // Row 1
+    try tc.expectCellAt(0, 1, 'C');
+    try tc.expectCellAt(4, 1, 'G');
+}
+
+test "printAssumeNoGrapheme multiple wraps" {
+    var tc = try TestContext.init(3, 5);
+    defer tc.deinit();
+
+    // 9 chars, 3 chars per row, should use 3 rows
+    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHI", 0, 0, .{ .wrap = true, .tab_width = 4 });
+
+    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 3), result.lines_used);
+    try testing.expectEqual(@as(u16, 0), result.final_x);
+    try testing.expectEqual(@as(u16, 3), result.final_y);
+
+    // Row 0: A B C
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(2, 0, 'C');
+
+    // Row 1: D E F
+    try tc.expectCellAt(0, 1, 'D');
+    try tc.expectCellAt(2, 1, 'F');
+
+    // Row 2: G H I
+    try tc.expectCellAt(0, 2, 'G');
+    try tc.expectCellAt(2, 2, 'I');
+}
+
+test "printAssumeNoGrapheme handles newlines" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "AB\nCD", 0, 0, .default);
+
+    // Row 0: A B, Row 1: C D
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // "AB\nCD" = 5 bytes
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+    try testing.expectEqual(@as(usize, 4), result.graphemes_rendered); // A, B, C, D (newline not rendered)
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+    try testing.expectEqual(@as(u16, 1), result.final_y);
+
+    // Row 0
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+
+    // Row 1
+    try tc.expectCellAt(0, 1, 'C');
+    try tc.expectCellAt(1, 1, 'D');
+}
+
+test "printAssumeNoGrapheme multiple consecutive newlines" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\n\n\nB", 0, 0, .default);
+
+    // A on row 0, B on row 3
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed);
+    try testing.expectEqual(@as(u16, 4), result.lines_used); // 4 lines: 0, 1, 2, 3
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result.final_x);
+    try testing.expectEqual(@as(u16, 3), result.final_y);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(0, 3, 'B');
+
+    // Rows 1 and 2 should be empty
+    try tc.expectCellAt(0, 1, ' ');
+    try tc.expectCellAt(0, 2, ' ');
+}
+
+test "printAssumeNoGrapheme CRLF not combined" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // \r ignored, \n acts as newline
+    const result = printAssumeNoGrapheme(tc.scissor(), "AB\r\nCD", 0, 0, .default);
+
+    // Row 0: A B, Row 1: C D
+    try testing.expectEqual(@as(usize, 6), result.bytes_consumed); // "AB\r\nCD" = 6 bytes
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+    try testing.expectEqual(@as(usize, 4), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+    try testing.expectEqual(@as(u16, 1), result.final_y);
+
+    // Row 0
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+
+    // Row 1
+    try tc.expectCellAt(0, 1, 'C');
+    try tc.expectCellAt(1, 1, 'D');
+}
+
+test "printAssumeNoGrapheme newline stops at bottom" {
+    var tc = try TestContext.init(10, 2);
+    defer tc.deinit();
+
+    // Only 2 rows, but text has 3 lines
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\nB\nC", 0, 0, .default);
+
+    // Should render A and B, stop before C
+    try testing.expectEqual(@as(u16, 2), result.lines_used);
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(0, 1, 'B');
+}
+
+test "printAssumeNoGrapheme expands tabs" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // "A\tB" with tab_width=4
+    // A at 0, tab expands to spaces at 1,2,3, B at 4
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    try testing.expectEqual(@as(usize, 3), result.bytes_consumed); // A + \t + B
+    try testing.expectEqual(@as(u16, 1), result.lines_used);
+    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // A + 3 spaces + B
+    try testing.expectEqual(@as(u16, 5), result.final_x);
+    try testing.expectEqual(@as(u16, 0), result.final_y);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, ' '); // Tab space
+    try tc.expectCellAt(2, 0, ' '); // Tab space
+    try tc.expectCellAt(3, 0, ' '); // Tab space
+    try tc.expectCellAt(4, 0, 'B');
+}
+
+test "printAssumeNoGrapheme tab at tab stop" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // Start at column 4 (already at tab stop), tab should advance 4 spaces to column 8
+    const result = printAssumeNoGrapheme(tc.scissor(), "\tX", 4, 0, .{ .wrap = false, .tab_width = 4 });
+
+    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // 4 spaces + X
+    try testing.expectEqual(@as(u16, 9), result.final_x);
+
+    try tc.expectCellAt(4, 0, ' '); // Tab space
+    try tc.expectCellAt(5, 0, ' '); // Tab space
+    try tc.expectCellAt(6, 0, ' '); // Tab space
+    try tc.expectCellAt(7, 0, ' '); // Tab space
+    try tc.expectCellAt(8, 0, 'X');
+}
+
+test "printAssumeNoGrapheme custom tab width" {
+    var tc = try TestContext.init(20, 5);
+    defer tc.deinit();
+
+    // "A\tB" with tab_width=8
+    // A at 0, tab expands to 7 spaces (1,2,3,4,5,6,7), B at 8
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 8 });
+
+    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered); // A + 7 spaces + B
+    try testing.expectEqual(@as(u16, 9), result.final_x);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(7, 0, ' '); // Last tab space
+    try tc.expectCellAt(8, 0, 'B');
+}
+
+test "printAssumeNoGrapheme multiple tabs" {
+    var tc = try TestContext.init(20, 5);
+    defer tc.deinit();
+
+    // "A\t\tB" with tab_width=4
+    // A at 0, first tab to 4, second tab to 8, B at 8
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\t\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    // A + 3 spaces + 4 spaces + B = 9 graphemes
+    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 9), result.final_x);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(4, 0, ' '); // Start of second tab
+    try tc.expectCellAt(8, 0, 'B');
+}
+
+test "printAssumeNoGrapheme tab_width zero" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // tab_width = 0 should be ignored
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 0 });
+
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered); // A + 1 space + B
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+}
+
+test "printAssumeNoGrapheme UTF-8 narrow" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // "café" - 'é' is 2 bytes, width=1
+    const result = printAssumeNoGrapheme(tc.scissor(), "café", 0, 0, .default);
+
+    // 4 graphemes: c, a, f, é
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // 3 ASCII + 2-byte é
+    try testing.expectEqual(@as(usize, 4), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 4), result.final_x);
+
+    try tc.expectCellAt(0, 0, 'c');
+    try tc.expectCellAt(1, 0, 'a');
+    try tc.expectCellAt(2, 0, 'f');
+    try tc.expectCellAt(3, 0, 0xE9); // é = U+00E9
+
+    try tc.expectCellWidth(3, 0, .narrow);
+    try tc.expectCellTag(3, 0, .codepoint);
+}
+
+test "printAssumeNoGrapheme Euro sign" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // "€" is 3 bytes (E2 82 AC), width=1
+    const result = printAssumeNoGrapheme(tc.scissor(), "€", 0, 0, .default);
+
+    try testing.expectEqual(@as(usize, 3), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result.final_x);
+
+    try tc.expectCellAt(0, 0, 0x20AC); // € = U+20AC
+    try tc.expectCellWidth(0, 0, .narrow);
+    try tc.expectCellTag(0, 0, .codepoint);
+}
+
+test "printAssumeNoGrapheme CJK" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // "中文" - two CJK characters, each 2 cells wide
+    const result = printAssumeNoGrapheme(tc.scissor(), "中文", 0, 0, .default);
+
+    // 2 graphemes, 4 cells
+    try testing.expectEqual(@as(usize, 6), result.bytes_consumed); // Each CJK char is 3 bytes
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 4), result.final_x);
+
+    // First character: 中 (U+4E2D)
+    try tc.expectCellAt(0, 0, 0x4E2D);
+    try tc.expectCellWidth(0, 0, .wide_start);
+    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCellWidth(1, 0, .wide_end);
+
+    // Second character: 文 (U+6587)
+    try tc.expectCellAt(2, 0, 0x6587);
+    try tc.expectCellWidth(2, 0, .wide_start);
+    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCellWidth(3, 0, .wide_end);
+}
+
+test "printAssumeNoGrapheme emoji" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // "😀" - emoji, 2 cells wide
+    const result = printAssumeNoGrapheme(tc.scissor(), "😀", 0, 0, .default);
+
+    try testing.expectEqual(@as(usize, 4), result.bytes_consumed); // 4-byte emoji
+    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+
+    // Emoji: 😀 (U+1F600)
+    try tc.expectCellAt(0, 0, 0x1F600);
+    try tc.expectCellWidth(0, 0, .wide_start);
+    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCellWidth(1, 0, .wide_end);
+}
+
+test "printAssumeNoGrapheme wide at boundary no wrap skips" {
+    var tc = try TestContext.init(3, 3);
+    defer tc.deinit();
+
+    // "AB中" in 3-wide buffer without wrap
+    // A at 0, B at 1, cursor at 2
+    // 中 needs 2 cells but only 1 remains (position 2) so it will be skipped
+    const result = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellWidth(0, 0, .narrow);
+
+    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCellWidth(1, 0, .narrow);
+
+    // Cell at position 2 should still be empty (space)
+    try tc.expectCellAt(2, 0, ' ');
+}
+
+test "printAssumeNoGrapheme wide exactly fits" {
+    var tc = try TestContext.init(4, 3);
+    defer tc.deinit();
+
+    // "AB中" in 4-wide buffer - 中 should exactly fit at positions 2-3
+    const result = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .default);
+
+    try testing.expectEqual(@as(usize, 3), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result.final_x);
+    try testing.expectEqual(@as(u16, 1), result.final_y);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCellAt(2, 0, 0x4E2D);
+    try tc.expectCellWidth(2, 0, .wide_start);
+    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCellWidth(3, 0, .wide_end);
+}
+
+test "printAssumeNoGrapheme skips zero-width" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // Combining acute accent alone (not attached to base) - has width=0
+    // "\xCC\x81" is combining acute accent (U+0301)
+    // "A\xCC\x81B" = A + combining mark + B
+    // printAssumeNoGrapheme should render A, skip combining mark, render B
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\xCC\x81B", 0, 0, .default);
+
+    // A and B rendered, combining mark skipped (width=0)
+    try testing.expectEqual(@as(usize, 4), result.bytes_consumed); // 1 + 2 + 1 bytes
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+}
+
+test "printAssumeNoGrapheme zero-width joiner ignored" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // ZWJ (U+200D) has width=0
+    // "A\xE2\x80\x8DB" = A + ZWJ + B
+    const result = printAssumeNoGrapheme(tc.scissor(), "A\xE2\x80\x8DB", 0, 0, .default);
+
+    // A and B rendered, ZWJ skipped
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // 1 + 3 + 1 bytes
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+
+    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCellAt(1, 0, 'B');
+}
+
+test "printAssumeNoGrapheme invalid UTF-8 replacement char" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // Invalid UTF-8 bytes are rendered as replacement characters (U+FFFD)
+    const result = printAssumeNoGrapheme(tc.scissor(), "\xFF\xFE", 0, 0, .default);
+
+    // Each invalid byte becomes a replacement character
+    try testing.expectEqual(@as(usize, 2), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+
+    // Both cells should contain U+FFFD (replacement character)
+    try tc.expectCellAt(0, 0, 0xFFFD);
+    try tc.expectCellAt(1, 0, 0xFFFD);
+}
+
+test "printAssumeNoGrapheme invalid mid-sequence" {
+    var tc = try TestContext.init(10, 5);
+    defer tc.deinit();
+
+    // Start valid UTF-8 sequence, interrupt with invalid byte
+    // "\xC3\xFF" - starts 2-byte sequence, invalid continuation
+    const result = printAssumeNoGrapheme(tc.scissor(), "\xC3\xFF", 0, 0, .default);
+
+    // Should produce 2 replacement characters
+    try testing.expectEqual(@as(usize, 2), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+
+    try tc.expectCellAt(0, 0, 0xFFFD);
+    try tc.expectCellAt(1, 0, 0xFFFD);
 }
