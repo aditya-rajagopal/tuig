@@ -26,24 +26,25 @@ const Codepoint = packed struct(u32) {
 
 pub const empty: GraphemeIterator = .{ .text = &.{}, .i = 0, .cursor = .{} };
 
-pub fn init(text: []const u8) error{ InvalidUtf8String, EmptyString }!GraphemeIterator {
+pub fn init(text: []const u8) error{EmptyString}!GraphemeIterator {
     var iter: GraphemeIterator = .empty;
     iter.text = text;
     iter.i = 0;
     iter.cursor = .{};
-    iter.cursor.codepoint, iter.cursor.bytes = (nextCodepoint(text) catch return error.InvalidUtf8String) orelse return error.EmptyString;
+    iter.cursor.codepoint, iter.cursor.bytes = nextCodepoint(text, 0) orelse return error.EmptyString;
     iter.cursor.prop = getProperty(iter.cursor.codepoint);
     // NOTE(adi): The first codepoint should always be a break
     return iter;
 }
 
-pub inline fn nextCodepoint(text: []const u8) error{Utf8InvalidStartByte}!?struct { u21, u3 } {
-    if (text.len == 0) return null;
-
+pub fn nextCodepoint(data: []const u8, offset: usize) ?struct { u21, u3 } {
+    if (offset >= data.len) return null;
+    const text = data[offset..];
     if (text[0] <= 0x7F) {
         @branchHint(.likely);
         return .{ text[0], 1 };
     }
+
     var decoder: UTF8Decoder = .start;
 
     for (0..@min(4, text.len)) |i| {
@@ -58,7 +59,7 @@ pub inline fn nextCodepoint(text: []const u8) error{Utf8InvalidStartByte}!?struc
         }
     } else {
         @branchHint(.cold);
-        return .{ 0xFFFD, 4 };
+        return .{ 0xFFFD, @min(4, text.len) };
     }
 }
 
@@ -82,7 +83,7 @@ pub const Result = struct {
     bytes: []const u8,
 };
 
-pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidStartByte}!?Result {
+pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) ?Result {
     if (self.i == self.text.len) return null;
 
     // NOTE(adi): Always take the first codepoint available
@@ -95,10 +96,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidS
 
     if (isControlOrCRLF(self.cursor.codepoint)) {
         @branchHint(.unlikely);
-        self.cursor.codepoint, self.cursor.bytes = (nextCodepoint(self.text[self.i + consumed ..]) catch {
-            @branchHint(.unlikely);
-            return error.Utf8InvalidStartByte;
-        }) orelse .{ 0, 0 };
+        self.cursor.codepoint, self.cursor.bytes = @call(.always_inline, nextCodepoint, .{ self.text, self.i + consumed }) orelse .{ 0, 0 };
         if (self.cursor.codepoint != 0) {
             self.cursor.prop = getProperty(self.cursor.codepoint);
         }
@@ -108,10 +106,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidS
                 codepoint_buffer[i] = self.cursor.codepoint;
                 consumed += self.cursor.bytes;
                 i = 2;
-                self.cursor.codepoint, self.cursor.bytes = (nextCodepoint(self.text[self.i + consumed ..]) catch {
-                    @branchHint(.unlikely);
-                    return error.Utf8InvalidStartByte;
-                }) orelse .{ 0, 0 };
+                self.cursor.codepoint, self.cursor.bytes = @call(.always_inline, nextCodepoint, .{ self.text, self.i + consumed }) orelse .{ 0, 0 };
                 if (self.cursor.codepoint != 0) {
                     self.cursor.prop = getProperty(self.cursor.codepoint);
                 }
@@ -125,10 +120,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidS
     var prev = self.cursor;
 
     while (true) {
-        self.cursor.codepoint, self.cursor.bytes = (nextCodepoint(self.text[self.i + consumed ..]) catch {
-            @branchHint(.cold);
-            return error.Utf8InvalidStartByte;
-        }) orelse {
+        self.cursor.codepoint, self.cursor.bytes = @call(.always_inline, nextCodepoint, .{ self.text, self.i + consumed }) orelse {
             @branchHint(.unlikely);
             return .{ .width = width, .grapheme = codepoint_buffer[0..i], .bytes = self.text[self.i..][0..consumed] };
         };
@@ -140,6 +132,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) error{Utf8InvalidS
         }
 
         if (graphemeBreakClass(prev.prop.grapheme_boundary_class, self.cursor.prop.grapheme_boundary_class, &state)) {
+            @branchHint(.likely);
             break;
         }
 
@@ -203,7 +196,7 @@ fn testGraphemeIterator(comptime test_cases: []const TestCase) error{TestExpecte
         var error_this_test: bool = false;
         var iter = GraphemeIterator.init(test_case.input) catch return error.TestExpectedEqual;
         var codepoint_buffer: [test_case.expected_codepoint_count]u21 = undefined;
-        const result = (iter.next(&codepoint_buffer) catch return error.TestExpectedEqual) orelse return error.TestExpectedEqual;
+        const result = iter.next(&codepoint_buffer) orelse return error.TestExpectedEqual;
 
         const byte_len = iter.i;
         const cell_width = result.width;
@@ -302,7 +295,7 @@ test "GraphemeIterator multiple iterations" {
     var iterations: usize = 0;
     var codepoint_buffer: [text.len]u21 = undefined;
 
-    while (try iter.next(&codepoint_buffer)) |result| {
+    while (iter.next(&codepoint_buffer)) |result| {
         try std.testing.expectEqualStrings(expected_sequence[iterations], result.bytes);
         try std.testing.expectEqualSlices(u21, expected_codepoints[iterations], result.grapheme);
         iterations += 1;
@@ -628,7 +621,7 @@ test "GraphemeIterator regional indicator edge cases" {
     var codepoint_buffer: [4]u21 = undefined;
     var count: usize = 0;
 
-    while (iter.next(&codepoint_buffer) catch unreachable) |result| {
+    while (iter.next(&codepoint_buffer)) |result| {
         // Each flag should be width 2, 2 codepoints
         try std.testing.expectEqual(@as(u16, 2), result.width);
         try std.testing.expectEqual(@as(usize, 2), result.grapheme.len);
@@ -646,11 +639,11 @@ test "GraphemeIterator odd regional indicators" {
     var codepoint_buffer: [4]u21 = undefined;
 
     // First: US flag (2 RIs)
-    const first = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const first = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 2), first.grapheme.len);
 
     // Second: lone regional indicator
-    const second = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const second = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 1), second.grapheme.len);
 }
 
@@ -701,13 +694,13 @@ test "GraphemeIterator ZWNJ extends graphemes" {
     var codepoint_buffer: [4]u21 = undefined;
 
     // First grapheme: 'a' + ZWNJ (2 codepoints)
-    const first = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const first = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 2), first.grapheme.len);
     try std.testing.expectEqual(@as(u21, 'a'), first.grapheme[0]);
     try std.testing.expectEqual(@as(u21, 0x200C), first.grapheme[1]);
 
     // Second: 'b' alone
-    const second = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const second = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 1), second.grapheme.len);
     try std.testing.expectEqual(@as(u21, 'b'), second.grapheme[0]);
 }
@@ -818,7 +811,7 @@ test "GraphemeIterator soft hyphen" {
     var iter = GraphemeIterator.init(text) catch unreachable;
     var codepoint_buffer: [4]u21 = undefined;
 
-    const result = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const result = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 2), result.bytes.len);
     try std.testing.expectEqual(@as(usize, 1), result.grapheme.len);
     try std.testing.expectEqual(@as(u21, 0x00AD), result.grapheme[0]);
@@ -963,12 +956,12 @@ test "GraphemeIterator skin tone on non-modifier-base" {
     var codepoint_buffer: [4]u21 = undefined;
 
     // First grapheme: 'A'
-    const first = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const first = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 1), first.grapheme.len);
     try std.testing.expectEqual(@as(u21, 'A'), first.grapheme[0]);
 
     // Second grapheme: skin tone modifier alone (displays as colored square)
-    const second = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const second = (iter.next(&codepoint_buffer)).?;
     try std.testing.expectEqual(@as(usize, 1), second.grapheme.len);
     try std.testing.expectEqual(@as(u21, 0x1F3FB), second.grapheme[0]);
 }
@@ -998,7 +991,7 @@ test "GraphemeIterator prepend characters" {
     var iter = GraphemeIterator.init(text) catch unreachable;
     var codepoint_buffer: [4]u21 = undefined;
 
-    const first = (iter.next(&codepoint_buffer) catch unreachable).?;
+    const first = (iter.next(&codepoint_buffer)).?;
     // Prepend + base = one grapheme with 2 codepoints
     try std.testing.expectEqual(@as(usize, 2), first.grapheme.len);
 }

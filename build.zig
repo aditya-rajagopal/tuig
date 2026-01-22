@@ -95,4 +95,31 @@ pub fn build(b: *std.Build) void {
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
     check_step.dependOn(&check_exe.step);
+
+    // Print benchmark
+    const benchmark_mod = b.createModule(.{
+        .root_source_file = b.path("src/renderer/benchmark.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "unicode", .module = unicode },
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
+    const benchmark = b.addExecutable(.{
+        .name = "print_benchmark",
+        .root_module = benchmark_mod,
+    });
+
+    b.installArtifact(benchmark);
+    const bench_step = b.step("bench-print", "Run print benchmark");
+    const bench_cmd = b.addRunArtifact(benchmark);
+    bench_step.dependOn(&bench_cmd.step);
+    bench_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        bench_cmd.addArgs(args);
+    }
 }

@@ -89,6 +89,12 @@ pub fn scissor(self: *FrameBuffer) Scissor {
     };
 }
 
+pub fn putGrapheme(self: *FrameBuffer, x: u16, y: u16, grapheme: []const u8) error{OutOfMemory}!void {
+    const pos = t.Position{ .x = x, .y = y };
+    const id = try self.grapheme_buffer.put(grapheme);
+    try self.grapheme_map.put(self.grapheme_map_allocator.allocator(), pos, id);
+}
+
 pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
     assert(x < self.width);
     assert(y < self.height);

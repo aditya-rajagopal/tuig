@@ -71,7 +71,7 @@ pub const GraphemeBuffer = struct {
         const start = self.end_index;
         const end = self.end_index + bytes.len;
         if (end > self.buffer.reserved_pages.len) {
-            self.buffer.grow(end) catch return error.OutOfMemory;
+            self.buffer.ensureTotalCapacity(end) catch return error.OutOfMemory;
         }
         @memcpy(self.buffer.reserved_pages[start..end], bytes);
         const index: GraphemeIndex = .{

@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (flag[1][0] == '1') {
         var iter: GraphemeIterator = try GraphemeIterator.init(memory);
         var codepoint_buffer: [16]u21 = undefined;
-        while (try iter.next(&codepoint_buffer)) |result| {
+        while (iter.next(&codepoint_buffer)) |result| {
             std.mem.doNotOptimizeAway(&result);
         }
     } else if (flag[1][0] == '2') {
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (flag[1][0] == '4') {
         var iter: GraphemeIterator = try GraphemeIterator.init(memory);
         var codepoint_buffer: [16]u21 = undefined;
-        while (try @call(.never_inline, GraphemeIterator.next, .{ &iter, &codepoint_buffer })) |result| {
+        while (@call(.never_inline, GraphemeIterator.next, .{ &iter, &codepoint_buffer })) |result| {
             std.mem.doNotOptimizeAway(&result);
         }
     }
