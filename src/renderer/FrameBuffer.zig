@@ -26,6 +26,13 @@ pub const Options = struct {
         .grapheme_map_backing_memory = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
         .grapheme_map_initial_size = 1024,
     };
+
+    pub const small_buffer = Options{
+        .max_cells = 128 * 128, // 128kb buffer
+        .grapheme_buffer = .{ .max = stdx.KB(8), .initial = stdx.KB(4) },
+        .grapheme_map_backing_memory = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
+        .grapheme_map_initial_size = 256,
+    };
 };
 
 pub const FrameBuffer = @This();

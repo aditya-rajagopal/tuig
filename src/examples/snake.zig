@@ -10,6 +10,8 @@ const Cell = tuig.renderer.Cell;
 
 const Snake = @This();
 const app = @import("app.zig");
+const helper = @import("helper.zig");
+const drawBox = helper.drawBox;
 
 state: State = .waiting,
 components: std.ArrayList(tuig.renderer.Position) = .empty,
@@ -53,7 +55,7 @@ pub fn deinit(self: *Snake) void {
 pub fn reset(self: *Snake, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
     _ = ctx;
     self.scene_arena = app.MemoryPool.ArenaAllocator.init(memory_pool);
-    self.components = std.ArrayList(tuig.renderer.Position).initCapacity(self.scene_arena.allocator(), 256) catch return {
+    self.components = std.ArrayList(tuig.renderer.Position).initCapacity(self.scene_arena.allocator(), 512) catch return {
         return error.Failed;
     };
     self.eaten_food = std.ArrayList(tuig.renderer.Position).initCapacity(self.scene_arena.allocator(), 256) catch return {
@@ -197,30 +199,6 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
     }
 }
 
-fn drawBox(area: Scissor, x: i17, y: i17, width: u16, height: u16, title: []const u8) Scissor {
-    const whole_area = area.initChild(@intCast(x), @intCast(y), width, height);
-
-    // Draw first row of border
-    whole_area.fillRow(0, Cell{ .codepoint = '─' });
-    whole_area.fillRow(height - 1, Cell{ .codepoint = '─' });
-    for (1..width - 2) |column| {
-        whole_area.set(@intCast(column), 0, Cell{ .codepoint = '─' });
-        whole_area.set(@intCast(column), height - 1, Cell{ .codepoint = '─' });
-    }
-    for (0..height - 1) |row| {
-        whole_area.set(0, @intCast(row), Cell{ .codepoint = '│' });
-        whole_area.set(width - 1, @intCast(row), Cell{ .codepoint = '│' });
-    }
-    whole_area.set(0, 0, Cell{ .codepoint = '┌' });
-    whole_area.set(width - 1, 0, Cell{ .codepoint = '┐' });
-    whole_area.set(0, height - 1, Cell{ .codepoint = '└' });
-    whole_area.set(width - 1, height - 1, Cell{ .codepoint = '┘' });
-
-    const text_area = whole_area.initChild(2, 0, width - 4, height);
-    _ = text_area.renderLineDelimiter(0, 0, title, null, false);
-    return whole_area;
-}
-
 fn renderPlaying(self: *Snake, ctx: Context) void {
     if (ctx.scissor.width_global < gameplay_area_x or ctx.scissor.height_global < gameplay_area_y) {
         var buf: [128]u8 = undefined;
@@ -239,9 +217,7 @@ fn renderPlaying(self: *Snake, ctx: Context) void {
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
 
-    const box = drawBox(ctx.scissor, x, y, gameplay_area_x, gameplay_area_y, score);
-
-    const game_area = box.inner();
+    const game_area = drawBox(ctx.scissor, x, y, gameplay_area_x, gameplay_area_y, score, .default);
 
     if (!self.game_started) {
         self.initSnake(game_area);

@@ -9,8 +9,8 @@ const Scissor = r.Scissor;
 const Context = r.Context;
 
 const SplashScreen = @import("splash_screen.zig");
-const List = @import("list.zig");
 const Snake = @import("snake.zig");
+const Tetris = @import("tetris.zig");
 
 const Application = @This();
 
@@ -24,7 +24,7 @@ mode: Modes,
 current_scene: Scenes = .splash_screen,
 splash_screen: SplashScreen = undefined,
 snake: Snake = undefined,
-list: List = undefined,
+tetris: Tetris = undefined,
 memory: MemoryPool = undefined,
 toggle_metrics: bool = false,
 
@@ -36,20 +36,22 @@ const Modes = union(enum) {
 const Scenes = enum(u8) {
     splash_screen = 0,
     snake = 1,
+    tetris = 2,
 };
 
-pub fn init(window_height: u16) !Application {
+pub fn init() !Application {
     var application: Application = undefined;
     application.mode = .{ .render_scene = .splash_screen };
-    application.list.init(window_height);
     application.splash_screen.init();
     application.snake.init();
+    application.tetris.init();
     application.memory = try MemoryPool.init();
     return application;
 }
 
 pub const options: []const []const u8 = &.{
-    "Snake Game",
+    "Snake",
+    "Tetris",
 };
 
 pub fn updateAndRender(self: *Application, ctx: Context) bool {
@@ -83,6 +85,13 @@ pub fn updateAndRender(self: *Application, ctx: Context) bool {
             },
             .snake => {
                 switch (self.snake.updateAndRender(ctx)) {
+                    .quit => return true,
+                    .noop => return false,
+                    .back => continue :loop .{ .transition_to = .splash_screen },
+                }
+            },
+            .tetris => {
+                switch (self.tetris.updateAndRender(ctx)) {
                     .quit => return true,
                     .noop => return false,
                     .back => continue :loop .{ .transition_to = .splash_screen },
