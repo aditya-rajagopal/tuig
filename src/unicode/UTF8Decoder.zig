@@ -1,4 +1,6 @@
-//! UTF-8 decoding using DFA
+//! UTF-8 decoding using DFA. This is great for streaming decoding.
+//! If you have a slice in memory, it seems std.unicode.Utf8View is a better choice. especially if you dont want to validate
+//! the input
 //!
 //! This is based on:
 //! http://bjoern.hoehrmann.de/utf-8/decoder/dfa/ (MIT license)

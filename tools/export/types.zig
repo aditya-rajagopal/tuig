@@ -30,16 +30,17 @@ pub const GraphemeBreakCombination = packed struct(u13) {
     }
 };
 
-pub const Property = packed struct {
+pub const Property = packed struct(u8) {
     width: u2 = 0,
     grapheme_boundary_class: GraphemeBoundryClass = .invalid,
+    is_emoji_vs: bool = false,
 
-    pub const invalid = Property{ .width = 1, .grapheme_boundary_class = .invalid };
+    pub const invalid = Property{ .width = 1, .grapheme_boundary_class = .invalid, .is_emoji_vs = false };
 
     pub fn format(self: Property, writer: *std.Io.Writer) !void {
         try writer.print(
-            \\ .{{ .width = {d}, .grapheme_boundary_class = .{s} }}
-        , .{ self.width, @tagName(self.grapheme_boundary_class) });
+            \\ .{{ .width = {d}, .grapheme_boundary_class = .{s}, .is_emoji_vs = {any} }}
+        , .{ self.width, @tagName(self.grapheme_boundary_class), self.is_emoji_vs });
     }
 };
 

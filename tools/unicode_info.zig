@@ -9,6 +9,7 @@ east_asian_width: []t.EastAsianWidth,
 grapheme_break: []t.GraphemeBreakProperty,
 derived_core_properties: []t.DerivedCoreProperties,
 general_category: []t.GeneralCategory,
+emoji_vs: []bool,
 
 pub const Data = struct {
     emoji: t.Emoji,
@@ -16,6 +17,7 @@ pub const Data = struct {
     grapheme_break: t.GraphemeBreakProperty,
     derived_core_properties: t.DerivedCoreProperties,
     general_category: t.GeneralCategory,
+    emoji_vs: bool,
 };
 
 pub fn get(self: UnicodeInfo, cp: u21) Data {
@@ -26,6 +28,7 @@ pub fn get(self: UnicodeInfo, cp: u21) Data {
         .grapheme_break = self.grapheme_break[cp],
         .derived_core_properties = self.derived_core_properties[cp],
         .general_category = self.general_category[cp],
+        .emoji_vs = self.emoji_vs[cp],
     };
 }
 
@@ -40,11 +43,15 @@ pub fn init(allocator: std.mem.Allocator) !UnicodeInfo {
     errdefer allocator.free(derived_core_properties);
     const general_category: []t.GeneralCategory = try std.heap.page_allocator.alloc(t.GeneralCategory, max_codepoint + 1);
     errdefer allocator.free(general_category);
+    const emoji_vs: []bool = try std.heap.page_allocator.alloc(bool, max_codepoint + 1);
+    errdefer allocator.free(emoji_vs);
+
     return UnicodeInfo{
         .emoji = emoji,
         .east_asian_width = east_asian_width,
         .grapheme_break = grapheme_break,
         .derived_core_properties = derived_core_properties,
         .general_category = general_category,
+        .emoji_vs = emoji_vs,
     };
 }

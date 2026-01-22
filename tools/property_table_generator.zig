@@ -270,5 +270,6 @@ pub fn getProperty(
     return .{
         .width = getWidth(cp, data),
         .grapheme_boundary_class = getGraphemeBoundryClas(cp, data.emoji, data.derived_core_properties, data.grapheme_break),
+        .is_emoji_vs = data.emoji_vs,
     };
 }

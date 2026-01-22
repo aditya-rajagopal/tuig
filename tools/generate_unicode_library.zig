@@ -38,7 +38,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.interface.print("    parseDerivedCoreProperties: {d}ms\n", .{@as(f32, @floatFromInt(times.derived_core_properties)) / std.time.ns_per_ms});
     try stdout.interface.print("    parseGraphemeBreakProperty: {d}ms\n", .{@as(f32, @floatFromInt(times.grapheme_break)) / std.time.ns_per_ms});
     try stdout.interface.print("    parseEastAsianWidth: {d}ms\n", .{@as(f32, @floatFromInt(times.east_asian_width)) / std.time.ns_per_ms});
-    try stdout.interface.print("    parseEmoji: {d}ms\n\n", .{@as(f32, @floatFromInt(times.emoji)) / std.time.ns_per_ms});
+    try stdout.interface.print("    parseEmoji: {d}ms\n", .{@as(f32, @floatFromInt(times.emoji)) / std.time.ns_per_ms});
+    try stdout.interface.print("    parseEmojiVS: {d}ms\n\n", .{@as(f32, @floatFromInt(times.emoji_vs)) / std.time.ns_per_ms});
     try stdout.interface.print("    Property Table Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(table_time)) / std.time.ns_per_ms});
     try stdout.interface.print("    GraphemeBreak Table Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(grapheme_time)) / std.time.ns_per_ms});
     try stdout.interface.flush();
