@@ -1,4 +1,8 @@
 # 0.1.0
+- (2026-01-21) Added tests for grapheme iterator
+- (2026-01-21) Changed property table to be 2-stage lookup table. For the benchmark 2stage is about 7% faster than 3stage.
+- (2026-01-21) Streamlined grapheme iterator and also added early exit for control characters
+- (2026-01-21) Updated unicode generator to contain is_emoji_vs property to allow for emoji variation selectors width changes
 - (2026-01-20) Added memory pool to renderer and ArenaAllocator based on the memory pool to Context
 - (2026-01-20) Added grapheme buffer, stdx.GrowingBuffers for cells, graphemes, and maps.
 - (2026-01-20) Added a very rudimentary grapheme iterator

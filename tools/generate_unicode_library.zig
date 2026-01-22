@@ -13,7 +13,8 @@ const GraphemeBreakState = export_types.GraphemeBreakState;
 const GraphemeBreakTestResult = export_types.GraphemeBreakTestResult;
 const GraphemeBreakCombination = export_types.GraphemeBreakCombination;
 
-const generatePropertyLookupTable = @import("property_table_generator.zig").generatePropertyLookupTable;
+const generatePropertyLookupTable3Stage = @import("property_table_generator.zig").generatePropertyLookupTable3Stage;
+const generatePropertyLookupTable2Stage = @import("property_table_generator.zig").generatePropertyLookupTable2Stage;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var start = std.time.Timer.start() catch unreachable;
@@ -28,7 +29,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try std.Io.Dir.cwd().copyFile("tools/export/UTF8Decoder.zig", std.Io.Dir.cwd(), "src/unicode/UTF8Decoder.zig", io, .{});
     try std.Io.Dir.cwd().copyFile("tools/export/GraphemeIterator.zig", std.Io.Dir.cwd(), "src/unicode/GraphemeIterator.zig", io, .{});
 
-    const table_time = try generatePropertyLookupTable(io, std.heap.page_allocator, "src/unicode/properties.zig", info);
+    // NOTE(adi): 2-stage lookup table is faster than 3-stage lookup table for now
+    const two_stage_table_time = try generatePropertyLookupTable2Stage(io, std.heap.page_allocator, "src/unicode/properties.zig", info);
+    // const three_stage_table_time = try generatePropertyLookupTable3Stage(io, std.heap.page_allocator, "src/unicode/properties.zig", info);
     const grapheme_time = try generateGraphemeBreakLookupTable(io, std.heap.page_allocator, "src/unicode/grapheme_break.zig");
 
     var buffer: [4096]u8 = undefined;
@@ -40,7 +43,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.interface.print("    parseEastAsianWidth: {d}ms\n", .{@as(f32, @floatFromInt(times.east_asian_width)) / std.time.ns_per_ms});
     try stdout.interface.print("    parseEmoji: {d}ms\n", .{@as(f32, @floatFromInt(times.emoji)) / std.time.ns_per_ms});
     try stdout.interface.print("    parseEmojiVS: {d}ms\n\n", .{@as(f32, @floatFromInt(times.emoji_vs)) / std.time.ns_per_ms});
-    try stdout.interface.print("    Property Table Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(table_time)) / std.time.ns_per_ms});
+    // try stdout.interface.print("    Property Table 3Stage Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(three_stage_table_time)) / std.time.ns_per_ms});
+    try stdout.interface.print("    Property Table 2Stage Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(two_stage_table_time)) / std.time.ns_per_ms});
     try stdout.interface.print("    GraphemeBreak Table Generation Time: {d}ms\n", .{@as(f32, @floatFromInt(grapheme_time)) / std.time.ns_per_ms});
     try stdout.interface.flush();
 }
