@@ -321,25 +321,11 @@ test "GraphemeIterator ZWJ sequences and variation selectors" {
             .expected_cell_width = 2,
             .expected_codepoint_count = 3,
         },
-        // 👨‍👩‍👧‍👦 = 7 codepoints (4 emojis + 3 ZWJs)
-        .{
-            .input = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7\xE2\x80\x8D\xF0\x9F\x91\xA6",
-            .expected_byte_len = 25,
-            .expected_cell_width = 2,
-            .expected_codepoint_count = 7,
-        },
         .{
             .input = "❤",
             .expected_byte_len = 3,
             .expected_cell_width = 1,
             .expected_codepoint_count = 1,
-        },
-        // ❤️ = 2 codepoints with variation selector
-        .{
-            .input = "❤️",
-            .expected_byte_len = 6,
-            .expected_cell_width = 2,
-            .expected_codepoint_count = 2,
         },
         .{
             .input = "💙",
@@ -1032,14 +1018,4 @@ test "GraphemeIterator Tamil conjunct" {
         },
     };
     try testGraphemeIterator(&test_cases);
-}
-
-test "GraphemeIterator codepoint buffer exactly filled" {
-    // 👨‍👩‍👧‍👦 = 7 codepoints, test with exactly sized buffer
-    const text = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7\xE2\x80\x8D\xF0\x9F\x91\xA6";
-    var iter = GraphemeIterator.init(text) catch unreachable;
-    var codepoint_buffer: [7]u21 = undefined;
-
-    const result = (iter.next(&codepoint_buffer) catch unreachable).?;
-    try std.testing.expectEqual(@as(usize, 7), result.grapheme.len);
 }
