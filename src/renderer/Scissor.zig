@@ -169,14 +169,14 @@ pub fn renderLineDelimiter(
             }
             if (cursor_x < 0) continue;
 
-            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .codepoint = codepoint });
+            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .data = .{ .codepoint = codepoint } });
         }
     } else {
         while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
             if (cursor_x < 0) continue;
             if (cursor_x == limit_x) break;
 
-            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .codepoint = codepoint });
+            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .data = .{ .codepoint = codepoint } });
         }
     }
     return iter.i;
@@ -341,7 +341,7 @@ pub fn print(
         }
 
         var cell = Cell{
-            .codepoint = codepoint,
+            .data = .{ .codepoint = codepoint },
             .tag = .codepoint,
             .width = if (grapheme_result.width == 2) .wide_start else .narrow,
         };
@@ -360,7 +360,7 @@ pub fn print(
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
             const end_cell = Cell{
-                .codepoint = ' ',
+                .data = .{ .codepoint = ' ' },
                 .tag = .codepoint,
                 .width = .wide_end,
             };
@@ -537,7 +537,7 @@ pub fn printAssumeNoGrapheme(
         }
 
         const cell = Cell{
-            .codepoint = codepoint,
+            .data = .{ .codepoint = codepoint },
             .tag = .codepoint,
             .width = if (width == 2) .wide_start else .narrow,
         };
@@ -550,7 +550,7 @@ pub fn printAssumeNoGrapheme(
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
             const end_cell = Cell{
-                .codepoint = ' ',
+                .data = .{ .codepoint = ' ' },
                 .tag = .codepoint,
                 .width = .wide_end,
             };
@@ -609,7 +609,7 @@ const TestContext = struct {
 
     fn expectCellAt(self: *TestContext, x: u16, y: u16, expected_cp: u21) !void {
         const cell = self.buffer.get(x, y);
-        try testing.expectEqual(expected_cp, cell.codepoint);
+        try testing.expectEqual(expected_cp, cell.data.codepoint);
     }
 
     fn expectCellWidth(self: *TestContext, x: u16, y: u16, expected_width: Cell.Width) !void {
@@ -675,13 +675,13 @@ test "Scissor.fillRectangle clips to buffer bounds" {
     };
 
     // Rectangle extends beyond buffer
-    scissor.fillRectangle(8, 3, 5, 5, Cell{ .codepoint = '+' });
+    scissor.fillRectangle(8, 3, 5, 5, Cell{ .data = .{ .codepoint = '+' } });
 
     // Should only fill positions within buffer: x=8-9, y=3-4
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 8 and y >= 3) '+' else ' ';
-            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].data.codepoint);
         }
     }
 }
@@ -2401,13 +2401,13 @@ test "Scissor.fillRectangle fills partial region" {
         .buffer = &fb,
     };
 
-    scissor.fillRectangle(2, 1, 3, 2, Cell{ .codepoint = '*' });
+    scissor.fillRectangle(2, 1, 3, 2, Cell{ .data = .{ .codepoint = '*' } });
 
     // Check rectangle at (2,1) with size 3x2
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 2 and x < 5 and y >= 1 and y < 3) '*' else ' ';
-            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].data.codepoint);
         }
     }
 }

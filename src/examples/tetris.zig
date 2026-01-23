@@ -106,8 +106,8 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
                 // _ = area.renderLineDelimiter(0, 0, str, null, false);
                 const x_int: u16 = @intFromFloat(x_cell);
                 const y_int: u16 = @intFromFloat(@floor(y_cell));
-                _ = game_area.set(x_int - 1, y_int, Cell{ .codepoint = '█' });
-                _ = game_area.set(x_int, y_int, Cell{ .codepoint = '█' });
+                _ = game_area.set(x_int - 1, y_int, Cell{ .data = .{ .codepoint = '█' } });
+                _ = game_area.set(x_int, y_int, Cell{ .data = .{ .codepoint = '█' } });
             }
         },
         .middle => {
@@ -124,8 +124,8 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
                 // _ = area.renderLineDelimiter(0, 0, str, null, false);
                 const x_int: u16 = @intFromFloat(x_cell);
                 const y_int: u16 = @intFromFloat(@floor(y_cell));
-                _ = game_area.set(x_int - 1, y_int, Cell{ .codepoint = '█' });
-                _ = game_area.set(x_int, y_int, Cell{ .codepoint = '█' });
+                _ = game_area.set(x_int - 1, y_int, Cell{ .data = .{ .codepoint = '█' } });
+                _ = game_area.set(x_int, y_int, Cell{ .data = .{ .codepoint = '█' } });
             }
         },
     }

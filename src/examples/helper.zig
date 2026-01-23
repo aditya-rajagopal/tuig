@@ -29,17 +29,17 @@ pub fn drawBox(area: Scissor, x: i17, y: i17, width: u16, height: u16, title: []
 
     // Draw first row of border
     for (1..width - 1) |column| {
-        whole_area.set(@intCast(column), 0, Cell{ .codepoint = border.top_horizontal });
-        whole_area.set(@intCast(column), height - 1, Cell{ .codepoint = border.bottom_horizontal });
+        whole_area.set(@intCast(column), 0, Cell{ .data = .{ .codepoint = border.top_horizontal } });
+        whole_area.set(@intCast(column), height - 1, Cell{ .data = .{ .codepoint = border.bottom_horizontal } });
     }
     for (0..height - 1) |row| {
-        whole_area.set(0, @intCast(row), Cell{ .codepoint = border.left });
-        whole_area.set(width - 1, @intCast(row), Cell{ .codepoint = border.right });
+        whole_area.set(0, @intCast(row), Cell{ .data = .{ .codepoint = border.left } });
+        whole_area.set(width - 1, @intCast(row), Cell{ .data = .{ .codepoint = border.right } });
     }
-    whole_area.set(0, 0, Cell{ .codepoint = border.top_left });
-    whole_area.set(width - 1, 0, Cell{ .codepoint = border.top_right });
-    whole_area.set(0, height - 1, Cell{ .codepoint = border.bottom_left });
-    whole_area.set(width - 1, height - 1, Cell{ .codepoint = border.bottom_right });
+    whole_area.set(0, 0, Cell{ .data = .{ .codepoint = border.top_left } });
+    whole_area.set(width - 1, 0, Cell{ .data = .{ .codepoint = border.top_right } });
+    whole_area.set(0, height - 1, Cell{ .data = .{ .codepoint = border.bottom_left } });
+    whole_area.set(width - 1, height - 1, Cell{ .data = .{ .codepoint = border.bottom_right } });
 
     if (title.len > 0) {
         const text_area = whole_area.initChild(2, 0, width - 4, height);

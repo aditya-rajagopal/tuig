@@ -153,8 +153,8 @@ pub fn updateAndRender(self: *SplashScreen, ctx: Context, options: []const []con
         for (options, 0..) |option, i| {
             assert(option.len <= self.options_width.?);
             if (i == self.selection) {
-                _ = options_scissor.set(0, @intCast(i), Cell{ .codepoint = selection[0] });
-                _ = options_scissor.set(@intCast(self.options_width.? + 1), @intCast(i), Cell{ .codepoint = selection[1] });
+                _ = options_scissor.set(0, @intCast(i), Cell{ .data = .{ .codepoint = selection[0] } });
+                _ = options_scissor.set(@intCast(self.options_width.? + 1), @intCast(i), Cell{ .data = .{ .codepoint = selection[1] } });
             }
             const option_start_x = (self.options_width.? + 2 - option.len) / 2;
             _ = options_scissor.renderLineDelimiter(@intCast(option_start_x), @intCast(i), option, null, false);
