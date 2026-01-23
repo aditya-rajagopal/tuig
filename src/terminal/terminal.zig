@@ -92,6 +92,10 @@ pub const Terminal = struct {
 
     pub var global_tty: ?*Terminal = null;
 
+    pub fn getWriter(self: *Terminal) *std.Io.Writer {
+        return &self.writer.interface;
+    }
+
     pub fn init(terminal: *Terminal, config: TerminalConfig, write_buffer: []u8) error{Failed}!void {
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();

@@ -27,6 +27,7 @@ snake: Snake = undefined,
 tetris: Tetris = undefined,
 memory: MemoryPool = undefined,
 toggle_metrics: bool = false,
+timer: std.time.Timer = undefined,
 
 const Modes = union(enum) {
     render_scene: Scenes,
@@ -46,6 +47,7 @@ pub fn init() !Application {
     application.snake.init();
     application.tetris.init();
     application.memory = try MemoryPool.init();
+    application.timer = std.time.Timer.start() catch unreachable;
     return application;
 }
 
@@ -55,6 +57,12 @@ pub const options: []const []const u8 = &.{
 };
 
 pub fn updateAndRender(self: *Application, ctx: Context) bool {
+    const frame_time = self.timer.lap();
+    const time_ms = @as(f32, @floatFromInt(frame_time)) / (1000.0 * 1000.0);
+    var fps_buffer: [128]u8 = undefined;
+    const fps = std.fmt.bufPrint(&fps_buffer, "Time: {d}ms, FPS: {d}", .{ time_ms, 1000.0 / time_ms }) catch unreachable;
+    const area = ctx.scissor.initChild(0, ctx.scissor.height_global - 2, @intCast(fps.len), 1);
+    _ = area.renderLineDelimiter(0, 0, fps, null, false);
     loop: switch (self.mode) {
         .render_scene => |scene| switch (scene) {
             .splash_screen => {

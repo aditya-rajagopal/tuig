@@ -629,6 +629,63 @@ const TestContext = struct {
     }
 };
 
+test "Scissor.initChild creates correct child region" {
+    var fb = try FrameBuffer.init(20, 10, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
+
+    const parent = Scissor{
+        .x_global = 5,
+        .y_global = 3,
+        .width_global = 15,
+        .height_global = 7,
+        .buffer = &fb,
+    };
+
+    const child = parent.initChild(2, 1, 10, 4);
+
+    try std.testing.expectEqual(@as(i17, 7), child.x_global);
+    try std.testing.expectEqual(@as(i17, 4), child.y_global);
+    try std.testing.expectEqual(@as(u16, 10), child.width_global);
+    try std.testing.expectEqual(@as(u16, 4), child.height_global);
+    try std.testing.expect(child.buffer == &fb);
+}
+
+test "Scissor.fillRectangle clips to buffer bounds" {
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
+
+    fb.clear();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
+        .buffer = &fb,
+    };
+
+    // Rectangle extends beyond buffer
+    scissor.fillRectangle(8, 3, 5, 5, Cell{ .codepoint = '+' });
+
+    // Should only fill positions within buffer: x=8-9, y=3-4
+    for (0..5) |y| {
+        for (0..10) |x| {
+            const expected: u21 = if (x >= 8 and y >= 3) '+' else ' ';
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
+        }
+    }
+}
+
 test "print basic ASCII" {
     var tc = try TestContext.init(10, 5);
     defer tc.deinit();
@@ -2323,4 +2380,34 @@ test "printAssumeNoGrapheme invalid mid-sequence" {
 
     try tc.expectCellAt(0, 0, 0xFFFD);
     try tc.expectCellAt(1, 0, 0xFFFD);
+}
+
+test "Scissor.fillRectangle fills partial region" {
+    var fb = try FrameBuffer.init(10, 5, .{
+        .max_cells = 300,
+        .grapheme_buffer = .{ .max = 100, .initial = 100 },
+        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
+        .grapheme_map_initial_size = 1,
+    });
+    defer fb.deinit();
+
+    fb.clear();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 10,
+        .height_global = 5,
+        .buffer = &fb,
+    };
+
+    scissor.fillRectangle(2, 1, 3, 2, Cell{ .codepoint = '*' });
+
+    // Check rectangle at (2,1) with size 3x2
+    for (0..5) |y| {
+        for (0..10) |x| {
+            const expected: u21 = if (x >= 2 and x < 5 and y >= 1 and y < 3) '*' else ' ';
+            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].codepoint);
+        }
+    }
 }

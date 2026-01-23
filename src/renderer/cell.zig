@@ -20,6 +20,7 @@ pub const Cell = packed struct(u64) {
 
     pub fn eql(self: Cell, other: Cell) bool {
         return self.codepoint == other.codepoint and
-            self.tag == other.tag;
+            self.tag == other.tag and
+            self.width == other.width;
     }
 };

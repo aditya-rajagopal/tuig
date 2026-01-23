@@ -122,4 +122,32 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         bench_cmd.addArgs(args);
     }
+
+    // Renderer benchmark
+    const renderer_benchmark_mod = b.createModule(.{
+        .root_source_file = b.path("src/renderer/renderer_benchmark.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "unicode", .module = unicode },
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
+    const renderer_benchmark = b.addExecutable(.{
+        .name = "renderer_benchmark",
+        .root_module = renderer_benchmark_mod,
+    });
+
+    b.installArtifact(renderer_benchmark);
+    const bench_renderer_step = b.step("bench-renderer", "Run renderer benchmark");
+    const bench_renderer_cmd = b.addRunArtifact(renderer_benchmark);
+    bench_renderer_step.dependOn(&bench_renderer_cmd.step);
+    bench_renderer_cmd.step.dependOn(b.getInstallStep());
+    check_step.dependOn(&bench_renderer_cmd.step);
+
+    if (b.args) |args| {
+        bench_renderer_cmd.addArgs(args);
+    }
 }

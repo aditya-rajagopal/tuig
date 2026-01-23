@@ -82,7 +82,7 @@ pub const GraphemeBuffer = struct {
         return @enumFromInt(@as(u64, @bitCast(index)));
     }
 
-    pub fn get(self: *Self, id: GraphemeID) []const u8 {
+    pub fn get(self: *const Self, id: GraphemeID) []const u8 {
         const index: GraphemeIndex = @bitCast(@intFromEnum(id));
         assert(index.index + index.length <= self.end_index);
         assert(index.generation == self.generation);
