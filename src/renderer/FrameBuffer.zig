@@ -135,7 +135,7 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, row: usize, col: usiz
     switch (cell.tag) {
         .codepoint => {
             var bytes: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cell.codepoint, &bytes) catch {
+            const len = std.unicode.utf8Encode(cell.data.codepoint, &bytes) catch {
                 @branchHint(.cold);
                 try writer.writeAll("\xEF\xBF\xBD"); // U+FFFD
                 return result;
@@ -244,10 +244,10 @@ test "fullRedraw - multi-byte UTF-8" {
     var front = try FrameBuffer.init(4, 1, Options.tiny_buffer);
     defer front.deinit();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
-    front.set(1, 0, .{ .codepoint = 0x00E9 });
-    front.set(2, 0, .{ .codepoint = 0x4E2D });
-    front.set(3, 0, .{ .codepoint = 0x1D11E });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
+    front.set(1, 0, .{ .data = .{ .codepoint = 0x00E9 } });
+    front.set(2, 0, .{ .data = .{ .codepoint = 0x4E2D } });
+    front.set(3, 0, .{ .data = .{ .codepoint = 0x1D11E } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -263,14 +263,14 @@ test "fullRedraw wide characters" {
     var front = try FrameBuffer.init(6, 1, Options.tiny_buffer);
     defer front.deinit();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
     // 中 (U+4E2D)
-    front.set(1, 0, .{ .codepoint = 0x4E2D, .width = .wide_start });
-    front.set(2, 0, .{ .codepoint = ' ', .width = .wide_end });
-    front.set(3, 0, .{ .codepoint = 'B' });
+    front.set(1, 0, .{ .data = .{ .codepoint = 0x4E2D }, .width = .wide_start });
+    front.set(2, 0, .{ .data = .{ .codepoint = ' ' }, .width = .wide_end });
+    front.set(3, 0, .{ .data = .{ .codepoint = 'B' } });
     //  国 (U+56FD)
-    front.set(4, 0, .{ .codepoint = 0x56FD, .width = .wide_start });
-    front.set(5, 0, .{ .codepoint = ' ', .width = .wide_end });
+    front.set(4, 0, .{ .data = .{ .codepoint = 0x56FD }, .width = .wide_start });
+    front.set(5, 0, .{ .data = .{ .codepoint = ' ' }, .width = .wide_end });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -288,18 +288,18 @@ test "fullRedraw graphemes - wide and graphemes" {
 
     front.clear();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
     // 👍 (U+1F44D)
     const thumbs_up = "\xF0\x9F\x91\x8D";
-    front.set(1, 0, .{ .codepoint = '👍', .tag = .codepoint, .width = .wide_start });
+    front.set(1, 0, .{ .data = .{ .codepoint = '👍' }, .tag = .codepoint, .width = .wide_start });
     front.set(2, 0, .{ .width = .wide_end });
     const e_acute_combining = "e\xCC\x81";
-    front.set(3, 0, .{ .codepoint = 'e', .tag = .grapheme, .width = .narrow });
+    front.set(3, 0, .{ .data = .{ .codepoint = 'e' }, .tag = .grapheme, .width = .narrow });
     try front.putGrapheme(3, 0, e_acute_combining);
     // 👨‍👩‍👧 (family emoji) - ZWJ sequence
     const family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7";
-    front.set(1, 1, .{ .codepoint = '👨', .tag = .grapheme, .width = .wide_start });
-    front.set(2, 1, .{ .codepoint = ' ', .tag = .codepoint, .width = .wide_end });
+    front.set(1, 1, .{ .data = .{ .codepoint = '👨' }, .tag = .grapheme, .width = .wide_start });
+    front.set(2, 1, .{ .data = .{ .codepoint = ' ' }, .tag = .codepoint, .width = .wide_end });
     try front.putGrapheme(1, 1, family);
 
     var output_buffer: [4096]u8 = undefined;
@@ -316,10 +316,10 @@ test "fullRedraw error handling - invalid codepoint" {
     var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
     defer front.deinit();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
     // Invalid codepoint (surrogate range U+D800-U+DFFF)
-    front.set(1, 0, .{ .codepoint = 0xD800 });
-    front.set(2, 0, .{ .codepoint = 'B' });
+    front.set(1, 0, .{ .data = .{ .codepoint = 0xD800 } });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'B' } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -336,10 +336,10 @@ test "fullRedraw error handling - missing grapheme" {
     var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
     defer front.deinit();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
     // Mark cell as grapheme but don't put any grapheme data
     front.set(1, 0, .{ .tag = .grapheme });
-    front.set(2, 0, .{ .codepoint = 'B' });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'B' } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -385,7 +385,7 @@ test "diffRedraw all changed" {
     // Back buffer has spaces, front buffer has all 'X'
     for (0..5) |x| {
         for (0..2) |y| {
-            front.set(@intCast(x), @intCast(y), .{ .codepoint = 'X' });
+            front.set(@intCast(x), @intCast(y), .{ .data = .{ .codepoint = 'X' } });
         }
     }
 
@@ -408,10 +408,10 @@ test "diffRedraw multiple disjoint segments in one row" {
     front.clear();
     back.clear();
 
-    front.set(2, 0, .{ .codepoint = 'A' });
-    front.set(3, 0, .{ .codepoint = 'B' });
-    front.set(7, 0, .{ .codepoint = 'C' });
-    front.set(8, 0, .{ .codepoint = 'D' });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'A' } });
+    front.set(3, 0, .{ .data = .{ .codepoint = 'B' } });
+    front.set(7, 0, .{ .data = .{ .codepoint = 'C' } });
+    front.set(8, 0, .{ .data = .{ .codepoint = 'D' } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -433,9 +433,9 @@ test "diffRedraw changes in multiple rows" {
     back.clear();
 
     // Change one cell in each row
-    front.set(1, 0, .{ .codepoint = 'A' });
-    front.set(2, 1, .{ .codepoint = 'B' });
-    front.set(3, 2, .{ .codepoint = 'C' });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'A' } });
+    front.set(2, 1, .{ .data = .{ .codepoint = 'B' } });
+    front.set(3, 2, .{ .data = .{ .codepoint = 'C' } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -519,7 +519,7 @@ test "diffRedraw grapheme vs codepoint" {
     back.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
     back.set(2, 0, .{ .width = .wide_end });
     try front.putGrapheme(1, 0, emoji);
-    front.set(1, 0, .{ .codepoint = 'X' });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'X' } });
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -535,10 +535,10 @@ test "renderCell basic codepoint" {
     var front = try FrameBuffer.init(4, 1, Options.tiny_buffer);
     defer front.deinit();
 
-    front.set(0, 0, .{ .codepoint = 'A' });
-    front.set(1, 0, .{ .codepoint = 0x4E2D, .width = .wide_start }); // 中
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
+    front.set(1, 0, .{ .data = .{ .codepoint = 0x4E2D }, .width = .wide_start }); // 中
     front.set(2, 0, .{ .width = .wide_end });
-    front.set(3, 0, .{ .codepoint = 'B' });
+    front.set(3, 0, .{ .data = .{ .codepoint = 'B' } });
 
     var output_buffer: [256]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);

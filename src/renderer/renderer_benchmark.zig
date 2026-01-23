@@ -76,7 +76,7 @@ fn setupAsciiBuffer(buffer: *FrameBuffer) void {
     const total_cells = @as(usize, buffer.width) * @as(usize, buffer.height);
     for (0..total_cells) |i| {
         buffer.cells.reserved_pages[i] = Cell{
-            .codepoint = chars[i % chars.len],
+            .data = .{ .codepoint = chars[i % chars.len] },
             .tag = .codepoint,
             .width = .narrow,
         };
@@ -96,7 +96,7 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
             if (pattern < 6) {
                 // ASCII character (60%)
                 buffer.cells.reserved_pages[idx] = Cell{
-                    .codepoint = @intCast('A' + (col % 26)),
+                    .data = .{ .codepoint = @intCast('A' + (col % 26)) },
                     .tag = .codepoint,
                     .width = .narrow,
                 };
@@ -105,12 +105,12 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
                 // Wide character (30%)
                 const wide_chars = [_]u21{ '日', '本', '語', '中', '文' };
                 buffer.cells.reserved_pages[idx] = Cell{
-                    .codepoint = wide_chars[col % wide_chars.len],
+                    .data = .{ .codepoint = wide_chars[col % wide_chars.len] },
                     .tag = .codepoint,
                     .width = .wide_start,
                 };
                 buffer.cells.reserved_pages[idx + 1] = Cell{
-                    .codepoint = 0,
+                    .data = .{ .codepoint = 0 },
                     .tag = .codepoint,
                     .width = .wide_end,
                 };
@@ -120,7 +120,7 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
                 const grapheme = "e\u{0301}";
                 try buffer.putGrapheme(@intCast(col), @intCast(row), grapheme);
                 buffer.cells.reserved_pages[idx] = Cell{
-                    .codepoint = 'e',
+                    .data = .{ .codepoint = 'e' },
                     .tag = .grapheme,
                     .width = .narrow,
                 };
@@ -146,7 +146,7 @@ fn applyRandomChanges(render_buffer: *FrameBuffer, back_buffer: *FrameBuffer, ch
     for (0..changes_to_make) |_| {
         const idx = random.intRangeLessThan(usize, 0, total_cells);
         render_buffer.cells.reserved_pages[idx] = Cell{
-            .codepoint = @intCast('0' + random.intRangeLessThan(u8, 0, 10)),
+            .data = .{ .codepoint = @intCast('0' + rng.random().intRangeLessThan(u8, 0, 10)) },
             .tag = .codepoint,
             .width = .narrow,
         };

@@ -1,9 +1,8 @@
-pub const Cell = packed struct(u64) {
-    codepoint: u21 = ' ',
-    _padding1: u11 = 0,
+pub const Cell = packed struct(u32) {
+    data: Data = .{ .codepoint = ' ' },
     tag: Tag = .codepoint,
     width: Width = .narrow,
-    _padding2: u29 = 0,
+    _padding1: u8 = 0,
 
     pub const Width = enum(u2) {
         narrow = 0,
@@ -16,10 +15,15 @@ pub const Cell = packed struct(u64) {
         grapheme = 1,
     };
 
-    pub const empty = Cell{ .codepoint = ' ', .tag = .codepoint, .width = .narrow };
+    pub const Data = packed union {
+        codepoint: u21,
+        grapheme_id: u21,
+    };
+
+    pub const empty = Cell{ .data = .{ .codepoint = ' ' }, .tag = .codepoint, .width = .narrow };
 
     pub fn eql(self: Cell, other: Cell) bool {
-        return self.codepoint == other.codepoint and
+        return @as(u21, @bitCast(self.data)) == @as(u21, @bitCast(other.data)) and
             self.tag == other.tag and
             self.width == other.width;
     }

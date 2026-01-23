@@ -133,7 +133,7 @@ fn renderWaiting(self: *Snake, ctx: Context) void {
 fn newFood(self: *Snake, scissor: Scissor) void {
     self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
     self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
-    while (scissor.get(self.food_position.x, self.food_position.y).?.codepoint != ' ') {
+    while (scissor.get(self.food_position.x, self.food_position.y).?.data.codepoint != ' ') {
         self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
         self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
     }
@@ -153,7 +153,7 @@ fn initSnake(self: *Snake, scissor: Scissor) void {
 
 fn renderSnake(self: *Snake, game_area: Scissor) void {
     for (self.components.items) |component| {
-        _ = game_area.set(component.x, component.y, Cell{ .codepoint = '+' });
+        _ = game_area.set(component.x, component.y, Cell{ .data = .{ .codepoint = '+' } });
     }
 }
 
@@ -174,15 +174,15 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
         },
     }
     const space = game_area.get(head.x, head.y).?;
-    if (space.codepoint == '+') {
+    if (space.data.codepoint == '+') {
         self.transitonTo(.game_over);
-    } else if (space.codepoint == 'O') {
+    } else if (space.data.codepoint == 'O') {
         self.eaten_food.appendAssumeCapacity(head);
         self.score += 1;
         self.newFood(game_area);
     }
     self.components.appendAssumeCapacity(head);
-    game_area.set(head.x, head.y, Cell{ .codepoint = '+' });
+    game_area.set(head.x, head.y, Cell{ .data = .{ .codepoint = '+' } });
 
     const tail = self.components.items[0];
     if (self.eaten_food.items.len > 0) {
@@ -244,7 +244,7 @@ fn renderPlaying(self: *Snake, ctx: Context) void {
         }
     }
 
-    _ = game_area.set(self.food_position.x, self.food_position.y, Cell{ .codepoint = 'O' });
+    _ = game_area.set(self.food_position.x, self.food_position.y, Cell{ .data = .{ .codepoint = 'O' } });
     self.renderSnake(game_area);
     if (self.frame_ticked) {
         self.moveSnake(game_area);
