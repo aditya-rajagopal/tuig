@@ -303,6 +303,14 @@ pub const Terminal = struct {
         if (dy > 0) try self.print("\x1b[{d}B", .{dy}) else try self.print("\x1b[{d}A", .{-dy});
     }
 
+    pub fn bsu(self: *Terminal) error{WriteFailed}!void {
+        try self.write("\x1bP=1s\x1b\\");
+    }
+
+    pub fn esu(self: *Terminal) error{WriteFailed}!void {
+        try self.write("\x1bP=2s\x1b\\");
+    }
+
     pub fn pollEvents(self: *Terminal, timeout_ms: i32) error{PollFailed}![]Event {
         var events = std.ArrayList(Event).initBuffer(&self.event_queue);
 

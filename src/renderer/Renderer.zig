@@ -166,11 +166,15 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
 
 pub fn endFrame(self: *Renderer) void {
     if (self.redraw) {
+        self.terminal.bsu() catch {};
         self.render_buffer.fullRedraw(self.terminal.getWriter()) catch {};
+        self.terminal.esu() catch {};
         self.redraw = false;
     } else {
         @branchHint(.likely);
+        self.terminal.bsu() catch {};
         self.render_buffer.diffRedraw(self.back_buffer, self.terminal.getWriter()) catch {};
+        self.terminal.esu() catch {};
     }
     self.terminal.flush() catch {};
     self.swapBuffers();

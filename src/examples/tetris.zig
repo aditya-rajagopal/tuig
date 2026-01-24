@@ -10,40 +10,48 @@ const drawBox = helper.drawBox;
 
 const Tetris = @This();
 
-state: State = .waiting,
+state: GameState = .{},
 frame: u8 = 0,
-selection: u8 = 0,
+timer: ?std.time.Timer = null,
 
 const State = enum { waiting, playing, game_over };
 
 pub fn init(self: *Tetris) void {
-    self.state = .waiting;
+    self.state = .{};
     self.frame = 0;
-    self.selection = 0;
+    self.timer = null;
 }
 
 pub fn deinit(self: *Tetris) void {
-    self.state = .waiting;
+    self.state = .{};
     self.frame = 0;
-    self.selection = 0;
+    self.timer = null;
 }
 
 pub fn reset(self: *Tetris, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
     _ = ctx;
     _ = memory_pool;
-    self.state = .waiting;
+    self.state = .{};
     self.frame = 0;
-    self.selection = 0;
+    self.timer = null;
 }
 
 const TetrisResult = enum { quit, noop, back };
 
-const Size = struct {
-    width: u16,
-    height: u16,
-};
+const Size = struct { width: u16, height: u16 };
 
-const Playfield = Size{ .width = 22, .height = 22 };
+const PlayArea = Size{ .width = 10, .height = 20 };
+
+const GameState = struct {
+    board: [PlayArea.width * PlayArea.height]u8 = @splat(0),
+    in_flight: Piece = .{},
+    next_pieces: [6]Tetromino.Tag = .{ .I, .I, .I, .I, .I, .I },
+
+    pub const Piece = struct {
+        tag: Tetromino.Tag = .I,
+        position: Displacement = .{ .x = 5, .y = 0 },
+    };
+};
 
 const tetris_box = helper.BoxCharacters{
     .bottom_horizontal = '\u{1FB02}',
@@ -60,9 +68,9 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
     if (ctx.isKeyPressed(.q)) return .quit;
     if (ctx.isKeyPressed(.escape)) return .back;
 
-    if (ctx.scissor.width_global < Playfield.width or ctx.scissor.height_global < Playfield.height) {
+    if (ctx.scissor.width_global < PlayArea.width * 2 + 2 or ctx.scissor.height_global < PlayArea.height + 2) {
         var buf: [128]u8 = undefined;
-        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ Playfield.width, Playfield.height, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
+        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ PlayArea.width * 2 + 2, PlayArea.height + 2, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
         const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
         const y = (ctx.scissor.height_global - 1) / 2;
         const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
@@ -70,64 +78,87 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
         return .noop;
     }
 
-    const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, Playfield.width), 2);
-    const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, Playfield.height), 2);
+    if (self.timer == null) {
+        self.timer = std.time.Timer.start() catch return .back;
+    }
+    const timer = &self.timer.?;
+    const delta = timer.read();
 
-    const game_area = drawBox(ctx.scissor, start_x, start_y, Playfield.width, Playfield.height, "", tetris_box);
+    const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, PlayArea.width * 2 + 2), 2);
+    const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, PlayArea.height + 2), 2);
 
-    if (ctx.isKeyPressed(.down)) {
-        self.selection -%= 1;
-    }
-    if (ctx.isKeyPressed(.up)) {
-        self.selection +%= 1;
+    const game_area = drawBox(ctx.scissor, start_x, start_y, PlayArea.width * 2 + 2, PlayArea.height + 2, "", tetris_box);
+
+    var direction: i8 = 0;
+    if (ctx.isKeyPressed(.left)) direction -= 1;
+    if (ctx.isKeyPressed(.right)) direction += 1;
+
+    const render_position: Displacement = switch (self.state.in_flight.tag.get().center) {
+        .bottom => self.state.in_flight.position,
+        .middle => .{ .x = self.state.in_flight.position.x, .y = self.state.in_flight.position.y - 0.5 },
+    };
+
+    const Result = enum { success, fail };
+
+    if (direction != 0) {
+        const result: Result = for (self.state.in_flight.tag.get().frames[self.frame % 4]) |cell| {
+            const x_cell = render_position.x + cell.x;
+            var x_int: i17 = @intFromFloat(x_cell);
+            x_int += @intCast(direction);
+            if (x_int < 0 or x_int >= PlayArea.width) break .fail;
+        } else .success;
+        if (result == .success) {
+            self.state.in_flight.position.x += @floatFromInt(direction);
+        }
     }
 
-    const ts = [_]Tetromino{ Tetromino.I, Tetromino.O, Tetromino.T, Tetromino.S, Tetromino.Z, Tetromino.J, Tetromino.L };
-    const t = ts[self.selection % ts.len];
-    const position: Displacement = .{ .x = 5, .y = 10 };
-    if (ctx.isKeyPressed(.right)) {
-        self.frame +%= 1;
+    const result: Result = for (self.state.in_flight.tag.get().frames[self.frame % 4]) |cell| {
+        const x_cell = render_position.x + cell.x;
+        const y_cell = render_position.y + cell.y;
+        const x_int: u16 = @intFromFloat(x_cell);
+        const y_int: i17 = @intFromFloat(@floor(y_cell));
+        if (y_int < -1) continue;
+        const y_test: u16 = @intCast(y_int + 1);
+        if (y_test >= PlayArea.height or self.state.board[y_test * PlayArea.width + x_int] != 0) {
+            // Block is occupied stop the block
+            break .fail;
+        }
+    } else .success;
+
+    if (result == .success) {
+        for (self.state.in_flight.tag.get().frames[self.frame % 4]) |cell| {
+            const x_cell = (render_position.x + cell.x) * 2;
+            const y_cell = render_position.y + cell.y;
+            const x_int: u16 = @intFromFloat(x_cell);
+            const y_int: i17 = @intFromFloat(@floor(y_cell));
+            if (y_int < 0) continue;
+            _ = game_area.set(x_int - 1, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
+            _ = game_area.set(x_int, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
+        }
+        if (delta > 100 * 1000 * 1000) {
+            timer.reset();
+            self.state.in_flight.position.y += 1;
+        }
+    } else {
+        for (self.state.in_flight.tag.get().frames[self.frame % 4]) |cell| {
+            const x_cell = render_position.x + cell.x;
+            const y_cell = render_position.y + cell.y;
+            const x_int: u16 = @intFromFloat(x_cell);
+            const y_int: i17 = @intFromFloat(@floor(y_cell));
+            if (y_int < 0) return .back;
+            self.state.board[@as(u16, @intCast(y_int)) * PlayArea.width + x_int] = 1;
+        }
+        self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = .I };
     }
-    if (ctx.isKeyPressed(.left)) {
-        self.frame -%= 1;
-    }
-    switch (t.center) {
-        .bottom => {
-            const render_position = position;
-            for (t.frames[self.frame % 4], 0..) |cell, i| {
-                _ = i;
-                const x_cell = (render_position.x + cell.x) * 2;
-                const y_cell = render_position.y + cell.y;
-                // var buf: [128]u8 = undefined;
-                // const str = std.fmt.bufPrint(&buf, "[{d},{d}]", .{ x_cell, y_cell }) catch unreachable;
-                // const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
-                // const y = ctx.scissor.height_global - i - 1;
-                // const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
-                // _ = area.renderLineDelimiter(0, 0, str, null, false);
-                const x_int: u16 = @intFromFloat(x_cell);
-                const y_int: u16 = @intFromFloat(@floor(y_cell));
-                _ = game_area.set(x_int - 1, y_int, Cell{ .data = .{ .codepoint = '█' } });
-                _ = game_area.set(x_int, y_int, Cell{ .data = .{ .codepoint = '█' } });
+
+    for (0..PlayArea.height) |y| {
+        for (0..PlayArea.width) |x| {
+            if (self.state.board[y * PlayArea.width + x] == 1) {
+                const x_int: u16 = @intCast(x * 2);
+                _ = game_area.set(x_int, @intCast(y), Cell{ .data = .{ .codepoint = '█' } });
+                _ = game_area.set(x_int + 1, @intCast(y), Cell{ .data = .{ .codepoint = '█' } });
             }
-        },
-        .middle => {
-            const render_position: Displacement = .{ .x = position.x, .y = position.y - 0.5 };
-            for (t.frames[self.frame % 4], 0..) |cell, i| {
-                _ = i;
-                const x_cell = (render_position.x + cell.x) * 2;
-                const y_cell = render_position.y + cell.y;
-                // var buf: [128]u8 = undefined;
-                // const str = std.fmt.bufPrint(&buf, "[{d},{d}]", .{ x_cell, y_cell }) catch unreachable;
-                // const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
-                // const y = ctx.scissor.height_global - i - 1;
-                // const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
-                // _ = area.renderLineDelimiter(0, 0, str, null, false);
-                const x_int: u16 = @intFromFloat(x_cell);
-                const y_int: u16 = @intFromFloat(@floor(y_cell));
-                _ = game_area.set(x_int - 1, y_int, Cell{ .data = .{ .codepoint = '█' } });
-                _ = game_area.set(x_int, y_int, Cell{ .data = .{ .codepoint = '█' } });
-            }
-        },
+        }
     }
 
     return .noop;
@@ -143,6 +174,28 @@ pub const Tetromino = struct {
     frames: [4][4]Displacement,
 
     const Center = enum { bottom, middle };
+
+    pub const Tag = enum {
+        I,
+        O,
+        T,
+        S,
+        Z,
+        J,
+        L,
+
+        pub fn get(tag: Tag) Tetromino {
+            switch (tag) {
+                .I => return .I,
+                .O => return .O,
+                .T => return .T,
+                .S => return .S,
+                .Z => return .Z,
+                .J => return .J,
+                .L => return .L,
+            }
+        }
+    };
 
     pub const O = Tetromino{
         .center = .bottom,
