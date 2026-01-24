@@ -34,6 +34,9 @@ pub fn reset(self: *Tetris, memory_pool: *app.MemoryPool, ctx: Context) error{Fa
     _ = ctx;
     _ = memory_pool;
     self.state = .{};
+    self.rng.random().shuffle(Tetromino.Tag, &self.state.next_pieces);
+    self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[0] };
+    self.state.ptr = 1;
     self.frame = 0;
     self.timer = null;
 }
@@ -47,7 +50,8 @@ const PlayArea = Size{ .width = 10, .height = 20 };
 const GameState = struct {
     board: [PlayArea.width * PlayArea.height]u8 = @splat(0),
     in_flight: Piece = .{},
-    next_pieces: [6]Tetromino.Tag = .{ .I, .I, .I, .I, .I, .I },
+    next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
+    ptr: u8 = 0,
 
     pub const Piece = struct {
         tag: Tetromino.Tag = .I,
@@ -153,8 +157,12 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
             if (y_int < 0) return .back;
             self.state.board[@as(u16, @intCast(y_int)) * PlayArea.width + x_int] = 1;
         }
-        const tag = self.rng.random().enumValue(Tetromino.Tag);
-        self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = tag };
+        if (self.state.ptr >= self.state.next_pieces.len) {
+            self.state.ptr = 0;
+            self.rng.random().shuffle(Tetromino.Tag, &self.state.next_pieces);
+        }
+        defer self.state.ptr += 1;
+        self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[self.state.ptr] };
     }
 
     for (0..PlayArea.height) |y| {
