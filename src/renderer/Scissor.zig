@@ -340,31 +340,22 @@ pub fn print(
             break;
         }
 
-        var cell = Cell{
+        const cell: Cell = if (grapheme_result.grapheme.len > 1) blk: {
+            @branchHint(.unlikely);
+            const id = try self.buffer.grapheme_buffer.put(grapheme_result.bytes);
+            break :blk Cell.initGrapheme(id, if (grapheme_result.width == 2) .wide_start else .narrow);
+        } else .{
             .data = .{ .codepoint = codepoint },
             .tag = .codepoint,
             .width = if (grapheme_result.width == 2) .wide_start else .narrow,
         };
 
-        if (grapheme_result.grapheme.len > 1) {
-            @branchHint(.unlikely);
-            cell.tag = .grapheme;
-            try self.buffer.putGrapheme(@intCast(x_global), @intCast(y_global), grapheme_result.bytes);
-        }
-
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
 
         if (grapheme_result.width == 2) {
-            @branchHint(.unlikely);
-            assert(x_global + 1 < self.width_global);
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
-            const end_cell = Cell{
-                .data = .{ .codepoint = ' ' },
-                .tag = .codepoint,
-                .width = .wide_end,
-            };
-            self.buffer.set(@intCast(second_x), @intCast(y_global), end_cell);
+            self.buffer.set(@intCast(second_x), @intCast(y_global), .wide_end);
         }
 
         result.graphemes_rendered += 1;
@@ -545,16 +536,9 @@ pub fn printAssumeNoGrapheme(
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
 
         if (width == 2) {
-            @branchHint(.unlikely);
-            assert(x_global + 1 < self.width_global);
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
-            const end_cell = Cell{
-                .data = .{ .codepoint = ' ' },
-                .tag = .codepoint,
-                .width = .wide_end,
-            };
-            self.buffer.set(@intCast(second_x), @intCast(y_global), end_cell);
+            self.buffer.set(@intCast(second_x), @intCast(y_global), .wide_end);
         }
 
         result.graphemes_rendered += 1;
@@ -592,8 +576,6 @@ const TestContext = struct {
         var buffer = try FrameBuffer.init(width, height, .{
             .max_cells = @as(usize, width) * @as(usize, height),
             .grapheme_buffer = .{ .max = 1024, .initial = 256 },
-            .grapheme_map_backing_memory = .{ .max = 1024, .initial = 256 },
-            .grapheme_map_initial_size = 64,
         });
         buffer.clear();
         return .{ .buffer = buffer };
@@ -607,7 +589,7 @@ const TestContext = struct {
         return self.buffer.scissor();
     }
 
-    fn expectCellAt(self: *TestContext, x: u16, y: u16, expected_cp: u21) !void {
+    fn expectCodepointAt(self: *TestContext, x: u16, y: u16, expected_cp: u21) !void {
         const cell = self.buffer.get(x, y);
         try testing.expectEqual(expected_cp, cell.data.codepoint);
     }
@@ -623,9 +605,10 @@ const TestContext = struct {
     }
 
     fn getGraphemeAt(self: *TestContext, x: u16, y: u16) ?[]const u8 {
-        const pos = Position{ .x = x, .y = y };
-        const grapheme_id = self.buffer.grapheme_map.get(pos) orelse return null;
-        return self.buffer.grapheme_buffer.get(grapheme_id);
+        const cell = self.buffer.get(x, y);
+        if (cell.tag != .grapheme) return null;
+        const id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(cell)));
+        return self.buffer.grapheme_buffer.get(id);
     }
 };
 
@@ -633,8 +616,6 @@ test "Scissor.initChild creates correct child region" {
     var fb = try FrameBuffer.init(20, 10, .{
         .max_cells = 300,
         .grapheme_buffer = .{ .max = 100, .initial = 100 },
-        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
-        .grapheme_map_initial_size = 1,
     });
     defer fb.deinit();
 
@@ -659,8 +640,6 @@ test "Scissor.fillRectangle clips to buffer bounds" {
     var fb = try FrameBuffer.init(10, 5, .{
         .max_cells = 300,
         .grapheme_buffer = .{ .max = 100, .initial = 100 },
-        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
-        .grapheme_map_initial_size = 1,
     });
     defer fb.deinit();
 
@@ -698,11 +677,11 @@ test "print basic ASCII" {
     try testing.expectEqual(@as(u16, 0), result.final_y);
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(1, 0, 'e');
-    try tc.expectCellAt(2, 0, 'l');
-    try tc.expectCellAt(3, 0, 'l');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(1, 0, 'e');
+    try tc.expectCodepointAt(2, 0, 'l');
+    try tc.expectCodepointAt(3, 0, 'l');
+    try tc.expectCodepointAt(4, 0, 'o');
 
     // All should be narrow width
     try tc.expectCellWidth(0, 0, .narrow);
@@ -720,12 +699,12 @@ test "print ASCII with offset" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Cells at offset should be set
-    try tc.expectCellAt(3, 2, 'H');
-    try tc.expectCellAt(4, 2, 'i');
+    try tc.expectCodepointAt(3, 2, 'H');
+    try tc.expectCodepointAt(4, 2, 'i');
 
     // Original cells should still be space
-    try tc.expectCellAt(0, 0, ' ');
-    try tc.expectCellAt(2, 2, ' ');
+    try tc.expectCodepointAt(0, 0, ' ');
+    try tc.expectCodepointAt(2, 2, ' ');
 }
 
 test "print ASCII truncates at right edge" {
@@ -738,11 +717,11 @@ test "print ASCII truncates at right edge" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.lines_used);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(1, 0, 'e');
-    try tc.expectCellAt(2, 0, 'l');
-    try tc.expectCellAt(3, 0, 'l');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(1, 0, 'e');
+    try tc.expectCodepointAt(2, 0, 'l');
+    try tc.expectCodepointAt(3, 0, 'l');
+    try tc.expectCodepointAt(4, 0, 'o');
 }
 
 test "print empty string" {
@@ -790,18 +769,18 @@ test "print wraps at scissor edge" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 'C');
-    try tc.expectCellAt(3, 0, 'D');
-    try tc.expectCellAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 'C');
+    try tc.expectCodepointAt(3, 0, 'D');
+    try tc.expectCodepointAt(4, 0, 'E');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'F');
-    try tc.expectCellAt(1, 1, 'G');
-    try tc.expectCellAt(2, 1, 'H');
-    try tc.expectCellAt(3, 1, 'I');
-    try tc.expectCellAt(4, 1, 'J');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(1, 1, 'G');
+    try tc.expectCodepointAt(2, 1, 'H');
+    try tc.expectCodepointAt(3, 1, 'I');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "print stops at bottom with wrap" {
@@ -816,12 +795,12 @@ test "print stops at bottom with wrap" {
     try testing.expectEqual(@as(u16, 2), result.lines_used);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'E');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'F');
-    try tc.expectCellAt(4, 1, 'J');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "print wrap disabled truncates" {
@@ -834,11 +813,11 @@ test "print wrap disabled truncates" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.lines_used);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(4, 0, 'o');
 
     // Row 1 should still be empty
-    try tc.expectCellAt(0, 1, ' ');
+    try tc.expectCodepointAt(0, 1, ' ');
 }
 
 test "print wrap with offset" {
@@ -856,12 +835,12 @@ test "print wrap with offset" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(3, 0, 'A');
-    try tc.expectCellAt(4, 0, 'B');
+    try tc.expectCodepointAt(3, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(4, 1, 'G');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(4, 1, 'G');
 }
 
 test "print multiple wraps" {
@@ -877,16 +856,16 @@ test "print multiple wraps" {
     try testing.expectEqual(@as(u16, 3), result.final_y);
 
     // Row 0: A B C
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(2, 0, 'C');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(2, 0, 'C');
 
     // Row 1: D E F
-    try tc.expectCellAt(0, 1, 'D');
-    try tc.expectCellAt(2, 1, 'F');
+    try tc.expectCodepointAt(0, 1, 'D');
+    try tc.expectCodepointAt(2, 1, 'F');
 
     // Row 2: G H I
-    try tc.expectCellAt(0, 2, 'G');
-    try tc.expectCellAt(2, 2, 'I');
+    try tc.expectCodepointAt(0, 2, 'G');
+    try tc.expectCodepointAt(2, 2, 'I');
 }
 
 test "print handles newlines" {
@@ -903,12 +882,12 @@ test "print handles newlines" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(1, 1, 'D');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(1, 1, 'D');
 }
 
 test "print multiple consecutive newlines" {
@@ -924,12 +903,12 @@ test "print multiple consecutive newlines" {
     try testing.expectEqual(@as(u16, 1), result.final_x);
     try testing.expectEqual(@as(u16, 3), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(0, 3, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 3, 'B');
 
     // Rows 1 and 2 should be empty
-    try tc.expectCellAt(0, 1, ' ');
-    try tc.expectCellAt(0, 2, ' ');
+    try tc.expectCodepointAt(0, 1, ' ');
+    try tc.expectCodepointAt(0, 2, ' ');
 }
 
 test "print newline at end" {
@@ -944,8 +923,8 @@ test "print newline at end" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(4, 0, 'o');
 }
 
 test "print carriage return" {
@@ -961,10 +940,10 @@ test "print carriage return" {
     try testing.expectEqual(@as(u16, 4), result.final_x);
     try testing.expectEqual(@as(u16, 0), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 'C');
-    try tc.expectCellAt(3, 0, 'D');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 'C');
+    try tc.expectCodepointAt(3, 0, 'D');
 }
 
 test "print CRLF" {
@@ -982,12 +961,12 @@ test "print CRLF" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(1, 1, 'D');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(1, 1, 'D');
 }
 
 test "print newline stops at bottom" {
@@ -1001,8 +980,8 @@ test "print newline stops at bottom" {
     try testing.expectEqual(@as(u16, 2), result.lines_used);
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(0, 1, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 1, 'B');
 }
 
 test "print newline with offset" {
@@ -1017,12 +996,12 @@ test "print newline with offset" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Row 1: _ _ _ A B
-    try tc.expectCellAt(3, 1, 'A');
-    try tc.expectCellAt(4, 1, 'B');
+    try tc.expectCodepointAt(3, 1, 'A');
+    try tc.expectCodepointAt(4, 1, 'B');
 
     // Row 2: C D (newline resets to column 0)
-    try tc.expectCellAt(0, 2, 'C');
-    try tc.expectCellAt(1, 2, 'D');
+    try tc.expectCodepointAt(0, 2, 'C');
+    try tc.expectCodepointAt(1, 2, 'D');
 }
 
 test "print expands tabs" {
@@ -1039,11 +1018,11 @@ test "print expands tabs" {
     try testing.expectEqual(@as(u16, 5), result.final_x);
     try testing.expectEqual(@as(u16, 0), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, ' '); // Tab space
-    try tc.expectCellAt(2, 0, ' '); // Tab space
-    try tc.expectCellAt(3, 0, ' '); // Tab space
-    try tc.expectCellAt(4, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, ' '); // Tab space
+    try tc.expectCodepointAt(2, 0, ' '); // Tab space
+    try tc.expectCodepointAt(3, 0, ' '); // Tab space
+    try tc.expectCodepointAt(4, 0, 'B');
 }
 
 test "print tab at tab stop" {
@@ -1056,11 +1035,11 @@ test "print tab at tab stop" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // 4 spaces + X
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(4, 0, ' '); // Tab space
-    try tc.expectCellAt(5, 0, ' '); // Tab space
-    try tc.expectCellAt(6, 0, ' '); // Tab space
-    try tc.expectCellAt(7, 0, ' '); // Tab space
-    try tc.expectCellAt(8, 0, 'X');
+    try tc.expectCodepointAt(4, 0, ' '); // Tab space
+    try tc.expectCodepointAt(5, 0, ' '); // Tab space
+    try tc.expectCodepointAt(6, 0, ' '); // Tab space
+    try tc.expectCodepointAt(7, 0, ' '); // Tab space
+    try tc.expectCodepointAt(8, 0, 'X');
 }
 
 test "print tab wraps" {
@@ -1078,8 +1057,8 @@ test "print tab wraps" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(3, 0, ' '); // Tab space
-    try tc.expectCellAt(4, 0, 'X');
+    try tc.expectCodepointAt(3, 0, ' '); // Tab space
+    try tc.expectCodepointAt(4, 0, 'X');
 }
 
 test "print tab wraps mid-tab" {
@@ -1097,8 +1076,8 @@ test "print tab wraps mid-tab" {
     try testing.expectEqual(@as(u16, 1), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(4, 0, ' '); // First tab space
-    try tc.expectCellAt(0, 1, 'X'); // Tab space after wrap
+    try tc.expectCodepointAt(4, 0, ' '); // First tab space
+    try tc.expectCodepointAt(0, 1, 'X'); // Tab space after wrap
 }
 
 test "print custom tab width" {
@@ -1112,9 +1091,9 @@ test "print custom tab width" {
     try testing.expectEqual(@as(usize, 9), result.graphemes_rendered); // A + 7 spaces + B
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(7, 0, ' '); // Last tab space
-    try tc.expectCellAt(8, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(7, 0, ' '); // Last tab space
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "print tab truncates without wrap" {
@@ -1131,9 +1110,9 @@ test "print tab truncates without wrap" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(3, 0, ' ');
-    try tc.expectCellAt(4, 0, 'X');
-    try tc.expectCellAt(0, 1, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
+    try tc.expectCodepointAt(4, 0, 'X');
+    try tc.expectCodepointAt(0, 1, ' ');
 }
 
 test "print multiple tabs" {
@@ -1148,9 +1127,9 @@ test "print multiple tabs" {
     try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, ' '); // Start of second tab
-    try tc.expectCellAt(8, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, ' '); // Start of second tab
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "print UTF-8 narrow" {
@@ -1165,10 +1144,10 @@ test "print UTF-8 narrow" {
     try testing.expectEqual(@as(usize, 4), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 4), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'c');
-    try tc.expectCellAt(1, 0, 'a');
-    try tc.expectCellAt(2, 0, 'f');
-    try tc.expectCellAt(3, 0, 0xE9); // é = U+00E9
+    try tc.expectCodepointAt(0, 0, 'c');
+    try tc.expectCodepointAt(1, 0, 'a');
+    try tc.expectCodepointAt(2, 0, 'f');
+    try tc.expectCodepointAt(3, 0, 0xE9); // é = U+00E9
 
     // All should be narrow width and codepoint tag (single codepoint each)
     try tc.expectCellWidth(3, 0, .narrow);
@@ -1186,7 +1165,7 @@ test "print Euro sign" {
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.final_x);
 
-    try tc.expectCellAt(0, 0, 0x20AC); // € = U+20AC
+    try tc.expectCodepointAt(0, 0, 0x20AC); // € = U+20AC
     try tc.expectCellWidth(0, 0, .narrow);
     try tc.expectCellTag(0, 0, .codepoint);
 }
@@ -1203,8 +1182,6 @@ test "print combining marks" {
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.final_x);
 
-    // Cell should store first codepoint 'e' but have tag = .grapheme
-    try tc.expectCellAt(0, 0, 'e');
     try tc.expectCellWidth(0, 0, .narrow);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1224,7 +1201,6 @@ test "print multiple combining marks" {
     try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // 1 + 2 + 2 bytes
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'a');
     try tc.expectCellTag(0, 0, .grapheme);
 
     const grapheme = tc.getGraphemeAt(0, 0);
@@ -1243,13 +1219,13 @@ test "print mixed ASCII and UTF-8" {
     try testing.expectEqual(@as(usize, 11), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 11), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(5, 0, ' ');
-    try tc.expectCellAt(6, 0, 'c');
-    try tc.expectCellAt(7, 0, 'a');
-    try tc.expectCellAt(8, 0, 'f');
-    try tc.expectCellAt(9, 0, 0xE9); // é
-    try tc.expectCellAt(10, 0, '!');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(5, 0, ' ');
+    try tc.expectCodepointAt(6, 0, 'c');
+    try tc.expectCodepointAt(7, 0, 'a');
+    try tc.expectCodepointAt(8, 0, 'f');
+    try tc.expectCodepointAt(9, 0, 0xE9); // é
+    try tc.expectCodepointAt(10, 0, '!');
 }
 
 test "print combining with wrap" {
@@ -1265,10 +1241,9 @@ test "print combining with wrap" {
     try testing.expectEqual(@as(usize, 6), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 2), result.lines_used);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, 'e');
+    try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCellTag(4, 0, .grapheme);
-    try tc.expectCellAt(0, 1, 'F');
+    try tc.expectCodepointAt(0, 1, 'F');
 }
 
 test "print UTF-8 truncates at edge" {
@@ -1281,9 +1256,9 @@ test "print UTF-8 truncates at edge" {
     // Only A, B, é should render
     try testing.expectEqual(@as(usize, 3), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 0xE9);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 0xE9);
 }
 
 test "print CJK characters" {
@@ -1299,15 +1274,15 @@ test "print CJK characters" {
     try testing.expectEqual(@as(u16, 4), result.final_x);
 
     // First character: 中 (U+4E2D)
-    try tc.expectCellAt(0, 0, 0x4E2D);
+    try tc.expectCodepointAt(0, 0, 0x4E2D);
     try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCodepointAt(1, 0, ' ');
     try tc.expectCellWidth(1, 0, .wide_end);
 
     // Second character: 文 (U+6587)
-    try tc.expectCellAt(2, 0, 0x6587);
+    try tc.expectCodepointAt(2, 0, 0x6587);
     try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
@@ -1323,9 +1298,9 @@ test "print emoji" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // Emoji: 😀 (U+1F600)
-    try tc.expectCellAt(0, 0, 0x1F600);
+    try tc.expectCodepointAt(0, 0, 0x1F600);
     try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCodepointAt(1, 0, ' ');
     try tc.expectCellWidth(1, 0, .wide_end);
 }
 
@@ -1343,15 +1318,15 @@ test "print wide at boundary wraps" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0: A B _
-    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCellWidth(0, 0, .narrow);
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(1, 0, 'B');
     try tc.expectCellWidth(1, 0, .narrow);
 
     // Row 1: 中 (wide_start + wide_end)
-    try tc.expectCellAt(0, 1, 0x4E2D);
+    try tc.expectCodepointAt(0, 1, 0x4E2D);
     try tc.expectCellWidth(0, 1, .wide_start);
-    try tc.expectCellAt(1, 1, ' ');
+    try tc.expectCodepointAt(1, 1, ' ');
     try tc.expectCellWidth(1, 1, .wide_end);
 }
 
@@ -1368,14 +1343,14 @@ test "print wide at boundary no wrap" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCellWidth(0, 0, .narrow);
 
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(1, 0, 'B');
     try tc.expectCellWidth(1, 0, .narrow);
 
     // Empty cell at position 2
-    try tc.expectCellAt(2, 0, ' ');
+    try tc.expectCodepointAt(2, 0, ' ');
     try tc.expectCellWidth(2, 0, .narrow);
 }
 
@@ -1390,11 +1365,11 @@ test "print wide exactly fits" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 0x4E2D);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 0x4E2D);
     try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
@@ -1413,13 +1388,13 @@ test "print multiple wide characters wrap" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 0x4E2D); // 中
+    try tc.expectCodepointAt(0, 0, 0x4E2D); // 中
     try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellAt(2, 0, 0x6587); // 文
+    try tc.expectCodepointAt(2, 0, 0x6587); // 文
     try tc.expectCellWidth(2, 0, .wide_start);
 
     // Row 1
-    try tc.expectCellAt(0, 1, 0x5B57); // 字
+    try tc.expectCodepointAt(0, 1, 0x5B57); // 字
     try tc.expectCellWidth(0, 1, .wide_start);
 }
 
@@ -1435,13 +1410,13 @@ test "print mixed narrow and wide" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'H');
+    try tc.expectCodepointAt(0, 0, 'H');
     try tc.expectCellWidth(0, 0, .narrow);
-    try tc.expectCellAt(5, 0, 0x4E2D); // 中
+    try tc.expectCodepointAt(5, 0, 0x4E2D); // 中
     try tc.expectCellWidth(5, 0, .wide_start);
-    try tc.expectCellAt(7, 0, 0x6587); // 文
+    try tc.expectCodepointAt(7, 0, 0x6587); // 文
     try tc.expectCellWidth(7, 0, .wide_start);
-    try tc.expectCellAt(9, 0, '!');
+    try tc.expectCodepointAt(9, 0, '!');
     try tc.expectCellWidth(9, 0, .narrow);
 }
 
@@ -1457,7 +1432,6 @@ test "print skin tone emoji" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // First cell: base emoji with grapheme tag (multi-codepoint)
-    try tc.expectCellAt(0, 0, 0x1F468); // 👨 U+1F468
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1484,7 +1458,6 @@ test "print ZWJ family sequence" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // First cell: base emoji with grapheme tag
-    try tc.expectCellAt(0, 0, 0x1F468); // 👨 U+1F468
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1510,7 +1483,6 @@ test "print flag emoji" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // First cell: first regional indicator with grapheme tag
-    try tc.expectCellAt(0, 0, 0x1F1FA); // 🇺 U+1F1FA
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1536,7 +1508,6 @@ test "print variation selector emoji" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // First cell: heart with grapheme tag (multi-codepoint due to VS16)
-    try tc.expectCellAt(0, 0, 0x2764); // ❤ U+2764
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1562,7 +1533,7 @@ test "print text heart without variation selector" {
     try testing.expectEqual(@as(u16, 1), result.final_x);
 
     // Single codepoint, narrow width, codepoint tag
-    try tc.expectCellAt(0, 0, 0x2764); // ❤ U+2764
+    try tc.expectCodepointAt(0, 0, 0x2764); // ❤ U+2764
     try tc.expectCellWidth(0, 0, .narrow);
     try tc.expectCellTag(0, 0, .codepoint);
 }
@@ -1580,7 +1551,6 @@ test "print keycap sequence" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // First cell: '1' with grapheme tag
-    try tc.expectCellAt(0, 0, '1');
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
 
@@ -1605,7 +1575,6 @@ test "print ZWJ profession emoji" {
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
-    try tc.expectCellAt(0, 0, 0x1F468); // 👨
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
     try tc.expectCellWidth(1, 0, .wide_end);
@@ -1627,7 +1596,6 @@ test "print subdivision flag" {
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
-    try tc.expectCellAt(0, 0, 0x1F3F4); // 🏴
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
     try tc.expectCellWidth(1, 0, .wide_end);
@@ -1649,7 +1617,6 @@ test "print complex emoji with skin tone and profession" {
     try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
-    try tc.expectCellAt(0, 0, 0x1F468); // 👨
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
     try tc.expectCellWidth(1, 0, .wide_end);
@@ -1672,13 +1639,11 @@ test "print multiple complex emoji in sequence" {
     try testing.expectEqual(@as(u16, 4), result.final_x);
 
     // First flag: 🇺🇸
-    try tc.expectCellAt(0, 0, 0x1F1FA);
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellTag(0, 0, .grapheme);
     try tc.expectCellWidth(1, 0, .wide_end);
 
     // Second flag: 🇬🇧
-    try tc.expectCellAt(2, 0, 0x1F1EC);
     try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCellTag(2, 0, .grapheme);
     try tc.expectCellWidth(3, 0, .wide_end);
@@ -1698,9 +1663,8 @@ test "print complex emoji at boundary wraps" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCellWidth(0, 0, .narrow);
-    try tc.expectCellAt(1, 0, 0x1F468);
     try tc.expectCellWidth(1, 0, .wide_start);
     try tc.expectCellWidth(2, 0, .wide_end);
 }
@@ -1719,11 +1683,10 @@ test "print complex emoji at boundary with only 1 cell wraps" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0: A B _
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 
     // Row 1: emoji
-    try tc.expectCellAt(0, 1, 0x1F468);
     try tc.expectCellWidth(0, 1, .wide_start);
     try tc.expectCellTag(0, 1, .grapheme);
     try tc.expectCellWidth(1, 1, .wide_end);
@@ -1742,15 +1705,14 @@ test "print mixed text and complex graphemes" {
     try testing.expectEqual(@as(usize, 11), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 14), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(5, 0, ' ');
-    try tc.expectCellAt(6, 0, 0x1F468); // Family emoji
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(5, 0, ' ');
     try tc.expectCellTag(6, 0, .grapheme);
     try tc.expectCellWidth(6, 0, .wide_start);
-    try tc.expectCellAt(8, 0, ' ');
-    try tc.expectCellAt(9, 0, 0x4E16); // 世
+    try tc.expectCodepointAt(8, 0, ' ');
+    try tc.expectCodepointAt(9, 0, 0x4E16); // 世
     try tc.expectCellWidth(9, 0, .wide_start);
-    try tc.expectCellAt(13, 0, '!');
+    try tc.expectCodepointAt(13, 0, '!');
 }
 
 test "print mixed content with all features" {
@@ -1766,14 +1728,14 @@ test "print mixed content with all features" {
     try testing.expectEqual(@as(u16, 2), result.lines_used);
 
     // Verify line 0 content
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(6, 0, 0x4E16); // 世
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(6, 0, 0x4E16); // 世
     try tc.expectCellWidth(6, 0, .wide_start);
-    try tc.expectCellAt(10, 0, '!');
+    try tc.expectCodepointAt(10, 0, '!');
 
     // Verify line 1 content (after newline and tab)
-    try tc.expectCellAt(0, 1, ' '); // Tab expanded to spaces
-    try tc.expectCellAt(4, 1, 'T');
+    try tc.expectCodepointAt(0, 1, ' '); // Tab expanded to spaces
+    try tc.expectCodepointAt(4, 1, 'T');
 }
 
 test "print invalid UTF-8 produces replacement characters" {
@@ -1790,8 +1752,8 @@ test "print invalid UTF-8 produces replacement characters" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // Both cells should contain U+FFFD (replacement character)
-    try tc.expectCellAt(0, 0, 0xFFFD);
-    try tc.expectCellAt(1, 0, 0xFFFD);
+    try tc.expectCodepointAt(0, 0, 0xFFFD);
+    try tc.expectCodepointAt(1, 0, 0xFFFD);
 }
 
 test "print very long line" {
@@ -1815,9 +1777,9 @@ test "print very long line" {
 
     // Verify first and last positions
     // Index i maps to 'A' + (i % 26)
-    try tc.expectCellAt(0, 0, 'A'); // index 0
-    try tc.expectCellAt(79, 0, 'A' + (79 % 26)); // index 79 % 26 = 1 -> 'B'
-    try tc.expectCellAt(0, 1, 'A' + (80 % 26)); // index 80 % 26 = 2 -> 'C'
+    try tc.expectCodepointAt(0, 0, 'A'); // index 0
+    try tc.expectCodepointAt(79, 0, 'A' + (79 % 26)); // index 79 % 26 = 1 -> 'B'
+    try tc.expectCodepointAt(0, 1, 'A' + (80 % 26)); // index 80 % 26 = 2 -> 'C'
 }
 
 test "print exact boundary - fills line exactly" {
@@ -1844,9 +1806,9 @@ test "print exact boundary - wide char fills last two cells" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 0x4E2D); // 中
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 0x4E2D); // 中
     try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCellWidth(3, 0, .wide_end);
 }
@@ -1863,11 +1825,11 @@ test "printAssumeNoGrapheme basic ASCII" {
     try testing.expectEqual(@as(u16, 0), result.final_y);
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(1, 0, 'e');
-    try tc.expectCellAt(2, 0, 'l');
-    try tc.expectCellAt(3, 0, 'l');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(1, 0, 'e');
+    try tc.expectCodepointAt(2, 0, 'l');
+    try tc.expectCodepointAt(3, 0, 'l');
+    try tc.expectCodepointAt(4, 0, 'o');
 
     // All should be narrow width
     try tc.expectCellWidth(0, 0, .narrow);
@@ -1885,12 +1847,12 @@ test "printAssumeNoGrapheme ASCII with offset" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Cells at offset should be set
-    try tc.expectCellAt(3, 2, 'H');
-    try tc.expectCellAt(4, 2, 'i');
+    try tc.expectCodepointAt(3, 2, 'H');
+    try tc.expectCodepointAt(4, 2, 'i');
 
     // Original cells should still be space
-    try tc.expectCellAt(0, 0, ' ');
-    try tc.expectCellAt(2, 2, ' ');
+    try tc.expectCodepointAt(0, 0, ' ');
+    try tc.expectCodepointAt(2, 2, ' ');
 }
 
 test "printAssumeNoGrapheme ASCII truncates at right edge" {
@@ -1903,11 +1865,11 @@ test "printAssumeNoGrapheme ASCII truncates at right edge" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.lines_used);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(1, 0, 'e');
-    try tc.expectCellAt(2, 0, 'l');
-    try tc.expectCellAt(3, 0, 'l');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(1, 0, 'e');
+    try tc.expectCodepointAt(2, 0, 'l');
+    try tc.expectCodepointAt(3, 0, 'l');
+    try tc.expectCodepointAt(4, 0, 'o');
 }
 
 test "printAssumeNoGrapheme outside buffer returns early" {
@@ -1935,12 +1897,12 @@ test "printAssumeNoGrapheme wraps at scissor edge" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'E');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'F');
-    try tc.expectCellAt(4, 1, 'J');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "printAssumeNoGrapheme stops at bottom with wrap" {
@@ -1955,12 +1917,12 @@ test "printAssumeNoGrapheme stops at bottom with wrap" {
     try testing.expectEqual(@as(u16, 2), result.lines_used);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'E');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'F');
-    try tc.expectCellAt(4, 1, 'J');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "printAssumeNoGrapheme wrap disabled truncates" {
@@ -1973,11 +1935,11 @@ test "printAssumeNoGrapheme wrap disabled truncates" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 1), result.lines_used);
 
-    try tc.expectCellAt(0, 0, 'H');
-    try tc.expectCellAt(4, 0, 'o');
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(4, 0, 'o');
 
     // Row 1 should still be empty
-    try tc.expectCellAt(0, 1, ' ');
+    try tc.expectCodepointAt(0, 1, ' ');
 }
 
 test "printAssumeNoGrapheme wrap with offset" {
@@ -1995,12 +1957,12 @@ test "printAssumeNoGrapheme wrap with offset" {
     try testing.expectEqual(@as(u16, 2), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(3, 0, 'A');
-    try tc.expectCellAt(4, 0, 'B');
+    try tc.expectCodepointAt(3, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(4, 1, 'G');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(4, 1, 'G');
 }
 
 test "printAssumeNoGrapheme multiple wraps" {
@@ -2016,16 +1978,16 @@ test "printAssumeNoGrapheme multiple wraps" {
     try testing.expectEqual(@as(u16, 3), result.final_y);
 
     // Row 0: A B C
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(2, 0, 'C');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(2, 0, 'C');
 
     // Row 1: D E F
-    try tc.expectCellAt(0, 1, 'D');
-    try tc.expectCellAt(2, 1, 'F');
+    try tc.expectCodepointAt(0, 1, 'D');
+    try tc.expectCodepointAt(2, 1, 'F');
 
     // Row 2: G H I
-    try tc.expectCellAt(0, 2, 'G');
-    try tc.expectCellAt(2, 2, 'I');
+    try tc.expectCodepointAt(0, 2, 'G');
+    try tc.expectCodepointAt(2, 2, 'I');
 }
 
 test "printAssumeNoGrapheme handles newlines" {
@@ -2042,12 +2004,12 @@ test "printAssumeNoGrapheme handles newlines" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(1, 1, 'D');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(1, 1, 'D');
 }
 
 test "printAssumeNoGrapheme multiple consecutive newlines" {
@@ -2063,12 +2025,12 @@ test "printAssumeNoGrapheme multiple consecutive newlines" {
     try testing.expectEqual(@as(u16, 1), result.final_x);
     try testing.expectEqual(@as(u16, 3), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(0, 3, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 3, 'B');
 
     // Rows 1 and 2 should be empty
-    try tc.expectCellAt(0, 1, ' ');
-    try tc.expectCellAt(0, 2, ' ');
+    try tc.expectCodepointAt(0, 1, ' ');
+    try tc.expectCodepointAt(0, 2, ' ');
 }
 
 test "printAssumeNoGrapheme CRLF not combined" {
@@ -2086,12 +2048,12 @@ test "printAssumeNoGrapheme CRLF not combined" {
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
     // Row 0
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 
     // Row 1
-    try tc.expectCellAt(0, 1, 'C');
-    try tc.expectCellAt(1, 1, 'D');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(1, 1, 'D');
 }
 
 test "printAssumeNoGrapheme newline stops at bottom" {
@@ -2105,8 +2067,8 @@ test "printAssumeNoGrapheme newline stops at bottom" {
     try testing.expectEqual(@as(u16, 2), result.lines_used);
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(0, 1, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 1, 'B');
 }
 
 test "printAssumeNoGrapheme expands tabs" {
@@ -2123,11 +2085,11 @@ test "printAssumeNoGrapheme expands tabs" {
     try testing.expectEqual(@as(u16, 5), result.final_x);
     try testing.expectEqual(@as(u16, 0), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, ' '); // Tab space
-    try tc.expectCellAt(2, 0, ' '); // Tab space
-    try tc.expectCellAt(3, 0, ' '); // Tab space
-    try tc.expectCellAt(4, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, ' '); // Tab space
+    try tc.expectCodepointAt(2, 0, ' '); // Tab space
+    try tc.expectCodepointAt(3, 0, ' '); // Tab space
+    try tc.expectCodepointAt(4, 0, 'B');
 }
 
 test "printAssumeNoGrapheme tab at tab stop" {
@@ -2140,11 +2102,11 @@ test "printAssumeNoGrapheme tab at tab stop" {
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // 4 spaces + X
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(4, 0, ' '); // Tab space
-    try tc.expectCellAt(5, 0, ' '); // Tab space
-    try tc.expectCellAt(6, 0, ' '); // Tab space
-    try tc.expectCellAt(7, 0, ' '); // Tab space
-    try tc.expectCellAt(8, 0, 'X');
+    try tc.expectCodepointAt(4, 0, ' '); // Tab space
+    try tc.expectCodepointAt(5, 0, ' '); // Tab space
+    try tc.expectCodepointAt(6, 0, ' '); // Tab space
+    try tc.expectCodepointAt(7, 0, ' '); // Tab space
+    try tc.expectCodepointAt(8, 0, 'X');
 }
 
 test "printAssumeNoGrapheme custom tab width" {
@@ -2158,9 +2120,9 @@ test "printAssumeNoGrapheme custom tab width" {
     try testing.expectEqual(@as(usize, 9), result.graphemes_rendered); // A + 7 spaces + B
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(7, 0, ' '); // Last tab space
-    try tc.expectCellAt(8, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(7, 0, ' '); // Last tab space
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "printAssumeNoGrapheme multiple tabs" {
@@ -2175,9 +2137,9 @@ test "printAssumeNoGrapheme multiple tabs" {
     try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 9), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(4, 0, ' '); // Start of second tab
-    try tc.expectCellAt(8, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, ' '); // Start of second tab
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "printAssumeNoGrapheme tab_width zero" {
@@ -2190,8 +2152,8 @@ test "printAssumeNoGrapheme tab_width zero" {
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered); // A + 1 space + B
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 }
 
 test "printAssumeNoGrapheme UTF-8 narrow" {
@@ -2206,29 +2168,13 @@ test "printAssumeNoGrapheme UTF-8 narrow" {
     try testing.expectEqual(@as(usize, 4), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 4), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'c');
-    try tc.expectCellAt(1, 0, 'a');
-    try tc.expectCellAt(2, 0, 'f');
-    try tc.expectCellAt(3, 0, 0xE9); // é = U+00E9
+    try tc.expectCodepointAt(0, 0, 'c');
+    try tc.expectCodepointAt(1, 0, 'a');
+    try tc.expectCodepointAt(2, 0, 'f');
+    try tc.expectCodepointAt(3, 0, 0xE9); // é = U+00E9
 
     try tc.expectCellWidth(3, 0, .narrow);
     try tc.expectCellTag(3, 0, .codepoint);
-}
-
-test "printAssumeNoGrapheme Euro sign" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // "€" is 3 bytes (E2 82 AC), width=1
-    const result = printAssumeNoGrapheme(tc.scissor(), "€", 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 3), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 1), result.final_x);
-
-    try tc.expectCellAt(0, 0, 0x20AC); // € = U+20AC
-    try tc.expectCellWidth(0, 0, .narrow);
-    try tc.expectCellTag(0, 0, .codepoint);
 }
 
 test "printAssumeNoGrapheme CJK" {
@@ -2244,15 +2190,15 @@ test "printAssumeNoGrapheme CJK" {
     try testing.expectEqual(@as(u16, 4), result.final_x);
 
     // First character: 中 (U+4E2D)
-    try tc.expectCellAt(0, 0, 0x4E2D);
+    try tc.expectCodepointAt(0, 0, 0x4E2D);
     try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCodepointAt(1, 0, ' ');
     try tc.expectCellWidth(1, 0, .wide_end);
 
     // Second character: 文 (U+6587)
-    try tc.expectCellAt(2, 0, 0x6587);
+    try tc.expectCodepointAt(2, 0, 0x6587);
     try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
@@ -2268,9 +2214,9 @@ test "printAssumeNoGrapheme emoji" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // Emoji: 😀 (U+1F600)
-    try tc.expectCellAt(0, 0, 0x1F600);
+    try tc.expectCodepointAt(0, 0, 0x1F600);
     try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellAt(1, 0, ' ');
+    try tc.expectCodepointAt(1, 0, ' ');
     try tc.expectCellWidth(1, 0, .wide_end);
 }
 
@@ -2285,14 +2231,14 @@ test "printAssumeNoGrapheme wide at boundary no wrap skips" {
 
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCellWidth(0, 0, .narrow);
 
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(1, 0, 'B');
     try tc.expectCellWidth(1, 0, .narrow);
 
     // Cell at position 2 should still be empty (space)
-    try tc.expectCellAt(2, 0, ' ');
+    try tc.expectCodepointAt(2, 0, ' ');
 }
 
 test "printAssumeNoGrapheme wide exactly fits" {
@@ -2306,11 +2252,11 @@ test "printAssumeNoGrapheme wide exactly fits" {
     try testing.expectEqual(@as(u16, 0), result.final_x);
     try testing.expectEqual(@as(u16, 1), result.final_y);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
-    try tc.expectCellAt(2, 0, 0x4E2D);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 0x4E2D);
     try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCellAt(3, 0, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
@@ -2329,8 +2275,8 @@ test "printAssumeNoGrapheme skips zero-width" {
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 }
 
 test "printAssumeNoGrapheme zero-width joiner ignored" {
@@ -2345,8 +2291,8 @@ test "printAssumeNoGrapheme zero-width joiner ignored" {
     try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // 1 + 3 + 1 bytes
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 'A');
-    try tc.expectCellAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
 }
 
 test "printAssumeNoGrapheme invalid UTF-8 replacement char" {
@@ -2362,8 +2308,8 @@ test "printAssumeNoGrapheme invalid UTF-8 replacement char" {
     try testing.expectEqual(@as(u16, 2), result.final_x);
 
     // Both cells should contain U+FFFD (replacement character)
-    try tc.expectCellAt(0, 0, 0xFFFD);
-    try tc.expectCellAt(1, 0, 0xFFFD);
+    try tc.expectCodepointAt(0, 0, 0xFFFD);
+    try tc.expectCodepointAt(1, 0, 0xFFFD);
 }
 
 test "printAssumeNoGrapheme invalid mid-sequence" {
@@ -2378,16 +2324,14 @@ test "printAssumeNoGrapheme invalid mid-sequence" {
     try testing.expectEqual(@as(usize, 2), result.bytes_consumed);
     try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
 
-    try tc.expectCellAt(0, 0, 0xFFFD);
-    try tc.expectCellAt(1, 0, 0xFFFD);
+    try tc.expectCodepointAt(0, 0, 0xFFFD);
+    try tc.expectCodepointAt(1, 0, 0xFFFD);
 }
 
 test "Scissor.fillRectangle fills partial region" {
     var fb = try FrameBuffer.init(10, 5, .{
         .max_cells = 300,
         .grapheme_buffer = .{ .max = 100, .initial = 100 },
-        .grapheme_map_backing_memory = .{ .max = 100, .initial = 100 },
-        .grapheme_map_initial_size = 1,
     });
     defer fb.deinit();
 

@@ -136,8 +136,6 @@ fn runBenchmark(text: []const u8, config: Config) !BenchmarkResult {
     var frame_buffer = try FrameBuffer.init(config.buffer_width, config.buffer_height, .{
         .max_cells = @as(usize, config.buffer_width) * @as(usize, config.buffer_height),
         .grapheme_buffer = .{ .max = 1024 * 1024, .initial = 64 * 1024 },
-        .grapheme_map_backing_memory = .{ .max = 512 * 1024, .initial = 32 * 1024 },
-        .grapheme_map_initial_size = 4096,
     });
     defer frame_buffer.deinit();
 

@@ -118,9 +118,10 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
             } else {
                 // Grapheme cluster (10%)
                 const grapheme = "e\u{0301}";
-                try buffer.putGrapheme(@intCast(col), @intCast(row), grapheme);
+                const id = try buffer.grapheme_buffer.put(grapheme);
                 buffer.cells.reserved_pages[idx] = Cell{
-                    .data = .{ .codepoint = 'e' },
+                    .data = .{ .grapheme_id = @truncate(id) },
+                    .grapheme_id_extension = @truncate(id >> 21),
                     .tag = .grapheme,
                     .width = .narrow,
                 };
@@ -157,8 +158,6 @@ fn benchFullRedrawAscii(config: Config) !BenchmarkResult {
     var buffer = try FrameBuffer.init(config.width, config.height, .{
         .max_cells = @as(usize, config.width) * @as(usize, config.height),
         .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-        .grapheme_map_backing_memory = .{ .max = 32 * 1024, .initial = 2 * 1024 },
-        .grapheme_map_initial_size = 256,
     });
     defer buffer.deinit();
 
@@ -195,8 +194,6 @@ fn benchFullRedrawMixed(config: Config) !BenchmarkResult {
     var buffer = try FrameBuffer.init(config.width, config.height, .{
         .max_cells = @as(usize, config.width) * @as(usize, config.height),
         .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-        .grapheme_map_backing_memory = .{ .max = 32 * 1024, .initial = 2 * 1024 },
-        .grapheme_map_initial_size = 256,
     });
     defer buffer.deinit();
 
@@ -234,15 +231,11 @@ fn benchDiff(config: Config, change_percent: u8) !BenchmarkResult {
     buffers[0] = try FrameBuffer.init(config.width, config.height, .{
         .max_cells = @as(usize, config.width) * @as(usize, config.height),
         .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-        .grapheme_map_backing_memory = .{ .max = 32 * 1024, .initial = 2 * 1024 },
-        .grapheme_map_initial_size = 256,
     });
     defer buffers[0].deinit();
     buffers[1] = try FrameBuffer.init(config.width, config.height, .{
         .max_cells = @as(usize, config.width) * @as(usize, config.height),
         .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-        .grapheme_map_backing_memory = .{ .max = 32 * 1024, .initial = 2 * 1024 },
-        .grapheme_map_initial_size = 256,
     });
     defer buffers[1].deinit();
 
