@@ -48,7 +48,7 @@ previous_mouse_down: MouseState = .{},
 memory_pool: MemoryPool,
 arena: MemoryPool.ArenaAllocator,
 
-pub fn init(self: *Renderer, terminal: *Terminal, options: FrameBuffer.Options) error{ OutOfMemory, ReserveFailed }!void {
+pub fn init(self: *Renderer, terminal: *Terminal, options: FrameBuffer.Options) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!void {
     self.buffers[0] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
     self.buffers[1] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
     self.render_buffer = &self.buffers[0];

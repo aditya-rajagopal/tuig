@@ -12,8 +12,6 @@ const Scissor = @import("Scissor.zig");
 pub const Options = struct {
     max_cells: usize,
     grapheme_buffer: Size,
-    grapheme_map_backing_memory: Size,
-    grapheme_map_initial_size: usize,
 
     pub const Size = struct {
         max: usize,
@@ -23,22 +21,16 @@ pub const Options = struct {
     pub const default_screen = Options{
         .max_cells = 512 * 512, // 2MB cache
         .grapheme_buffer = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
-        .grapheme_map_backing_memory = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
-        .grapheme_map_initial_size = 1024,
     };
 
     pub const small_buffer = Options{
         .max_cells = 128 * 128, // 128kb buffer
         .grapheme_buffer = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
-        .grapheme_map_backing_memory = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
-        .grapheme_map_initial_size = 256,
     };
 
     pub const tiny_buffer = Options{
         .max_cells = 64 * 64, // 32kb buffer
         .grapheme_buffer = .{ .max = stdx.KB(8), .initial = stdx.KB(4) },
-        .grapheme_map_backing_memory = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
-        .grapheme_map_initial_size = 256,
     };
 };
 
@@ -47,43 +39,32 @@ cells: t.CellBuffer,
 width: u16,
 height: u16,
 grapheme_buffer: t.GraphemeBuffer,
-grapheme_map: t.GraphemeMap,
-grapheme_map_allocator: t.GraphemeMapAllocator,
 
 pub fn init(
     width: u16,
     height: u16,
     options: Options,
-) error{ OutOfMemory, ReserveFailed }!FrameBuffer {
+) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!FrameBuffer {
     assert(@as(usize, width) * @as(usize, height) <= options.max_cells);
     assert(options.grapheme_buffer.initial <= options.grapheme_buffer.max);
-    assert(options.grapheme_map_backing_memory.initial <= options.grapheme_map_backing_memory.max);
 
     var buffer: FrameBuffer = undefined;
     buffer.width = width;
     buffer.height = height;
     buffer.cells = try t.CellBuffer.initCapacity(options.max_cells, width * height);
     buffer.grapheme_buffer = try t.GraphemeBuffer.initCapacity(options.grapheme_buffer.max, options.grapheme_buffer.initial);
-    buffer.grapheme_map_allocator = try t.GraphemeMapAllocator.initCapacity(
-        options.grapheme_map_backing_memory.max,
-        options.grapheme_map_backing_memory.initial,
-    );
-    buffer.grapheme_map = .empty;
-    try buffer.grapheme_map.ensureTotalCapacity(buffer.grapheme_map_allocator.allocator(), @intCast(options.grapheme_map_initial_size));
     return buffer;
 }
 
 pub fn deinit(self: *FrameBuffer) void {
     self.cells.deinit();
     self.grapheme_buffer.deinit();
-    self.grapheme_map_allocator.deinit();
 }
 
 pub fn clear(self: *FrameBuffer) void {
     const num_cells = @as(usize, self.width) * @as(usize, self.height);
     @memset(self.cells.reserved_pages[0..num_cells], .empty);
     self.grapheme_buffer.reset();
-    self.grapheme_map.clearRetainingCapacity();
 }
 
 pub fn scissor(self: *FrameBuffer) Scissor {
@@ -94,12 +75,6 @@ pub fn scissor(self: *FrameBuffer) Scissor {
         .height_global = self.height,
         .buffer = self,
     };
-}
-
-pub fn putGrapheme(self: *FrameBuffer, x: u16, y: u16, grapheme: []const u8) error{OutOfMemory}!void {
-    const pos = t.Position{ .x = x, .y = y };
-    const id = try self.grapheme_buffer.put(grapheme);
-    try self.grapheme_map.put(self.grapheme_map_allocator.allocator(), pos, id);
 }
 
 pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
@@ -114,12 +89,6 @@ pub inline fn get(self: FrameBuffer, x: u16, y: u16) Cell {
     assert(y < self.height);
     const index: usize = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
     return self.cells.reserved_pages[index];
-}
-
-pub fn getGrapheme(self: *const FrameBuffer, x: u16, y: u16) ?[]const u8 {
-    const pos = t.Position{ .x = x, .y = y };
-    const grapheme_id = self.grapheme_map.get(pos) orelse return null;
-    return self.grapheme_buffer.get(grapheme_id);
 }
 
 pub inline fn renderCell(frame_buffer: *const FrameBuffer, row: usize, col: usize, writer: *std.Io.Writer) error{WriteFailed}!u3 {
@@ -143,7 +112,8 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, row: usize, col: usiz
             try writer.writeAll(bytes[0..len]);
         },
         .grapheme => {
-            const bytes = frame_buffer.getGrapheme(@intCast(col), @intCast(row)) orelse {
+            const id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(cell)));
+            const bytes = frame_buffer.grapheme_buffer.get(id) orelse {
                 @branchHint(.cold);
                 // This should never happen?
                 try writer.writeAll("\xEF\xBF\xBD"); // U+FFFD
@@ -173,8 +143,10 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
     if (!new_cell.eql(old_cell)) {
         return true;
     } else if (old_cell.tag == .grapheme) {
-        const old_grapheme = back_bufer.getGrapheme(@intCast(col), @intCast(row)) orelse return true;
-        const new_grapheme = self.getGrapheme(@intCast(col), @intCast(row)) orelse return false;
+        const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(old_cell)));
+        const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(new_cell)));
+        const old_grapheme = back_bufer.grapheme_buffer.get(old_id) orelse return true;
+        const new_grapheme = self.grapheme_buffer.get(new_id) orelse return false;
         return !std.mem.eql(u8, old_grapheme, new_grapheme);
     } else {
         return false;
@@ -294,13 +266,13 @@ test "fullRedraw graphemes - wide and graphemes" {
     front.set(1, 0, .{ .data = .{ .codepoint = '👍' }, .tag = .codepoint, .width = .wide_start });
     front.set(2, 0, .{ .width = .wide_end });
     const e_acute_combining = "e\xCC\x81";
-    front.set(3, 0, .{ .data = .{ .codepoint = 'e' }, .tag = .grapheme, .width = .narrow });
-    try front.putGrapheme(3, 0, e_acute_combining);
+    const id = try front.grapheme_buffer.put(e_acute_combining);
+    front.set(3, 0, Cell.initGrapheme(id, .narrow));
     // 👨‍👩‍👧 (family emoji) - ZWJ sequence
     const family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7";
-    front.set(1, 1, .{ .data = .{ .codepoint = '👨' }, .tag = .grapheme, .width = .wide_start });
-    front.set(2, 1, .{ .data = .{ .codepoint = ' ' }, .tag = .codepoint, .width = .wide_end });
-    try front.putGrapheme(1, 1, family);
+    const id_1 = try front.grapheme_buffer.put(family);
+    front.set(1, 1, Cell.initGrapheme(id_1, .wide_start));
+    front.set(2, 1, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -458,13 +430,12 @@ test "diffRedraw grapheme same in both buffers" {
     back.clear();
 
     const emoji = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"; // 👨‍👩‍👧
-
-    front.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
-    front.set(2, 0, .{ .width = .wide_end });
-    try front.putGrapheme(1, 0, emoji);
-    back.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
-    back.set(2, 0, .{ .width = .wide_end });
-    try back.putGrapheme(1, 0, emoji);
+    const id = try front.grapheme_buffer.put(emoji);
+    front.set(1, 0, Cell.initGrapheme(id, .wide_start));
+    front.set(2, 0, .wide_end);
+    const back_id = try back.grapheme_buffer.put(emoji);
+    back.set(1, 0, Cell.initGrapheme(back_id, .wide_start));
+    back.set(2, 0, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -488,13 +459,12 @@ test "diffRedraw grapheme changed" {
     // Not technically a grapheme but whose gonna stop me
     const emoji1 = "\xF0\x9F\x91\x8D"; // 👍
     const emoji2 = "\xF0\x9F\x91\x8E"; // 👎
-
-    front.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
-    front.set(2, 0, .{ .width = .wide_end });
-    try front.putGrapheme(1, 0, emoji2);
-    back.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
-    back.set(2, 0, .{ .width = .wide_end });
-    try back.putGrapheme(1, 0, emoji1);
+    const id_1 = try front.grapheme_buffer.put(emoji1);
+    const id_2 = try back.grapheme_buffer.put(emoji2);
+    front.set(1, 0, Cell.initGrapheme(id_1, .wide_start));
+    front.set(2, 0, .wide_end);
+    back.set(1, 0, Cell.initGrapheme(id_2, .wide_start));
+    back.set(2, 0, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
@@ -502,7 +472,7 @@ test "diffRedraw grapheme changed" {
     try front.diffRedraw(&back, &writer);
     const output = writer.buffered();
 
-    const expected = "\x1b[1;2H" ++ emoji2;
+    const expected = "\x1b[1;2H" ++ emoji1;
     try expectEqualSequences(expected, output);
 }
 
@@ -516,9 +486,9 @@ test "diffRedraw grapheme vs codepoint" {
     back.clear();
 
     const emoji = "\xF0\x9F\x91\x8D"; // 👍
-    back.set(1, 0, .{ .tag = .grapheme, .width = .wide_start });
-    back.set(2, 0, .{ .width = .wide_end });
-    try front.putGrapheme(1, 0, emoji);
+    const id = try back.grapheme_buffer.put(emoji);
+    back.set(1, 0, Cell.initGrapheme(id, .wide_start));
+    back.set(2, 0, .wide_end);
     front.set(1, 0, .{ .data = .{ .codepoint = 'X' } });
 
     var output_buffer: [4096]u8 = undefined;

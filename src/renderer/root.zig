@@ -8,9 +8,8 @@ const t = @import("types.zig");
 pub const Position = t.Position;
 pub const MouseState = t.MouseState;
 pub const CellBuffer = t.CellBuffer;
-pub const GraphemeMap = t.GraphemeMap;
 pub const GraphemeBuffer = t.GraphemeBuffer;
-pub const GraphemeID = t.GraphemeID;
+pub const GraphemeIndex = t.GraphemeBuffer.GraphemeIndex;
 
 const std = @import("std");
 test {
