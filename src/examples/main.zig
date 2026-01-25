@@ -11,10 +11,16 @@ const Renderer = tg.renderer.Renderer;
 
 const Application = @import("app.zig");
 
+var global_app: ?*Application = null;
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
     if (Terminal.global_tty) |tty| {
         tty.deinit();
     }
+    if (global_app) |app| {
+        std.debug.print("Application state:\n", .{});
+        std.debug.print("in_flight_piece: {any}\n", .{app.tetris.state.in_flight});
+    }
+
     std.debug.defaultPanic(msg, ret_addr);
 }
 
@@ -40,6 +46,7 @@ pub fn main(_: std.process.Init.Minimal) void {
         log.err("Failed to initialize application", .{});
         return;
     };
+    global_app = &app;
     while (!quit) {
         const events = terminal.pollEvents(16) catch {
             log.err("Failed to poll events", .{});

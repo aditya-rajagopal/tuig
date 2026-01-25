@@ -4,6 +4,9 @@ const tuig = @import("tuig");
 const Context = tuig.renderer.Context;
 const Cell = tuig.renderer.Cell;
 
+const stdx = @import("stdx");
+const assert = stdx.inlineAssert;
+
 const app = @import("app.zig");
 const helper = @import("helper.zig");
 const drawBox = helper.drawBox;
@@ -15,13 +18,12 @@ frame: u8 = 0,
 rng: std.Random.DefaultPrng,
 timer: ?std.time.Timer = null,
 
-const State = enum { waiting, playing, game_over };
-
 pub fn init(self: *Tetris) void {
     self.state = .{};
     self.frame = 0;
     self.timer = null;
-    self.rng = std.Random.DefaultPrng.init(0);
+    const now = std.time.Instant.now() catch unreachable;
+    self.rng = std.Random.DefaultPrng.init(@bitCast(std.mem.asBytes(&now)[0..8].*));
 }
 
 pub fn deinit(self: *Tetris) void {
@@ -51,11 +53,12 @@ const GameState = struct {
     board: [PlayArea.width * PlayArea.height]u8 = @splat(0),
     in_flight: Piece = .{},
     next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
+    // next_pieces: [7]Tetromino.Tag = .{ .S, .S, .S, .S, .S, .S, .S },
     ptr: u8 = 0,
 
     pub const Piece = struct {
         tag: Tetromino.Tag = .I,
-        frame: u8 = 0,
+        state: Tetromino.State = .O,
         position: Displacement = .{ .x = 5, .y = 0 },
     };
 };
@@ -97,33 +100,127 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
     const game_area = drawBox(ctx.scissor, start_x, start_y, PlayArea.width * 2 + 2, PlayArea.height + 2, "", tetris_box);
 
     var direction: i8 = 0;
+    var rotation: i8 = 0;
     if (ctx.isKeyPressed(.left)) direction -= 1;
     if (ctx.isKeyPressed(.right)) direction += 1;
-    if (ctx.isKeyPressed(.up)) self.state.in_flight.frame +%= 1;
-    if (ctx.isKeyPressed(.down)) self.state.in_flight.frame -%= 1;
+    if (ctx.isKeyPressed(.a)) rotation -= 1;
+    if (ctx.isKeyPressed(.d)) rotation += 1;
 
-    const render_position: Displacement = switch (self.state.in_flight.tag.get().center) {
-        .bottom => self.state.in_flight.position,
-        .middle => .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 },
-    };
+    var pivot: Displacement = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
 
     const Result = enum { success, fail };
 
     if (direction != 0) {
-        const result: Result = for (self.state.in_flight.tag.get().frames[self.state.in_flight.frame % 4]) |cell| {
-            const x_cell = render_position.x + cell.x;
+        for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+            const x_cell = pivot.x + cell.x;
             var x_int: i17 = @intFromFloat(x_cell);
             x_int += @intCast(direction);
-            if (x_int < 0 or x_int >= PlayArea.width) break .fail;
-        } else .success;
-        if (result == .success) {
+            if (x_int < 0 or x_int >= PlayArea.width) {
+                break;
+            }
+        } else {
             self.state.in_flight.position.x += @floatFromInt(direction);
         }
     }
 
-    const result: Result = for (self.state.in_flight.tag.get().frames[self.state.in_flight.frame % 4]) |cell| {
-        const x_cell = render_position.x + cell.x;
-        const y_cell = render_position.y + cell.y;
+    pivot = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
+
+    if (rotation != 0) {
+        const rot_current = self.state.in_flight.state;
+        const rot_next = if (rotation > 0) rot_current.rotClockwise() else rot_current.rotCounterClockwise();
+        switch (self.state.in_flight.tag) {
+            .O => {
+                const offset_next = Tetromino.OOffset[@intFromEnum(rot_next)][0];
+                const offset_current = Tetromino.OOffset[@intFromEnum(rot_current)][0];
+                const translations: Displacement = .{ .x = offset_current.x - offset_next.x, .y = offset_current.y - offset_next.y };
+                const next_frame = self.state.in_flight.tag.get().getFrame(rot_next);
+                for (next_frame) |cell| {
+                    const x_cell = pivot.x + cell.x - translations.x;
+                    const y_cell = pivot.y + cell.y - translations.y;
+                    const x: i17 = @intFromFloat(@floor(x_cell));
+                    const y: i17 = @intFromFloat(@floor(y_cell));
+                    if (x < 0 or x >= PlayArea.width or y < 0 or y >= PlayArea.height) {
+                        break;
+                    }
+                    if (self.state.board[@as(u16, @intCast(y)) * PlayArea.width + @as(u16, @intCast(x))] != 0) {
+                        break;
+                    }
+                } else {
+                    self.state.in_flight.position.x -= translations.x;
+                    self.state.in_flight.position.y -= translations.y;
+                    self.state.in_flight.state = rot_next;
+                }
+            },
+            .I => {
+                const offset_next = Tetromino.IOffset[@intFromEnum(rot_next)];
+                const offset_current = Tetromino.IOffset[@intFromEnum(rot_current)];
+                const translations: [5]Displacement = .{
+                    .{ .x = offset_current[0].x - offset_next[0].x, .y = offset_current[0].y - offset_next[0].y },
+                    .{ .x = offset_current[1].x - offset_next[1].x, .y = offset_current[1].y - offset_next[1].y },
+                    .{ .x = offset_current[2].x - offset_next[2].x, .y = offset_current[2].y - offset_next[2].y },
+                    .{ .x = offset_current[3].x - offset_next[3].x, .y = offset_current[3].y - offset_next[3].y },
+                    .{ .x = offset_current[4].x - offset_next[4].x, .y = offset_current[4].y - offset_next[4].y },
+                };
+                const next_frame = self.state.in_flight.tag.get().getFrame(rot_next);
+                for (translations) |translation| {
+                    for (next_frame) |cell| {
+                        const x_cell = pivot.x + cell.x + translation.x;
+                        const y_cell = pivot.y + cell.y + translation.y;
+                        const x: i17 = @intFromFloat(@floor(x_cell));
+                        const y: i17 = @intFromFloat(@floor(y_cell));
+                        if (x < 0 or x >= PlayArea.width or y < 0 or y >= PlayArea.height) {
+                            break;
+                        }
+                        if (self.state.board[@as(u16, @intCast(y)) * PlayArea.width + @as(u16, @intCast(x))] != 0) {
+                            break;
+                        }
+                    } else {
+                        self.state.in_flight.position.x += translation.x;
+                        self.state.in_flight.position.y += translation.y;
+                        self.state.in_flight.state = rot_next;
+                        break;
+                    }
+                }
+            },
+            else => {
+                const offset_next = Tetromino.JLSTZOffset[@intFromEnum(rot_next)];
+                const offset_current = Tetromino.JLSTZOffset[@intFromEnum(rot_current)];
+                const translations: [5]Displacement = .{
+                    .{ .x = offset_current[0].x - offset_next[0].x, .y = offset_current[0].y - offset_next[0].y },
+                    .{ .x = offset_current[1].x - offset_next[1].x, .y = offset_current[1].y - offset_next[1].y },
+                    .{ .x = offset_current[2].x - offset_next[2].x, .y = offset_current[2].y - offset_next[2].y },
+                    .{ .x = offset_current[3].x - offset_next[3].x, .y = offset_current[3].y - offset_next[3].y },
+                    .{ .x = offset_current[4].x - offset_next[4].x, .y = offset_current[4].y - offset_next[4].y },
+                };
+                const next_frame = self.state.in_flight.tag.get().getFrame(rot_next);
+                for (translations) |translation| {
+                    for (next_frame) |cell| {
+                        const x_cell = pivot.x + cell.x + translation.x;
+                        const y_cell = pivot.y + cell.y + translation.y;
+                        const x: i17 = @intFromFloat(@floor(x_cell));
+                        const y: i17 = @intFromFloat(@floor(y_cell));
+                        if (x < 0 or x >= PlayArea.width or y < 0 or y >= PlayArea.height) {
+                            break;
+                        }
+                        if (self.state.board[@as(u16, @intCast(y)) * PlayArea.width + @as(u16, @intCast(x))] != 0) {
+                            break;
+                        }
+                    } else {
+                        self.state.in_flight.position.x += translation.x;
+                        self.state.in_flight.position.y += translation.y;
+                        self.state.in_flight.state = rot_next;
+                        break;
+                    }
+                }
+            },
+        }
+    }
+
+    pivot = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
+
+    const result: Result = for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+        const x_cell = pivot.x + cell.x;
+        const y_cell = pivot.y + cell.y;
         const x_int: u16 = @intFromFloat(x_cell);
         const y_int: i17 = @intFromFloat(@floor(y_cell));
         if (y_int < -1) continue;
@@ -135,24 +232,24 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
     } else .success;
 
     if (result == .success) {
-        for (self.state.in_flight.tag.get().frames[self.state.in_flight.frame % 4]) |cell| {
-            const x_cell = (render_position.x + cell.x) * 2;
-            const y_cell = render_position.y + cell.y;
+        for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+            const x_cell = (pivot.x + cell.x) * 2;
+            const y_cell = pivot.y + cell.y;
             const x_int: u16 = @intFromFloat(x_cell);
             const y_int: i17 = @intFromFloat(@floor(y_cell));
             if (y_int < 0) continue;
             _ = game_area.set(x_int - 1, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
             _ = game_area.set(x_int, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
         }
-        if (delta > 200 * 1000 * 1000) {
+        if (delta > 500 * 1000 * 1000) {
             timer.reset();
             self.state.in_flight.position.y += 1;
         }
     } else {
-        for (self.state.in_flight.tag.get().frames[self.state.in_flight.frame % 4]) |cell| {
-            const x_cell = render_position.x + cell.x;
-            const y_cell = render_position.y + cell.y;
-            const x_int: u16 = @intFromFloat(x_cell);
+        for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+            const x_cell = pivot.x + cell.x;
+            const y_cell = pivot.y + cell.y;
+            const x_int: u16 = @intFromFloat(@floor(x_cell));
             const y_int: i17 = @intFromFloat(@floor(y_cell));
             if (y_int < 0) return .back;
             self.state.board[@as(u16, @intCast(y_int)) * PlayArea.width + x_int] = 1;
@@ -184,10 +281,103 @@ const Displacement = struct {
 };
 
 pub const Tetromino = struct {
-    center: Center,
     frames: [4][4]Displacement,
 
-    const Center = enum { bottom, middle };
+    pub fn getFrame(self: Tetromino, state: State) [4]Displacement {
+        return self.frames[@intFromEnum(state)];
+    }
+
+    const State = enum(u2) {
+        O = 0,
+        R = 1,
+        @"2" = 2,
+        L = 3,
+
+        pub inline fn rotClockwise(self: State) State {
+            return @enumFromInt(@intFromEnum(self) +% 1);
+        }
+
+        pub inline fn rotCounterClockwise(self: State) State {
+            return @enumFromInt(@intFromEnum(self) -% 1);
+        }
+    };
+
+    pub const JLSTZOffset = [4][5]Displacement{
+        .{ // O
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+        },
+        .{ // R
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 1.0, .y = 0.0 },
+            .{ .x = 1.0, .y = 1.0 },
+            .{ .x = 0.0, .y = -2.0 },
+            .{ .x = 1.0, .y = -2.0 },
+        },
+        .{ // 2
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+        },
+        .{ // L
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = -1.0, .y = 0.0 },
+            .{ .x = -1.0, .y = 1.0 },
+            .{ .x = 0.0, .y = -2.0 },
+            .{ .x = -1.0, .y = -2.0 },
+        },
+    };
+
+    pub const IOffset = [4][5]Displacement{
+        .{ // O
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = -1.0, .y = 0.0 },
+            .{ .x = 2.0, .y = 0.0 },
+            .{ .x = -1.0, .y = 0.0 },
+            .{ .x = 2.0, .y = 0.0 },
+        },
+        .{ // R
+            .{ .x = -1.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = 0.0 },
+            .{ .x = 0.0, .y = -1.0 },
+            .{ .x = 0.0, .y = 2.0 },
+        },
+        .{ // 2
+            .{ .x = -1.0, .y = -1.0 },
+            .{ .x = 1.0, .y = -1.0 },
+            .{ .x = -2.0, .y = -1.0 },
+            .{ .x = 1.0, .y = 0.0 },
+            .{ .x = -2.0, .y = 0.0 },
+        },
+        .{ // L
+            .{ .x = 0.0, .y = -1.0 },
+            .{ .x = 0.0, .y = -1.0 },
+            .{ .x = 0.0, .y = -1.0 },
+            .{ .x = 0.0, .y = 1.0 },
+            .{ .x = 0.0, .y = -2.0 },
+        },
+    };
+
+    pub const OOffset = [4][1]Displacement{
+        .{ // O
+            .{ .x = 0.0, .y = 0.0 },
+        },
+        .{ // R
+            .{ .x = 0.0, .y = 1.0 },
+        },
+        .{ // 2
+            .{ .x = -1.0, .y = 1.0 },
+        },
+        .{ // L
+            .{ .x = -1.0, .y = 0.0 },
+        },
+    };
 
     pub const Tag = enum {
         I,
@@ -212,25 +402,22 @@ pub const Tetromino = struct {
     };
 
     pub const O = Tetromino{
-        .center = .bottom,
         .frames = [_][4]Displacement{
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = -0.5, .y = 0.5 }, .{ .x = 0.5, .y = -0.5 }, .{ .x = -0.5, .y = -0.5 } },
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = -0.5, .y = 0.5 }, .{ .x = 0.5, .y = -0.5 }, .{ .x = -0.5, .y = -0.5 } },
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = -0.5, .y = 0.5 }, .{ .x = 0.5, .y = -0.5 }, .{ .x = -0.5, .y = -0.5 } },
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = -0.5, .y = 0.5 }, .{ .x = 0.5, .y = -0.5 }, .{ .x = -0.5, .y = -0.5 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 1.0, .y = -1.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 1.0, .y = 1.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = -1.0, .y = 1.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = -1.0, .y = -1.0 } },
         },
     };
     pub const I = Tetromino{
-        .center = .bottom,
         .frames = [_][4]Displacement{
-            .{ .{ .x = 0.5, .y = -0.5 }, .{ .x = -0.5, .y = -0.5 }, .{ .x = 1.5, .y = -0.5 }, .{ .x = -1.5, .y = -0.5 } },
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = 0.5, .y = -0.5 }, .{ .x = 0.5, .y = 1.5 }, .{ .x = 0.5, .y = -1.5 } },
-            .{ .{ .x = 0.5, .y = 0.5 }, .{ .x = -0.5, .y = 0.5 }, .{ .x = 1.5, .y = 0.5 }, .{ .x = -1.5, .y = 0.5 } },
-            .{ .{ .x = -0.5, .y = 0.5 }, .{ .x = -0.5, .y = -0.5 }, .{ .x = -0.5, .y = 1.5 }, .{ .x = -0.5, .y = -1.5 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 2.0, .y = 0.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 0.0, .y = 2.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = -2.0, .y = 0.0 } },
+            .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 0.0, .y = -2.0 } },
         },
     };
     pub const T = Tetromino{
-        .center = .middle,
         .frames = [_][4]Displacement{
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 } },
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 0.0, .y = 1.0 } },
@@ -239,7 +426,6 @@ pub const Tetromino = struct {
         },
     };
     pub const S = Tetromino{
-        .center = .middle,
         .frames = [_][4]Displacement{
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = 1.0, .y = -1.0 } },
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 1.0, .y = 1.0 } },
@@ -248,7 +434,6 @@ pub const Tetromino = struct {
         },
     };
     pub const Z = Tetromino{
-        .center = .middle,
         .frames = [_][4]Displacement{
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = -1.0, .y = -1.0 }, .{ .x = 1.0, .y = 0.0 } },
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 1.0, .y = -1.0 } },
@@ -257,7 +442,6 @@ pub const Tetromino = struct {
         },
     };
     pub const J = Tetromino{
-        .center = .middle,
         .frames = [_][4]Displacement{
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = -1.0, .y = -1.0 } },
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 1.0, .y = -1.0 } },
@@ -266,7 +450,6 @@ pub const Tetromino = struct {
         },
     };
     pub const L = Tetromino{
-        .center = .middle,
         .frames = [_][4]Displacement{
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 0.0 }, .{ .x = -1.0, .y = 0.0 }, .{ .x = 1.0, .y = -1.0 } },
             .{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 0.0, .y = -1.0 }, .{ .x = 0.0, .y = 1.0 }, .{ .x = 1.0, .y = 1.0 } },
