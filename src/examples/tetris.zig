@@ -14,13 +14,13 @@ const drawBox = helper.drawBox;
 const Tetris = @This();
 
 state: GameState = .{},
-frame: u8 = 0,
 rng: std.Random.DefaultPrng,
 timer: ?std.time.Timer = null,
 
 pub fn init(self: *Tetris) void {
     self.state = .{};
-    self.frame = 0;
+    self.state.piece_state = .falling;
+    self.state.lock_delay = 500 * 1000 * 1000;
     self.timer = null;
     const now = std.time.Instant.now() catch unreachable;
     self.rng = std.Random.DefaultPrng.init(@bitCast(std.mem.asBytes(&now)[0..8].*));
@@ -28,7 +28,6 @@ pub fn init(self: *Tetris) void {
 
 pub fn deinit(self: *Tetris) void {
     self.state = .{};
-    self.frame = 0;
     self.timer = null;
 }
 
@@ -39,7 +38,8 @@ pub fn reset(self: *Tetris, memory_pool: *app.MemoryPool, ctx: Context) error{Fa
     self.rng.random().shuffle(Tetromino.Tag, &self.state.next_pieces);
     self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[0] };
     self.state.ptr = 1;
-    self.frame = 0;
+    self.state.piece_state = .falling;
+    self.state.lock_delay = 500 * 1000 * 1000;
     self.timer = null;
 }
 
@@ -52,9 +52,12 @@ const PlayArea = Size{ .width = 10, .height = 20 };
 const GameState = struct {
     board: [PlayArea.width * PlayArea.height]u8 = @splat(0),
     in_flight: Piece = .{},
-    next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
-    // next_pieces: [7]Tetromino.Tag = .{ .S, .S, .S, .S, .S, .S, .S },
+    piece_state: enum { falling, lock_delay } = .falling,
+    lock_delay: i64 = 500 * 1000 * 1000,
+    next_pieces: [7]Tetromino.Tag = .{ .O, .O, .O, .O, .O, .O, .O },
+    // next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
     ptr: u8 = 0,
+    gravity: f32 = 0.1,
 
     pub const Piece = struct {
         tag: Tetromino.Tag = .I,
@@ -92,7 +95,7 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
         self.timer = std.time.Timer.start() catch return .back;
     }
     const timer = &self.timer.?;
-    const delta = timer.read();
+    var delta = timer.read();
 
     const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, PlayArea.width * 2 + 2), 2);
     const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, PlayArea.height + 2), 2);
@@ -105,17 +108,21 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
     if (ctx.isKeyPressed(.right)) direction += 1;
     if (ctx.isKeyPressed(.a)) rotation -= 1;
     if (ctx.isKeyPressed(.d)) rotation += 1;
+    if (ctx.isKeyPressed(.down)) self.state.gravity = 10.0 else self.state.gravity = 0.1;
 
     var pivot: Displacement = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
-
-    const Result = enum { success, fail };
 
     if (direction != 0) {
         for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
             const x_cell = pivot.x + cell.x;
-            var x_int: i17 = @intFromFloat(x_cell);
-            x_int += @intCast(direction);
-            if (x_int < 0 or x_int >= PlayArea.width) {
+            const y_cell = pivot.y + cell.y;
+            var x: i17 = @intFromFloat(x_cell);
+            x += @intCast(direction);
+            const y: i17 = @intFromFloat(@floor(y_cell));
+            if (x < 0 or x >= PlayArea.width or y < 0 or y >= PlayArea.height) {
+                break;
+            }
+            if (self.state.board[@as(u16, @intCast(y)) * PlayArea.width + @as(u16, @intCast(x))] != 0) {
                 break;
             }
         } else {
@@ -135,8 +142,8 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
                 const translations: Displacement = .{ .x = offset_current.x - offset_next.x, .y = offset_current.y - offset_next.y };
                 const next_frame = self.state.in_flight.tag.get().getFrame(rot_next);
                 for (next_frame) |cell| {
-                    const x_cell = pivot.x + cell.x - translations.x;
-                    const y_cell = pivot.y + cell.y - translations.y;
+                    const x_cell = pivot.x + cell.x + translations.x;
+                    const y_cell = pivot.y + cell.y + translations.y;
                     const x: i17 = @intFromFloat(@floor(x_cell));
                     const y: i17 = @intFromFloat(@floor(y_cell));
                     if (x < 0 or x >= PlayArea.width or y < 0 or y >= PlayArea.height) {
@@ -146,8 +153,8 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
                         break;
                     }
                 } else {
-                    self.state.in_flight.position.x -= translations.x;
-                    self.state.in_flight.position.y -= translations.y;
+                    self.state.in_flight.position.x += translations.x;
+                    self.state.in_flight.position.y += translations.y;
                     self.state.in_flight.state = rot_next;
                 }
             },
@@ -218,20 +225,24 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
 
     pivot = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
 
-    const result: Result = for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
-        const x_cell = pivot.x + cell.x;
-        const y_cell = pivot.y + cell.y;
-        const x_int: u16 = @intFromFloat(x_cell);
-        const y_int: i17 = @intFromFloat(@floor(y_cell));
-        if (y_int < -1) continue;
-        const y_test: u16 = @intCast(y_int + 1);
-        if (y_test >= PlayArea.height or self.state.board[y_test * PlayArea.width + x_int] != 0) {
-            // Block is occupied stop the block
-            break .fail;
-        }
-    } else .success;
+    if (self.state.piece_state == .falling) {
+        self.state.piece_state = for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+            const x_cell = pivot.x + cell.x;
+            const y_cell = pivot.y + cell.y;
+            const x_int: u16 = @intFromFloat(x_cell);
+            const y_int: i17 = @intFromFloat(@floor(y_cell));
+            if (y_int < -1) continue;
+            const y_test: u16 = @intCast(y_int + 1);
+            if (y_test >= PlayArea.height or self.state.board[y_test * PlayArea.width + x_int] != 0) {
+                // Block is occupied stop the block
+                timer.reset();
+                delta = 0;
+                break .lock_delay;
+            }
+        } else .falling;
+    }
 
-    if (result == .success) {
+    if (self.state.piece_state == .falling) {
         for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
             const x_cell = (pivot.x + cell.x) * 2;
             const y_cell = pivot.y + cell.y;
@@ -241,25 +252,41 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
             _ = game_area.set(x_int - 1, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
             _ = game_area.set(x_int, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
         }
-        if (delta > 500 * 1000 * 1000) {
+        const base_gravity_time: f32 = 1000.0 * 1000.0 * 1000.0 / 60.0;
+        const gravity_time = base_gravity_time / self.state.gravity;
+        if (@as(f32, @floatFromInt(delta)) > gravity_time) {
             timer.reset();
             self.state.in_flight.position.y += 1;
         }
     } else {
-        for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
-            const x_cell = pivot.x + cell.x;
-            const y_cell = pivot.y + cell.y;
-            const x_int: u16 = @intFromFloat(@floor(x_cell));
-            const y_int: i17 = @intFromFloat(@floor(y_cell));
-            if (y_int < 0) return .back;
-            self.state.board[@as(u16, @intCast(y_int)) * PlayArea.width + x_int] = 1;
+        if (delta >= self.state.lock_delay) {
+            for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+                const x_cell = pivot.x + cell.x;
+                const y_cell = pivot.y + cell.y;
+                const x_int: u16 = @intFromFloat(@floor(x_cell));
+                const y_int: i17 = @intFromFloat(@floor(y_cell));
+                if (y_int < 0) return .back;
+                self.state.board[@as(u16, @intCast(y_int)) * PlayArea.width + x_int] = 1;
+            }
+            self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[self.state.ptr] };
+            self.state.ptr += 1;
+            if (self.state.ptr >= self.state.next_pieces.len) {
+                self.state.ptr = 0;
+                self.rng.random().shuffle(Tetromino.Tag, &self.state.next_pieces);
+            }
+            self.state.piece_state = .falling;
+            timer.reset();
+        } else {
+            for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+                const x_cell = (pivot.x + cell.x) * 2;
+                const y_cell = pivot.y + cell.y;
+                const x_int: u16 = @intFromFloat(x_cell);
+                const y_int: i17 = @intFromFloat(@floor(y_cell));
+                if (y_int < 0) continue;
+                _ = game_area.set(x_int - 1, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
+                _ = game_area.set(x_int, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
+            }
         }
-        if (self.state.ptr >= self.state.next_pieces.len) {
-            self.state.ptr = 0;
-            self.rng.random().shuffle(Tetromino.Tag, &self.state.next_pieces);
-        }
-        defer self.state.ptr += 1;
-        self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[self.state.ptr] };
     }
 
     for (0..PlayArea.height) |y| {
