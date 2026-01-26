@@ -289,6 +289,21 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
         }
     }
 
+    var row: usize = PlayArea.height - 1;
+    while (row > 0) {
+        var total: usize = 0;
+        for (0..PlayArea.width) |col| {
+            total += self.state.board[row * PlayArea.width + col];
+        }
+        if (total == PlayArea.width) {
+            for (0..row) |r| {
+                self.state.board[(row - r) * PlayArea.width ..][0..PlayArea.width].* = self.state.board[(row - r - 1) * PlayArea.width ..][0..PlayArea.width].*;
+            }
+        } else {
+            row -= 1;
+        }
+    }
+
     for (0..PlayArea.height) |y| {
         for (0..PlayArea.width) |x| {
             if (self.state.board[y * PlayArea.width + x] == 1) {
