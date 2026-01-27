@@ -24,6 +24,7 @@ pub fn init(self: *Tetris) void {
     self.timer = null;
     const now = std.time.Instant.now() catch unreachable;
     self.rng = std.Random.DefaultPrng.init(@bitCast(std.mem.asBytes(&now)[0..8].*));
+    self.state.gravity_delay = @intFromFloat(base_gravity_time / self.state.gravity);
 }
 
 pub fn deinit(self: *Tetris) void {
@@ -40,6 +41,7 @@ pub fn reset(self: *Tetris, memory_pool: *app.MemoryPool, ctx: Context) error{Fa
     self.state.ptr = 1;
     self.state.piece_state = .falling;
     self.state.lock_delay = 500 * 1000 * 1000;
+    self.state.gravity_delay = @intFromFloat(base_gravity_time / self.state.gravity);
     self.timer = null;
 }
 
@@ -49,15 +51,19 @@ const Size = struct { width: u16, height: u16 };
 
 const PlayArea = Size{ .width = 10, .height = 20 };
 
+const lock_delay_ns = 500 * 1000 * 1000;
+const base_gravity_time: f32 = 1000.0 * 1000.0 * 1000.0 / 60.0;
+
 const GameState = struct {
     board: [PlayArea.width * PlayArea.height]u8 = @splat(0),
     in_flight: Piece = .{},
     piece_state: enum { falling, lock_delay } = .falling,
     lock_delay: i64 = 500 * 1000 * 1000,
-    next_pieces: [7]Tetromino.Tag = .{ .O, .O, .O, .O, .O, .O, .O },
-    // next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
+    gravity_delay: i64 = @intFromFloat(base_gravity_time),
+    // next_pieces: [7]Tetromino.Tag = .{ .O, .O, .O, .O, .O, .O, .O },
+    next_pieces: [7]Tetromino.Tag = .{ .I, .O, .T, .S, .Z, .J, .L },
     ptr: u8 = 0,
-    gravity: f32 = 0.1,
+    gravity: f32 = 0.05,
 
     pub const Piece = struct {
         tag: Tetromino.Tag = .I,
@@ -95,7 +101,7 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
         self.timer = std.time.Timer.start() catch return .back;
     }
     const timer = &self.timer.?;
-    var delta = timer.read();
+    const frame_time = timer.lap();
 
     const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, PlayArea.width * 2 + 2), 2);
     const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, PlayArea.height + 2), 2);
@@ -108,7 +114,13 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
     if (ctx.isKeyPressed(.right)) direction += 1;
     if (ctx.isKeyPressed(.a)) rotation -= 1;
     if (ctx.isKeyPressed(.d)) rotation += 1;
-    if (ctx.isKeyPressed(.down)) self.state.gravity = 10.0 else self.state.gravity = 0.1;
+    if (ctx.isKeyPressed(.down)) self.state.gravity = 10.0 else self.state.gravity = 0.05;
+    const gravity_time = base_gravity_time / self.state.gravity;
+
+    var buf: [128]u8 = undefined;
+    const gtime_str = std.fmt.bufPrint(&buf, "Gravity Time: {d}", .{gravity_time}) catch unreachable;
+    const area = ctx.scissor.initChild(0, 0, @intCast(gtime_str.len), 1);
+    _ = area.printAssumeNoGrapheme(gtime_str, 0, 0, .default);
 
     var pivot: Displacement = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
 
@@ -225,22 +237,28 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
 
     pivot = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
 
-    if (self.state.piece_state == .falling) {
-        self.state.piece_state = for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
-            const x_cell = pivot.x + cell.x;
-            const y_cell = pivot.y + cell.y;
-            const x_int: u16 = @intFromFloat(x_cell);
-            const y_int: i17 = @intFromFloat(@floor(y_cell));
-            if (y_int < -1) continue;
-            const y_test: u16 = @intCast(y_int + 1);
-            if (y_test >= PlayArea.height or self.state.board[y_test * PlayArea.width + x_int] != 0) {
-                // Block is occupied stop the block
-                timer.reset();
-                delta = 0;
-                break .lock_delay;
+    self.state.piece_state = for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
+        const x_cell = pivot.x + cell.x;
+        const y_cell = pivot.y + cell.y;
+        const x_int: u16 = @intFromFloat(x_cell);
+        const y_int: i17 = @intFromFloat(@floor(y_cell));
+        if (y_int < -1) continue;
+        const y_test: u16 = @intCast(y_int + 1);
+        if (y_test >= PlayArea.height or self.state.board[y_test * PlayArea.width + x_int] != 0) {
+            // Block is occupied stop the block
+            if (self.state.piece_state == .falling) {
+                self.state.lock_delay = lock_delay_ns;
+                self.state.gravity_delay = @intFromFloat(gravity_time);
             }
-        } else .falling;
-    }
+            break .lock_delay;
+        }
+    } else blk: {
+        if (self.state.piece_state == .lock_delay) {
+            self.state.lock_delay = lock_delay_ns;
+            self.state.gravity_delay = @intFromFloat(gravity_time);
+        }
+        break :blk .falling;
+    };
 
     if (self.state.piece_state == .falling) {
         for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
@@ -252,14 +270,14 @@ pub fn updateAndRender(self: *Tetris, ctx: Context) TetrisResult {
             _ = game_area.set(x_int - 1, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
             _ = game_area.set(x_int, @intCast(y_int), Cell{ .data = .{ .codepoint = '█' } });
         }
-        const base_gravity_time: f32 = 1000.0 * 1000.0 * 1000.0 / 60.0;
-        const gravity_time = base_gravity_time / self.state.gravity;
-        if (@as(f32, @floatFromInt(delta)) > gravity_time) {
-            timer.reset();
+        self.state.gravity_delay -= @intCast(frame_time);
+        if (self.state.gravity_delay <= 0) {
+            self.state.gravity_delay = @intFromFloat(gravity_time);
             self.state.in_flight.position.y += 1;
         }
     } else {
-        if (delta >= self.state.lock_delay) {
+        self.state.lock_delay -= @intCast(frame_time);
+        if (self.state.lock_delay <= 0) {
             for (self.state.in_flight.tag.get().getFrame(self.state.in_flight.state)) |cell| {
                 const x_cell = pivot.x + cell.x;
                 const y_cell = pivot.y + cell.y;

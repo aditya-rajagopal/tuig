@@ -48,6 +48,7 @@ pub fn init() !Application {
     application.tetris.init();
     application.memory = try MemoryPool.init();
     application.timer = std.time.Timer.start() catch unreachable;
+    application.toggle_metrics = false;
     return application;
 }
 
