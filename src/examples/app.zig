@@ -57,7 +57,7 @@ pub const options: []const []const u8 = &.{
     "Tetris",
 };
 
-pub fn updateAndRender(self: *Application, ctx: Context) bool {
+pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
     const frame_time = self.timer.lap();
     const time_ms = @as(f32, @floatFromInt(frame_time)) / (1000.0 * 1000.0);
     var fps_buffer: [128]u8 = undefined;

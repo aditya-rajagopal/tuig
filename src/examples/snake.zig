@@ -52,7 +52,7 @@ pub fn deinit(self: *Snake) void {
     self.timer = null;
 }
 
-pub fn reset(self: *Snake, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
+pub fn reset(self: *Snake, memory_pool: *app.MemoryPool, ctx: *const Context) error{Failed}!void {
     _ = ctx;
     self.scene_arena = app.MemoryPool.ArenaAllocator.init(memory_pool);
     self.components = std.ArrayList(tuig.renderer.Position).initCapacity(self.scene_arena.allocator(), 512) catch return {
@@ -90,7 +90,7 @@ fn transitonTo(self: *Snake, to: State) void {
 
 const SnakeResult = enum { quit, noop, back };
 
-pub fn updateAndRender(self: *Snake, ctx: Context) SnakeResult {
+pub fn updateAndRender(self: *Snake, ctx: *const Context) SnakeResult {
     if (self.timer == null) {
         self.timer = std.time.Timer.start() catch return .back;
     }
@@ -111,7 +111,7 @@ pub fn updateAndRender(self: *Snake, ctx: Context) SnakeResult {
     return .noop;
 }
 
-fn renderWaiting(self: *Snake, ctx: Context) void {
+fn renderWaiting(self: *Snake, ctx: *const Context) void {
     const frame = frames[self.frame_tick % frames.len];
     const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(title_width)), 2);
     const y = 1;
@@ -199,7 +199,7 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
     }
 }
 
-fn renderPlaying(self: *Snake, ctx: Context) void {
+fn renderPlaying(self: *Snake, ctx: *const Context) void {
     if (ctx.scissor.width_global < gameplay_area_x or ctx.scissor.height_global < gameplay_area_y) {
         var buf: [128]u8 = undefined;
         const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ gameplay_area_x, gameplay_area_y, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
@@ -253,7 +253,7 @@ fn renderPlaying(self: *Snake, ctx: Context) void {
     }
 }
 
-fn renderGameOver(self: *Snake, ctx: Context) void {
+fn renderGameOver(self: *Snake, ctx: *const Context) void {
     self.components.clearRetainingCapacity();
     const frame = game_over_frames[self.frame_tick % frames.len];
     const region = ctx.scissor;

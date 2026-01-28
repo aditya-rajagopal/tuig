@@ -59,6 +59,6 @@ pub fn main(_: std.process.Init.Minimal) void {
         };
         defer renderer.endFrame();
 
-        quit = app.updateAndRender(ctx);
+        quit = app.updateAndRender(&ctx);
     }
 }

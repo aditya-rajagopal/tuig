@@ -57,14 +57,14 @@ pub fn deinit(self: *SplashScreen) void {
     _ = self;
 }
 
-pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool, ctx: Context) error{Failed}!void {
+pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool, ctx: *const Context) error{Failed}!void {
     _ = ctx;
     _ = memory_pool;
     self.splash_animation_mode = .done;
     self.splash_progress = 0;
 }
 
-pub fn updateAndRender(self: *SplashScreen, ctx: Context, options: []const []const u8) SplashScreenResult {
+pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []const []const u8) SplashScreenResult {
     if (self.options_width == null) {
         self.options_width = 0;
         for (options) |option| {
