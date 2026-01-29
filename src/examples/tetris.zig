@@ -9,8 +9,6 @@ const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
 const app = @import("app.zig");
-const helper = @import("helper.zig");
-const drawBox = helper.drawBox;
 
 const Tetris = @This();
 
@@ -73,11 +71,11 @@ const GameState = struct {
     };
 };
 
-const tetris_box = helper.BoxCharacters{
-    .bottom_horizontal = '\u{1FB02}',
-    .top_horizontal = '\u{1FB2D}',
-    .right = '\u{258D}',
+const tetris_box = tuig.ui.BoxCharacters{
+    .bottom = '\u{1FB02}',
+    .top = '\u{1FB2D}',
     .left = '\u{1FB88}',
+    .right = '\u{258D}',
     .top_right = '\u{1FB0F}',
     .top_left = '\u{1FB1E}',
     .bottom_left = '\u{1FB01}',
@@ -107,7 +105,10 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
     const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, play_area.width * 2 + 2), 2);
     const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, play_area.height + 2), 2);
 
-    const game_area = drawBox(ctx.scissor, start_x, start_y, play_area.width * 2 + 2, play_area.height + 2, "", tetris_box);
+    const box_config = tuig.ui.DrawBoxConfig{
+        .border = tetris_box,
+    };
+    const game_area = tuig.ui.drawBox(ctx.scissor, start_x, start_y, play_area.width * 2 + 2, play_area.height + 2, &box_config);
 
     self.handleTranslation(ctx);
 

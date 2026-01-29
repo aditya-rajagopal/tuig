@@ -10,8 +10,6 @@ const Cell = tuig.renderer.Cell;
 
 const Snake = @This();
 const app = @import("app.zig");
-const helper = @import("helper.zig");
-const drawBox = helper.drawBox;
 
 state: State = .waiting,
 components: std.ArrayList(tuig.renderer.Position) = .empty,
@@ -217,7 +215,10 @@ fn renderPlaying(self: *Snake, ctx: *const Context) void {
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
 
-    const game_area = drawBox(ctx.scissor, x, y, gameplay_area_x, gameplay_area_y, score, .default);
+    const box_config = tuig.ui.DrawBoxConfig{
+        .title = score,
+    };
+    const game_area = tuig.ui.drawBox(ctx.scissor, x, y, gameplay_area_x, gameplay_area_y, &box_config);
 
     if (!self.game_started) {
         self.initSnake(game_area);

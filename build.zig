@@ -35,6 +35,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const ui = b.addModule("ui", .{
+        .root_source_file = b.path("src/ui/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
     const mod = b.addModule("tuig", .{
         .root_source_file = b.path("src/tuig.zig"),
         .target = target,
@@ -43,6 +53,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "renderer", .module = renderer },
             .{ .name = "stdx", .module = stdx },
             .{ .name = "terminal", .module = terminal },
+            .{ .name = "ui", .module = ui },
         },
     });
 
@@ -86,11 +97,17 @@ pub fn build(b: *std.Build) void {
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
     });
     const run_unicode_tests = b.addRunArtifact(unicode_tests);
+    const ui_tests = b.addTest(.{
+        .root_module = ui,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_ui_tests = b.addRunArtifact(ui_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_terminal_tests.step);
     test_step.dependOn(&run_renderer_tests.step);
     test_step.dependOn(&run_unicode_tests.step);
+    test_step.dependOn(&run_ui_tests.step);
 
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
