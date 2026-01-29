@@ -94,7 +94,7 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
         const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
         const y = (ctx.scissor.height_global - 1) / 2;
         const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
-        _ = area.renderLineDelimiter(0, 0, str, null, false);
+        _ = area.printAssumeNoGrapheme(str, 0, 0, .{ .wrap = false, .tab_width = 4 });
         return .noop;
     }
 
@@ -117,24 +117,27 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
 
     self.handleSoftLock();
 
-    if (self.state.piece_state == .falling) {
-        self.renderInFlightPiece(game_area);
-        self.state.gravity_delay -= @intCast(frame_time);
-        if (self.state.gravity_delay <= 0) {
-            const gravity_time = base_gravity_time / self.state.gravity;
-            self.state.gravity_delay = @intFromFloat(gravity_time);
-            self.state.in_flight.position.y += 1;
-        }
-    } else {
-        self.state.lock_delay -= @intCast(frame_time);
-        if (self.state.lock_delay <= 0) {
-            if (self.lockInFlightPiece()) {
-                // @TODO deal with game over
-                return .back;
-            }
-        } else {
+    switch (self.state.piece_state) {
+        .falling => {
             self.renderInFlightPiece(game_area);
-        }
+            self.state.gravity_delay -= @intCast(frame_time);
+            if (self.state.gravity_delay <= 0) {
+                const gravity_time = base_gravity_time / self.state.gravity;
+                self.state.gravity_delay = @intFromFloat(gravity_time);
+                self.state.in_flight.position.y += 1;
+            }
+        },
+        .lock_delay => {
+            self.state.lock_delay -= @intCast(frame_time);
+            if (self.state.lock_delay <= 0) {
+                if (self.lockInFlightPiece()) {
+                    // @TODO deal with game over
+                    return .back;
+                }
+            } else {
+                self.renderInFlightPiece(game_area);
+            }
+        },
     }
 
     self.clearRows();

@@ -137,51 +137,6 @@ pub fn fill(self: Scissor, cell: Cell) void {
     self.fillRectangle(0, 0, self.width_global, self.height_global, cell);
 }
 
-pub fn renderLineDelimiter(
-    self: Scissor,
-    x_offset: u16,
-    y_offset: u16,
-    text: []const u8,
-    delimiter: ?u21,
-    consume_till_delimiter: bool,
-) usize {
-    if (x_offset >= self.width_global) return 0;
-    if (y_offset >= self.height_global) return 0;
-
-    var cursor_x: i17 = self.x_global + x_offset;
-    const cursor_y_int: i17 = self.y_global + y_offset;
-
-    if (cursor_x >= self.buffer.width) return 0;
-    if (cursor_y_int < 0 or cursor_y_int >= self.buffer.height) return 0;
-    const cursor_y: u16 = @intCast(cursor_y_int);
-
-    const limit_x: i17 = @min(self.x_global + self.width_global, self.buffer.width);
-    if (limit_x < 0) return 0;
-
-    const utf8 = std.unicode.Utf8View.init(text) catch return 0;
-    var iter = utf8.iterator();
-
-    if (delimiter) |d| {
-        while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
-            if (codepoint == d) break;
-            if (cursor_x >= limit_x) {
-                if (consume_till_delimiter) continue else break;
-            }
-            if (cursor_x < 0) continue;
-
-            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .data = .{ .codepoint = codepoint } });
-        }
-    } else {
-        while (iter.nextCodepoint()) |codepoint| : (cursor_x += 1) {
-            if (cursor_x < 0) continue;
-            if (cursor_x == limit_x) break;
-
-            self.buffer.set(@intCast(cursor_x), cursor_y, Cell{ .data = .{ .codepoint = codepoint } });
-        }
-    }
-    return iter.i;
-}
-
 pub fn clear(self: Scissor) void {
     self.fill(.empty);
 }

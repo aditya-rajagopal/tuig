@@ -43,7 +43,7 @@ pub fn drawBox(area: Scissor, x: i17, y: i17, width: u16, height: u16, title: []
 
     if (title.len > 0) {
         const text_area = whole_area.initChild(2, 0, width - 4, height);
-        _ = text_area.renderLineDelimiter(0, 0, title, null, false);
+        _ = text_area.printAssumeNoGrapheme(title, 0, 0, .default);
     }
     return whole_area.inner();
 }

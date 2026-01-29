@@ -119,14 +119,14 @@ fn renderWaiting(self: *Snake, ctx: *const Context) void {
     for (0..title_height) |row| {
         const start = row * (title_width + 1);
         const end = start + title_width;
-        _ = region.renderLineDelimiter(0, @intCast(row), frame[start..end], null, false);
+        _ = region.printAssumeNoGrapheme(frame[start..end], 0, @intCast(row), .{ .wrap = false, .tab_width = 4 });
     }
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Press `ENTER` to start", .{}) catch unreachable;
     const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(score.len)), 2);
     const msg_y = ctx.scissor.height_global - 1;
     const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(score.len), 1);
-    _ = msg_region.renderLineDelimiter(0, 0, score, null, false);
+    _ = msg_region.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.playing);
 }
 
@@ -206,7 +206,7 @@ fn renderPlaying(self: *Snake, ctx: *const Context) void {
         const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
         const y = (ctx.scissor.height_global - 1) / 2;
         const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
-        _ = area.renderLineDelimiter(0, 0, str, null, false);
+        _ = area.printAssumeNoGrapheme(str, 0, 0, .{ .wrap = false, .tab_width = 4 });
         return;
     }
     assert(ctx.scissor.width_global >= gameplay_area_x);
@@ -265,19 +265,20 @@ fn renderGameOver(self: *Snake, ctx: *const Context) void {
     for (0..game_over_title_height) |row| {
         const start = row * (game_over_title_width + 1);
         const end = start + game_over_title_width;
-        _ = area.renderLineDelimiter(0, @intCast(row), frame[start..end], null, false);
+        _ = area.printAssumeNoGrapheme(frame[start..end], 0, @intCast(row), .{ .wrap = false, .tab_width = 4 });
     }
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
     const x = (region.width_global - score.len) / 2;
     const y = start_y + game_over_title_height + 3;
     const score_area = region.initChild(@intCast(x), @intCast(y), @intCast(score.len), 1);
-    _ = score_area.renderLineDelimiter(0, 0, score, null, false);
+    _ = score_area.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
     const msg = std.fmt.bufPrint(&buf, "Press `ENTER` to restart", .{}) catch unreachable;
     const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(msg.len)), 2);
     const msg_y = ctx.scissor.height_global - 1;
     const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(msg.len), 1);
-    _ = msg_region.renderLineDelimiter(0, 0, msg, null, false);
+    _ = msg_region.printAssumeNoGrapheme(msg, 0, 0, .{ .wrap = false, .tab_width = 4 });
+
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.waiting);
 }
 

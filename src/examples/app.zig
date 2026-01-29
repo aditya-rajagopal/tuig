@@ -63,7 +63,7 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
     var fps_buffer: [128]u8 = undefined;
     const fps = std.fmt.bufPrint(&fps_buffer, "Time: {d}ms, FPS: {d}", .{ time_ms, 1000.0 / time_ms }) catch unreachable;
     const area = ctx.scissor.initChild(0, ctx.scissor.height_global - 1, @intCast(fps.len), 1);
-    _ = area.renderLineDelimiter(0, 0, fps, null, false);
+    _ = area.printAssumeNoGrapheme(fps, 0, 0, .{ .wrap = false, .tab_width = 4 });
     loop: switch (self.mode) {
         .render_scene => |scene| switch (scene) {
             .splash_screen => {
@@ -72,17 +72,17 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
                 }
                 if (self.toggle_metrics) {
                     const metrics_scissr = ctx.scissor.initChild(0, 0, 25, 5);
-                    _ = metrics_scissr.renderLineDelimiter(0, 0, "Memory Pool Metrics", null, false);
+                    _ = metrics_scissr.printAssumeNoGrapheme("Memory Pool Metrics", 0, 0, .default);
                     var buf: [256]u8 = undefined;
                     const metrics = self.memory.metrics;
                     const acquires_total = std.fmt.bufPrint(&buf, "Acquires Total: {d}", .{metrics.acquires_total}) catch unreachable;
-                    _ = metrics_scissr.renderLineDelimiter(0, 1, acquires_total, null, false);
+                    _ = metrics_scissr.printAssumeNoGrapheme(acquires_total, 0, 1, .default);
                     const releases_total = std.fmt.bufPrint(&buf, "Releases Total: {d}", .{metrics.releases_total}) catch unreachable;
-                    _ = metrics_scissr.renderLineDelimiter(0, 2, releases_total, null, false);
+                    _ = metrics_scissr.printAssumeNoGrapheme(releases_total, 0, 2, .default);
                     const acquires_current = std.fmt.bufPrint(&buf, "Acquires Current: {d}", .{metrics.acquires_current}) catch unreachable;
-                    _ = metrics_scissr.renderLineDelimiter(0, 3, acquires_current, null, false);
+                    _ = metrics_scissr.printAssumeNoGrapheme(acquires_current, 0, 3, .default);
                     const acquires_max_concurrent = std.fmt.bufPrint(&buf, "Max Concurrent: {d}", .{metrics.acquires_max_concurrent}) catch unreachable;
-                    _ = metrics_scissr.renderLineDelimiter(0, 4, acquires_max_concurrent, null, false);
+                    _ = metrics_scissr.printAssumeNoGrapheme(acquires_max_concurrent, 0, 4, .default);
                 }
                 switch (self.splash_screen.updateAndRender(ctx, options)) {
                     .quit => return true,

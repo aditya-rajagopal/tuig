@@ -107,16 +107,11 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             break :blk ctx.scissor.initChild(@intCast(start_x), @intCast(self.splash_progress), codepoint_width + 1, codepoint_height);
         },
     };
-    var start: usize = 0;
-    // @FIXME this needs to have a sub-scissor
-    for (0..codepoint_height) |row| {
-        start += area.renderLineDelimiter(
-            0,
-            @intCast(row),
-            splash_text[start..],
-            '\n',
-            true,
-        );
+    var text_iter = std.mem.splitScalar(u8, splash_text, '\n');
+    var row: u16 = 0;
+    while (text_iter.next()) |line| {
+        _ = area.printAssumeNoGrapheme(line, 0, row, .{ .wrap = false, .tab_width = 4 });
+        row += 1;
     }
 
     if (self.splash_animation_mode == .done) {
@@ -157,7 +152,7 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
                 _ = options_scissor.set(@intCast(self.options_width.? + 1), @intCast(i), Cell{ .data = .{ .codepoint = selection[1] } });
             }
             const option_start_x = (self.options_width.? + 2 - option.len) / 2;
-            _ = options_scissor.renderLineDelimiter(@intCast(option_start_x), @intCast(i), option, null, false);
+            _ = options_scissor.printAssumeNoGrapheme(option, @intCast(option_start_x), @intCast(i), .{ .wrap = false, .tab_width = 4 });
         }
     }
     return .noop;
