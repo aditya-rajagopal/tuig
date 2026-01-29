@@ -71,15 +71,11 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             self.options_width = @max(self.options_width.?, option.len);
         }
     }
-    if (ctx.isKeyPressed(.q)) return .quit;
-    if (ctx.key_pressed) |key| {
-        switch (key.code) {
-            else => {
-                if (self.splash_animation_mode == .start) {
-                    self.splash_animation_mode = .done;
-                    self.splash_progress = 0;
-                }
-            },
+    if (ctx.isKeyPressed(.Q)) return .quit;
+    if (ctx.key_pressed.len > 0) {
+        if (self.splash_animation_mode == .start) {
+            self.splash_animation_mode = .done;
+            self.splash_progress = 0;
         }
     }
     const width = ctx.scissor.width_global;
@@ -115,7 +111,7 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
     }
 
     if (self.splash_animation_mode == .done) {
-        if (ctx.key_pressed) |key| {
+        for (ctx.key_pressed) |key| {
             switch (key.code) {
                 .j, .down => {
                     if (self.selection == options.len - 1) self.selection = 0 else self.selection += 1;

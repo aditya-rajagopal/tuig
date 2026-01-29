@@ -18,7 +18,9 @@ const Context = @This();
 frame_arena: *MemoryPool.ArenaAllocator,
 events: []const Event = undefined,
 scissor: Scissor = undefined,
-key_pressed: ?KeyEvent = null,
+key_pressed: []const KeyEvent = &.{},
+key_released: []const KeyEvent = &.{},
+key_repeat: []const KeyEvent = &.{},
 resize: ?ResizeEvent = null,
 mouse_scroll: i8 = 0,
 mouse_x: u16 = 0,
@@ -27,12 +29,28 @@ mouse_down: MouseState = .{},
 mouse_pressed: MouseState = .{},
 mouse_released: MouseState = .{},
 
-pub fn isKeyPressed(self: Context, code: KeyEvent.Code) bool {
-    if (self.key_pressed) |key| {
-        return key.code == code;
-    } else {
-        return false;
+pub fn isKeyPressed(self: Context, code: KeyEvent.PhysicalKey) bool {
+    for (self.key_pressed) |key| {
+        if (key.physical_key == code) return true;
     }
+    for (self.key_repeat) |key| {
+        if (key.physical_key == code) return true;
+    }
+    return false;
+}
+
+pub fn isKeyPressedThisFrame(self: Context, code: KeyEvent.PhysicalKey) bool {
+    for (self.key_pressed) |key| {
+        if (key.physical_key == code) return true;
+    }
+    return false;
+}
+
+pub fn isKeyReleased(self: Context, code: KeyEvent.PhysicalKey) bool {
+    for (self.key_released) |key| {
+        if (key.physical_key == code) return true;
+    }
+    return false;
 }
 
 pub fn isHovered(self: Context, scissor: Scissor) ?Position {

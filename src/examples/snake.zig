@@ -101,7 +101,7 @@ pub fn updateAndRender(self: *Snake, ctx: *const Context) SnakeResult {
         self.frame_tick +%= 1;
         self.frame_ticked = true;
     }
-    if (ctx.isKeyPressed(.q)) return .quit;
+    if (ctx.isKeyPressed(.Q)) return .quit;
     if (ctx.isKeyPressed(.escape)) return .back;
     switch (self.state) {
         .waiting => self.renderWaiting(ctx),
@@ -226,18 +226,18 @@ fn renderPlaying(self: *Snake, ctx: *const Context) void {
         self.game_started = true;
     }
 
-    if (ctx.key_pressed) |key| {
-        switch (key.code) {
-            .up, .w => {
+    for (ctx.key_pressed) |key| {
+        switch (key.physical_key) {
+            .up, .W => {
                 if (self.direction != .down) self.next_direction = .up;
             },
-            .down, .s => {
+            .down, .S => {
                 if (self.direction != .up) self.next_direction = .down;
             },
-            .left, .a => {
+            .left, .A => {
                 if (self.direction != .right) self.next_direction = .left;
             },
-            .right, .d => {
+            .right, .D => {
                 if (self.direction != .left) self.next_direction = .right;
             },
             else => {},

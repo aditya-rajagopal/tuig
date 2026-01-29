@@ -23,7 +23,7 @@ const Options = struct {
 
     pub const default = Options{
         .memory_pool = .{
-            .block_size = stdx.MB(8),
+            .block_size = stdx.MB(1),
             .size_limit = 256,
         },
     };
@@ -45,6 +45,9 @@ mouse_x: u16 = 0,
 mouse_y: u16 = 0,
 current_mouse_down: MouseState = .{},
 previous_mouse_down: MouseState = .{},
+current_keyboard_state: term.PhysicalKeyState = .{},
+previous_keyboard_state: term.PhysicalKeyState = .{},
+// @TODO GILA(generous_magma_3gs)
 memory_pool: MemoryPool,
 arena: MemoryPool.ArenaAllocator,
 
@@ -77,10 +80,20 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
         .frame_arena = &self.arena,
         .events = events,
     };
+    var key_pressed = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
+    var key_released = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
+    var key_repeat = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
+
     for (events) |event| {
         switch (event) {
-            .key_pressed, .key_repeat => |key| {
-                ctx.key_pressed = key;
+            .key_pressed => |key| {
+                try key_pressed.appendBounded(key);
+            },
+            .key_repeat => |key| {
+                try key_repeat.appendBounded(key);
+            },
+            .key_released => |key| {
+                try key_released.appendBounded(key);
             },
             .mouse_scroll_up => |info| {
                 self.mouse_x = info.x - 1;
@@ -110,16 +123,52 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
                 self.mouse_x = info.x - 1;
                 self.mouse_y = info.y - 1;
                 switch (event) {
-                    .mouse_left_pressed => self.current_mouse_down.left = true,
-                    .mouse_left_released => self.current_mouse_down.left = false,
-                    .mouse_right_pressed => self.current_mouse_down.right = true,
-                    .mouse_right_released => self.current_mouse_down.right = false,
-                    .mouse_middle_pressed => self.current_mouse_down.middle = true,
-                    .mouse_middle_released => self.current_mouse_down.middle = false,
-                    .mouse_drag_left => self.current_mouse_down.left = true,
-                    .mouse_drag_middle => self.current_mouse_down.middle = true,
-                    .mouse_drag_right => self.current_mouse_down.right = true,
+                    .mouse_left_pressed => {
+                        ctx.mouse_pressed.left = true;
+                        ctx.mouse_down.left = true;
+                        self.current_mouse_down.left = true;
+                    },
+                    .mouse_left_released => {
+                        ctx.mouse_released.left = true;
+                        ctx.mouse_down.left = false;
+                        self.current_mouse_down.left = false;
+                    },
+                    .mouse_right_pressed => {
+                        ctx.mouse_pressed.right = true;
+                        ctx.mouse_down.right = true;
+                        self.current_mouse_down.right = true;
+                    },
+                    .mouse_right_released => {
+                        ctx.mouse_released.right = true;
+                        ctx.mouse_down.right = false;
+                        self.current_mouse_down.right = false;
+                    },
+                    .mouse_middle_pressed => {
+                        ctx.mouse_pressed.middle = true;
+                        ctx.mouse_down.middle = true;
+                        self.current_mouse_down.middle = true;
+                    },
+                    .mouse_middle_released => {
+                        ctx.mouse_released.middle = true;
+                        ctx.mouse_down.middle = false;
+                        self.current_mouse_down.middle = false;
+                    },
+                    .mouse_drag_left => {
+                        ctx.mouse_down.left = true;
+                        self.current_mouse_down.left = true;
+                    },
+                    .mouse_drag_middle => {
+                        ctx.mouse_down.middle = true;
+                        self.current_mouse_down.middle = true;
+                    },
+                    .mouse_drag_right => {
+                        ctx.mouse_down.right = true;
+                        self.current_mouse_down.right = true;
+                    },
                     .mouse_released => {
+                        ctx.mouse_released.left = true;
+                        ctx.mouse_released.right = true;
+                        ctx.mouse_released.middle = true;
                         self.current_mouse_down.left = false;
                         self.current_mouse_down.right = false;
                         self.current_mouse_down.middle = false;
@@ -149,23 +198,19 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
     self.render_buffer.clear();
     ctx.mouse_x = self.mouse_x;
     ctx.mouse_y = self.mouse_y;
-
+    ctx.key_pressed = key_pressed.items;
+    ctx.key_released = key_released.items;
+    ctx.key_repeat = key_repeat.items;
     ctx.mouse_down.left = self.current_mouse_down.left and self.previous_mouse_down.left;
     ctx.mouse_down.right = self.current_mouse_down.right and self.previous_mouse_down.right;
     ctx.mouse_down.middle = self.current_mouse_down.middle and self.previous_mouse_down.middle;
-    ctx.mouse_pressed.left = self.current_mouse_down.left and !self.previous_mouse_down.left;
-    ctx.mouse_pressed.right = self.current_mouse_down.right and !self.previous_mouse_down.right;
-    ctx.mouse_pressed.middle = self.current_mouse_down.middle and !self.previous_mouse_down.middle;
-    ctx.mouse_released.left = !self.current_mouse_down.left and self.previous_mouse_down.left;
-    ctx.mouse_released.right = !self.current_mouse_down.right and self.previous_mouse_down.right;
-    ctx.mouse_released.middle = !self.current_mouse_down.middle and self.previous_mouse_down.middle;
 
     ctx.scissor = self.render_buffer.scissor();
     return ctx;
 }
 
-pub fn endFrame(self: *Renderer) void {
-    if (self.redraw) {
+pub fn endFrame(self: *Renderer, force_redraw: bool) void {
+    if (self.redraw or force_redraw) {
         self.terminal.bsu() catch {};
         self.render_buffer.fullRedraw(self.terminal.getWriter()) catch {};
         self.terminal.esu() catch {};

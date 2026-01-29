@@ -57,7 +57,7 @@ pub fn main(_: std.process.Init.Minimal) void {
             log.err("Failed to begin frame", .{});
             return;
         };
-        defer renderer.endFrame();
+        defer renderer.endFrame(false);
 
         quit = app.updateAndRender(&ctx);
     }

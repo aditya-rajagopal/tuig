@@ -4,6 +4,9 @@ pub const KeyEvent = event.KeyEvent;
 pub const MouseEvent = event.MouseEvent;
 pub const ResizeEvent = event.ResizeEvent;
 pub const Mods = event.Mods;
+pub const Code = event.KeyEvent.Code;
+pub const PhysicalKey = event.KeyEvent.PhysicalKey;
+pub const PhysicalKeyState = std.EnumSet(KeyEvent.PhysicalKey);
 pub const parseEvent = event.parseEvent;
 
 const terminal = @import("terminal.zig");

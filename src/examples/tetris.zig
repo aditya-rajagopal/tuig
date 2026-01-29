@@ -85,7 +85,7 @@ const tetris_box = helper.BoxCharacters{
 };
 
 pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
-    if (ctx.isKeyPressed(.q)) return .quit;
+    if (ctx.isKeyPressed(.Q)) return .quit;
     if (ctx.isKeyPressed(.escape)) return .back;
 
     if (ctx.scissor.width_global < play_area.width * 2 + 2 or ctx.scissor.height_global < play_area.height + 2) {
@@ -113,7 +113,8 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
 
     self.handleRotation(ctx);
 
-    if (ctx.isKeyPressed(.down)) self.state.gravity = 10.0 else self.state.gravity = 0.05;
+    if (ctx.isKeyPressedThisFrame(.down)) self.state.gravity = 10.0;
+    if (ctx.isKeyReleased(.down)) self.state.gravity = 0.05;
 
     self.handleSoftLock();
 
@@ -237,8 +238,8 @@ fn handleTranslation(self: *Tetris, ctx: *const Context) void {
 
 fn handleRotation(self: *Tetris, ctx: *const Context) void {
     var rotation: i8 = 0;
-    if (ctx.isKeyPressed(.a)) rotation -= 1;
-    if (ctx.isKeyPressed(.d)) rotation += 1;
+    if (ctx.isKeyPressed(.A)) rotation -= 1;
+    if (ctx.isKeyPressed(.D)) rotation += 1;
 
     const pivot = .{ .x = self.state.in_flight.position.x - 0.5, .y = self.state.in_flight.position.y - 0.5 };
 
