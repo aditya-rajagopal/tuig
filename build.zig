@@ -4,7 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const stdx = b.dependency("stdx", .{ .target = target }).module("stdx");
+    const stdx = b.createModule(.{
+        .root_source_file = b.path("src/stdx/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const unicode = b.addModule("unicode", .{
         .root_source_file = b.path("src/unicode/root.zig"),

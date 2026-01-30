@@ -143,6 +143,7 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
     if (!new_cell.eql(old_cell)) {
         return true;
     } else if (old_cell.tag == .grapheme) {
+        @branchHint(.unlikely);
         const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(old_cell)));
         const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(new_cell)));
         const old_grapheme = back_bufer.grapheme_buffer.get(old_id) orelse return true;
