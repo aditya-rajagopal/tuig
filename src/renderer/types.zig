@@ -26,6 +26,26 @@ pub const GraphemeBuffer = struct {
 
     pub const Buffer = stdx.GrowingBuffer(u8);
 
+    pub const Size = struct {
+        max: usize,
+        initial: usize,
+
+        pub const default = Size{
+            .max = stdx.MB(1),
+            .initial = stdx.KB(4),
+        };
+
+        pub const small = Size{
+            .max = stdx.KB(16),
+            .initial = stdx.KB(4),
+        };
+
+        pub const tiny = Size{
+            .max = stdx.KB(8),
+            .initial = stdx.KB(4),
+        };
+    };
+
     pub const GraphemeIndex = u25;
 
     pub fn init(max_size_bytes: usize) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!Self {

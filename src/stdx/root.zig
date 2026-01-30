@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const pool = @import("pool.zig");
-pub const BufferPool = pool.BufferPool;
-pub const BufferPoolExtra = pool.BufferPoolExtra;
-pub const BufferPoolOptions = pool.Options;
+const memory_pool = @import("memory_pool.zig");
+pub const BufferPool = memory_pool.BufferPool;
+pub const BufferPoolExtra = memory_pool.BufferPoolExtra;
+pub const BufferPoolOptions = memory_pool.Options;
 
 const growing_buffer = @import("growing_buffer.zig");
 pub const GrowingBuffer = growing_buffer.GrowingBuffer;

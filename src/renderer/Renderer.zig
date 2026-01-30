@@ -36,6 +36,7 @@ pub const MemoryPool = stdx.BufferPoolExtra(renderer_options.memory_pool);
 
 const Renderer = @This();
 
+cell_buffers: [2]t.CellBuffer,
 buffers: [2]FrameBuffer,
 render_buffer: *FrameBuffer,
 back_buffer: *FrameBuffer,
@@ -51,9 +52,35 @@ previous_keyboard_state: term.PhysicalKeyState = .{},
 memory_pool: MemoryPool,
 arena: MemoryPool.ArenaAllocator,
 
-pub fn init(self: *Renderer, terminal: *Terminal, options: FrameBuffer.Options) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!void {
-    self.buffers[0] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
-    self.buffers[1] = try FrameBuffer.init(terminal.size.width, terminal.size.height, options);
+pub const Config = struct {
+    max_cells: usize,
+    grapheme_buffer_size: t.GraphemeBuffer.Size,
+
+    pub const default_screen = Config{
+        .max_cells = 512 * 512, // 2MB cache
+        .grapheme_buffer_size = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
+    };
+
+    pub const small_buffer = Config{
+        .max_cells = 128 * 128, // 128kb buffer
+        .grapheme_buffer_size = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
+    };
+
+    pub const tiny_buffer = Config{
+        .max_cells = 64 * 64, // 32kb buffer
+        .grapheme_buffer_size = .{ .max = stdx.KB(8), .initial = stdx.KB(4) },
+    };
+};
+
+pub fn init(self: *Renderer, terminal: *Terminal, config: Config) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!void {
+    const width = terminal.size.width;
+    const height = terminal.size.height;
+    const size: usize = @as(usize, width) * @as(usize, height);
+
+    self.cell_buffers[0] = try t.CellBuffer.initCapacity(config.max_cells, size);
+    self.cell_buffers[1] = try t.CellBuffer.initCapacity(config.max_cells, size);
+    self.buffers[0] = try FrameBuffer.init(self.cell_buffers[0].reserved_pages[0..size], width, height, config.grapheme_buffer_size);
+    self.buffers[1] = try FrameBuffer.init(self.cell_buffers[1].reserved_pages[0..size], width, height, config.grapheme_buffer_size);
     self.render_buffer = &self.buffers[0];
     self.back_buffer = &self.buffers[1];
     self.render_buffer.clear();
@@ -70,6 +97,8 @@ pub fn init(self: *Renderer, terminal: *Terminal, options: FrameBuffer.Options) 
 
 pub fn deinit(self: *Renderer) void {
     self.terminal.clearScreen() catch {};
+    self.cell_buffers[0].deinit();
+    self.cell_buffers[1].deinit();
     self.buffers[0].deinit();
     self.buffers[1].deinit();
     self.arena.deinit();
@@ -179,14 +208,16 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
             .resize => |resize| {
                 ctx.resize = resize;
                 const new_cells = @as(usize, resize.width) * @as(usize, resize.height);
-                if (new_cells > self.buffers[0].cells.max_elements_count) {
+                if (new_cells > self.cell_buffers[0].max_elements_count) {
                     log.err("Resized to too large a size", .{});
                     return error.OutOfMemory;
                 }
-                try self.buffers[0].cells.ensureTotalCapacity(new_cells);
-                try self.buffers[1].cells.ensureTotalCapacity(new_cells);
+                try self.cell_buffers[0].ensureTotalCapacity(new_cells);
+                try self.cell_buffers[1].ensureTotalCapacity(new_cells);
+                self.buffers[0].cells = self.cell_buffers[0].reserved_pages[0..new_cells];
                 self.buffers[0].width = resize.width;
                 self.buffers[0].height = resize.height;
+                self.buffers[1].cells = self.cell_buffers[1].reserved_pages[0..new_cells];
                 self.buffers[1].width = resize.width;
                 self.buffers[1].height = resize.height;
                 self.redraw = true;

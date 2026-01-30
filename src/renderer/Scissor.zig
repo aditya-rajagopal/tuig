@@ -124,11 +124,11 @@ pub fn fillRectangle(self: Scissor, x_offset: u16, y_offset: u16, width: u16, he
     if (start_x_int == 0 and end_x_int == self.buffer.width) {
         const start = start_y * self.buffer.width;
         const end = end_y * self.buffer.width;
-        @memset(self.buffer.cells.reserved_pages[start..end], cell);
+        @memset(self.buffer.cells[start..end], cell);
     } else {
         for (start_y..end_y) |row| {
             const start = row * self.buffer.width;
-            @memset(self.buffer.cells.reserved_pages[start..][start_x..end_x], cell);
+            @memset(self.buffer.cells[start..][start_x..end_x], cell);
         }
     }
 }
@@ -524,20 +524,20 @@ const testing = std.testing;
 
 const TestContext = struct {
     buffer: FrameBuffer,
+    cells: []Cell,
 
     var test_codepoint_buffer: [64]u21 = undefined;
 
     fn init(width: u16, height: u16) !TestContext {
-        var buffer = try FrameBuffer.init(width, height, .{
-            .max_cells = @as(usize, width) * @as(usize, height),
-            .grapheme_buffer = .{ .max = 1024, .initial = 256 },
-        });
+        const cells = try testing.allocator.alloc(Cell, @as(usize, width) * @as(usize, height));
+        var buffer = try FrameBuffer.init(cells, width, height, .tiny);
         buffer.clear();
-        return .{ .buffer = buffer };
+        return .{ .buffer = buffer, .cells = cells };
     }
 
     fn deinit(self: *TestContext) void {
         self.buffer.deinit();
+        testing.allocator.free(self.cells);
     }
 
     fn scissor(self: *TestContext) Scissor {
@@ -568,10 +568,9 @@ const TestContext = struct {
 };
 
 test "Scissor.initChild creates correct child region" {
-    var fb = try FrameBuffer.init(20, 10, .{
-        .max_cells = 300,
-        .grapheme_buffer = .{ .max = 100, .initial = 100 },
-    });
+    const cells = try testing.allocator.alloc(Cell, 200);
+    defer testing.allocator.free(cells);
+    var fb = try FrameBuffer.init(cells, 20, 10, .tiny);
     defer fb.deinit();
 
     const parent = Scissor{
@@ -592,10 +591,9 @@ test "Scissor.initChild creates correct child region" {
 }
 
 test "Scissor.fillRectangle clips to buffer bounds" {
-    var fb = try FrameBuffer.init(10, 5, .{
-        .max_cells = 300,
-        .grapheme_buffer = .{ .max = 100, .initial = 100 },
-    });
+    const cells = try testing.allocator.alloc(Cell, 50);
+    defer testing.allocator.free(cells);
+    var fb = try FrameBuffer.init(cells, 10, 5, .tiny);
     defer fb.deinit();
 
     fb.clear();
@@ -615,7 +613,7 @@ test "Scissor.fillRectangle clips to buffer bounds" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 8 and y >= 3) '+' else ' ';
-            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].data.codepoint);
+            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].data.codepoint);
         }
     }
 }
@@ -2284,10 +2282,9 @@ test "printAssumeNoGrapheme invalid mid-sequence" {
 }
 
 test "Scissor.fillRectangle fills partial region" {
-    var fb = try FrameBuffer.init(10, 5, .{
-        .max_cells = 300,
-        .grapheme_buffer = .{ .max = 100, .initial = 100 },
-    });
+    const cells = try testing.allocator.alloc(Cell, 50);
+    defer testing.allocator.free(cells);
+    var fb = try FrameBuffer.init(cells, 10, 5, .tiny);
     defer fb.deinit();
 
     fb.clear();
@@ -2306,7 +2303,7 @@ test "Scissor.fillRectangle fills partial region" {
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 2 and x < 5 and y >= 1 and y < 3) '*' else ' ';
-            try std.testing.expectEqual(expected, fb.cells.reserved_pages[y * 10 + x].data.codepoint);
+            try std.testing.expectEqual(expected, fb.cells[y * 10 + x].data.codepoint);
         }
     }
 }

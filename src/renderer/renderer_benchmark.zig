@@ -75,7 +75,7 @@ fn setupAsciiBuffer(buffer: *FrameBuffer) void {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     const total_cells = @as(usize, buffer.width) * @as(usize, buffer.height);
     for (0..total_cells) |i| {
-        buffer.cells.reserved_pages[i] = Cell{
+        buffer.cells[i] = Cell{
             .data = .{ .codepoint = chars[i % chars.len] },
             .tag = .codepoint,
             .width = .narrow,
@@ -95,7 +95,7 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
 
             if (pattern < 6) {
                 // ASCII character (60%)
-                buffer.cells.reserved_pages[idx] = Cell{
+                buffer.cells[idx] = Cell{
                     .data = .{ .codepoint = @intCast('A' + (col % 26)) },
                     .tag = .codepoint,
                     .width = .narrow,
@@ -104,12 +104,12 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
             } else if (pattern < 9 and col + 1 < width) {
                 // Wide character (30%)
                 const wide_chars = [_]u21{ '日', '本', '語', '中', '文' };
-                buffer.cells.reserved_pages[idx] = Cell{
+                buffer.cells[idx] = Cell{
                     .data = .{ .codepoint = wide_chars[col % wide_chars.len] },
                     .tag = .codepoint,
                     .width = .wide_start,
                 };
-                buffer.cells.reserved_pages[idx + 1] = Cell{
+                buffer.cells[idx + 1] = Cell{
                     .data = .{ .codepoint = 0 },
                     .tag = .codepoint,
                     .width = .wide_end,
@@ -119,7 +119,7 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
                 // Grapheme cluster (10%)
                 const grapheme = "e\u{0301}";
                 const id = try buffer.grapheme_buffer.put(grapheme);
-                buffer.cells.reserved_pages[idx] = Cell{
+                buffer.cells[idx] = Cell{
                     .data = .{ .grapheme_id = @truncate(id) },
                     .grapheme_id_extension = @truncate(id >> 21),
                     .tag = .grapheme,
@@ -134,8 +134,8 @@ fn setupMixedContentBuffer(buffer: *FrameBuffer) !void {
 fn applyRandomChanges(render_buffer: *FrameBuffer, back_buffer: *FrameBuffer, change_percent: u8, seed: u64) void {
     const total_cells = @as(usize, render_buffer.width) * @as(usize, render_buffer.height);
     @memcpy(
-        render_buffer.cells.reserved_pages[0..total_cells],
-        back_buffer.cells.reserved_pages[0..total_cells],
+        render_buffer.cells[0..total_cells],
+        back_buffer.cells[0..total_cells],
     );
 
     if (change_percent == 0) return;
@@ -146,7 +146,7 @@ fn applyRandomChanges(render_buffer: *FrameBuffer, back_buffer: *FrameBuffer, ch
     const changes_to_make = (total_cells * change_percent) / 100;
     for (0..changes_to_make) |_| {
         const idx = random.intRangeLessThan(usize, 0, total_cells);
-        render_buffer.cells.reserved_pages[idx] = Cell{
+        render_buffer.cells[idx] = Cell{
             .data = .{ .codepoint = @intCast('0' + rng.random().intRangeLessThan(u8, 0, 10)) },
             .tag = .codepoint,
             .width = .narrow,
@@ -155,10 +155,14 @@ fn applyRandomChanges(render_buffer: *FrameBuffer, back_buffer: *FrameBuffer, ch
 }
 
 fn benchFullRedrawAscii(config: Config) !BenchmarkResult {
-    var buffer = try FrameBuffer.init(config.width, config.height, .{
-        .max_cells = @as(usize, config.width) * @as(usize, config.height),
-        .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-    });
+    const cells = try std.heap.page_allocator.alignedAlloc(Cell, .fromByteUnits(std.heap.page_size_min), config.width * config.height);
+    defer std.heap.page_allocator.free(cells);
+    var buffer = try FrameBuffer.init(
+        cells,
+        config.width,
+        config.height,
+        .{ .max = 64 * 1024, .initial = 4 * 1024 },
+    );
     defer buffer.deinit();
 
     const render_buffer = &buffer;
@@ -191,10 +195,14 @@ fn benchFullRedrawAscii(config: Config) !BenchmarkResult {
 }
 
 fn benchFullRedrawMixed(config: Config) !BenchmarkResult {
-    var buffer = try FrameBuffer.init(config.width, config.height, .{
-        .max_cells = @as(usize, config.width) * @as(usize, config.height),
-        .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-    });
+    const cells = try std.heap.page_allocator.alignedAlloc(Cell, .fromByteUnits(std.heap.page_size_min), config.width * config.height);
+    defer std.heap.page_allocator.free(cells);
+    var buffer = try FrameBuffer.init(
+        cells,
+        config.width,
+        config.height,
+        .{ .max = 64 * 1024, .initial = 4 * 1024 },
+    );
     defer buffer.deinit();
 
     const render_buffer = &buffer;
@@ -228,15 +236,24 @@ fn benchFullRedrawMixed(config: Config) !BenchmarkResult {
 
 fn benchDiff(config: Config, change_percent: u8) !BenchmarkResult {
     var buffers: [2]FrameBuffer = undefined;
-    buffers[0] = try FrameBuffer.init(config.width, config.height, .{
-        .max_cells = @as(usize, config.width) * @as(usize, config.height),
-        .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-    });
+    const cells0 = try std.heap.page_allocator.alignedAlloc(Cell, .fromByteUnits(std.heap.page_size_min), config.width * config.height);
+    defer std.heap.page_allocator.free(cells0);
+    buffers[0] = try FrameBuffer.init(
+        cells0,
+        config.width,
+        config.height,
+        .{ .max = 64 * 1024, .initial = 4 * 1024 },
+    );
+
     defer buffers[0].deinit();
-    buffers[1] = try FrameBuffer.init(config.width, config.height, .{
-        .max_cells = @as(usize, config.width) * @as(usize, config.height),
-        .grapheme_buffer = .{ .max = 64 * 1024, .initial = 4 * 1024 },
-    });
+    const cells1 = try std.heap.page_allocator.alignedAlloc(Cell, .fromByteUnits(std.heap.page_size_min), config.width * config.height);
+    defer std.heap.page_allocator.free(cells1);
+    buffers[1] = try FrameBuffer.init(
+        cells1,
+        config.width,
+        config.height,
+        .{ .max = 64 * 1024, .initial = 4 * 1024 },
+    );
     defer buffers[1].deinit();
 
     const render_buffer = &buffers[0];

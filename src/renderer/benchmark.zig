@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const FrameBuffer = @import("renderer").FrameBuffer;
 const Scissor = @import("renderer").Scissor;
 const PrintOptions = Scissor.PrintOptions;
+const Cell = @import("renderer").Cell;
 
 const BenchmarkMode = enum(u8) {
     /// Mode 1: Full print with wrapping enabled
@@ -133,10 +134,13 @@ fn runBenchmark(text: []const u8, config: Config) !BenchmarkResult {
     var rng = std.Random.DefaultPrng.init(config.seed);
     const random = rng.random();
 
-    var frame_buffer = try FrameBuffer.init(config.buffer_width, config.buffer_height, .{
-        .max_cells = @as(usize, config.buffer_width) * @as(usize, config.buffer_height),
-        .grapheme_buffer = .{ .max = 1024 * 1024, .initial = 64 * 1024 },
-    });
+    const cells = try std.heap.page_allocator.alignedAlloc(Cell, .fromByteUnits(std.heap.page_size_min), config.buffer_width * config.buffer_height);
+    var frame_buffer = try FrameBuffer.init(
+        cells,
+        config.buffer_width,
+        config.buffer_height,
+        .{ .max = 1024 * 1024, .initial = 64 * 1024 },
+    );
     defer frame_buffer.deinit();
 
     const num_chunks = (text.len + config.chunk_size - 1) / config.chunk_size;

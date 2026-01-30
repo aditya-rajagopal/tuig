@@ -116,6 +116,7 @@ pub fn build(b: *std.Build) void {
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
     check_step.dependOn(&check_exe.step);
+    // check_step.dependOn(&run_renderer_tests.step);
 
     // Print benchmark
     const benchmark_mod = b.createModule(.{
@@ -166,7 +167,7 @@ pub fn build(b: *std.Build) void {
     const bench_renderer_cmd = b.addRunArtifact(renderer_benchmark);
     bench_renderer_step.dependOn(&bench_renderer_cmd.step);
     bench_renderer_cmd.step.dependOn(b.getInstallStep());
-    check_step.dependOn(&bench_renderer_cmd.step);
+    // check_step.dependOn(&bench_renderer_cmd.step);
 
     if (b.args) |args| {
         bench_renderer_cmd.addArgs(args);

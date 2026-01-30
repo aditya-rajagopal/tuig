@@ -9,61 +9,37 @@ const t = @import("types.zig");
 const Cell = @import("root.zig").Cell;
 const Scissor = @import("Scissor.zig");
 
-pub const Options = struct {
-    max_cells: usize,
-    grapheme_buffer: Size,
-
-    pub const Size = struct {
-        max: usize,
-        initial: usize,
-    };
-
-    pub const default_screen = Options{
-        .max_cells = 512 * 512, // 2MB cache
-        .grapheme_buffer = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
-    };
-
-    pub const small_buffer = Options{
-        .max_cells = 128 * 128, // 128kb buffer
-        .grapheme_buffer = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
-    };
-
-    pub const tiny_buffer = Options{
-        .max_cells = 64 * 64, // 32kb buffer
-        .grapheme_buffer = .{ .max = stdx.KB(8), .initial = stdx.KB(4) },
-    };
-};
-
 pub const FrameBuffer = @This();
-cells: t.CellBuffer,
+
+cells: []Cell,
 width: u16,
 height: u16,
 grapheme_buffer: t.GraphemeBuffer,
 
 pub fn init(
+    cells: []Cell,
     width: u16,
     height: u16,
-    options: Options,
+    grapheme_buffer_size: t.GraphemeBuffer.Size,
 ) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!FrameBuffer {
-    assert(@as(usize, width) * @as(usize, height) <= options.max_cells);
-    assert(options.grapheme_buffer.initial <= options.grapheme_buffer.max);
+    assert(@as(usize, width) * @as(usize, height) == cells.len);
+    assert(grapheme_buffer_size.initial <= grapheme_buffer_size.max);
 
     var buffer: FrameBuffer = undefined;
     buffer.width = width;
     buffer.height = height;
-    buffer.cells = try t.CellBuffer.initCapacity(options.max_cells, width * height);
-    buffer.grapheme_buffer = try t.GraphemeBuffer.initCapacity(options.grapheme_buffer.max, options.grapheme_buffer.initial);
+    buffer.cells = cells;
+    buffer.grapheme_buffer = try t.GraphemeBuffer.initCapacity(grapheme_buffer_size.max, grapheme_buffer_size.initial);
     return buffer;
 }
 
 pub fn deinit(self: *FrameBuffer) void {
-    self.cells.deinit();
     self.grapheme_buffer.deinit();
 }
 
 pub fn clear(self: *FrameBuffer) void {
     const num_cells = @as(usize, self.width) * @as(usize, self.height);
-    @memset(self.cells.reserved_pages[0..num_cells], .empty);
+    @memset(self.cells[0..num_cells], .empty);
     self.grapheme_buffer.reset();
 }
 
@@ -80,29 +56,31 @@ pub fn scissor(self: *FrameBuffer) Scissor {
 pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
     assert(x < self.width);
     assert(y < self.height);
+    assert(self.width * self.height == self.cells.len);
     const index: usize = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
-    self.cells.reserved_pages[index] = cell;
+    self.cells[index] = cell;
 }
 
 pub inline fn get(self: FrameBuffer, x: u16, y: u16) Cell {
     assert(x < self.width);
     assert(y < self.height);
+    assert(self.width * self.height == self.cells.len);
     const index: usize = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
-    return self.cells.reserved_pages[index];
+    return self.cells[index];
 }
 
 pub inline fn renderCell(frame_buffer: *const FrameBuffer, row: usize, col: usize, writer: *std.Io.Writer) error{WriteFailed}!u3 {
-    const cell = frame_buffer.cells.reserved_pages[row * frame_buffer.width + col];
+    assert(row * frame_buffer.width + col < frame_buffer.cells.len);
+    const cell = frame_buffer.cells[row * frame_buffer.width + col];
     var result: u3 = 1;
     switch (cell.width) {
-        .wide_start => {
-            result = 2;
-        },
+        .wide_start => result = 2,
         .wide_end => return result,
         else => {},
     }
     switch (cell.tag) {
         .codepoint => {
+            @branchHint(.likely);
             var bytes: [4]u8 = undefined;
             const len = std.unicode.utf8Encode(cell.data.codepoint, &bytes) catch {
                 @branchHint(.cold);
@@ -126,6 +104,7 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, row: usize, col: usiz
 }
 
 pub fn fullRedraw(self: *const FrameBuffer, writer: *std.Io.Writer) error{WriteFailed}!void {
+    assert(self.width * self.height == self.cells.len);
     for (0..self.height) |row| {
         try writer.print("\x1b[{d};{d}H", .{ row + 1, 1 });
         var col: u16 = 0;
@@ -138,8 +117,8 @@ pub fn fullRedraw(self: *const FrameBuffer, writer: *std.Io.Writer) error{WriteF
 pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, row: usize, col: usize) bool {
     assert(self.width == back_bufer.width);
     assert(self.height == back_bufer.height);
-    const old_cell = back_bufer.cells.reserved_pages[row * self.width + col];
-    const new_cell = self.cells.reserved_pages[row * self.width + col];
+    const old_cell = back_bufer.cells[row * self.width + col];
+    const new_cell = self.cells[row * self.width + col];
     if (!new_cell.eql(old_cell)) {
         return true;
     } else if (old_cell.tag == .grapheme) {
@@ -157,6 +136,8 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
 pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, writer: *std.Io.Writer) error{WriteFailed}!void {
     assert(back_buffer.width == self.width);
     assert(back_buffer.height == self.height);
+    assert(self.width * self.height == self.cells.len);
+    assert(back_buffer.width * back_buffer.height == back_buffer.cells.len);
 
     const height: usize = back_buffer.height;
     const width: usize = back_buffer.width;
@@ -168,7 +149,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, wri
         while (col < width) {
             var start: usize = row_start + col;
             while (start < row_end and !self.isDiff(back_buffer, row, start - row_start)) {
-                if (back_buffer.cells.reserved_pages[start].width == .wide_start) {
+                if (back_buffer.cells[start].width == .wide_start) {
                     assert(start < row_end - 1);
                     start += 2;
                 } else {
@@ -178,7 +159,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, wri
             var end: usize = start;
 
             while (end < row_end and self.isDiff(back_buffer, row, end - row_start)) {
-                if (back_buffer.cells.reserved_pages[start].width == .wide_start or self.cells.reserved_pages[start].width == .wide_start) {
+                if (back_buffer.cells[start].width == .wide_start or self.cells[start].width == .wide_start) {
                     assert(end < row_end - 1);
                     end += 2;
                 } else {
@@ -214,7 +195,9 @@ fn expectEqualSequences(expected: []const u8, actual: []const u8) !void {
 }
 
 test "fullRedraw - multi-byte UTF-8" {
-    var front = try FrameBuffer.init(4, 1, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 4, 1, .tiny);
     defer front.deinit();
 
     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
@@ -233,7 +216,9 @@ test "fullRedraw - multi-byte UTF-8" {
 }
 
 test "fullRedraw wide characters" {
-    var front = try FrameBuffer.init(6, 1, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 6);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 6, 1, .tiny);
     defer front.deinit();
 
     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
@@ -256,7 +241,9 @@ test "fullRedraw wide characters" {
 }
 
 test "fullRedraw graphemes - wide and graphemes" {
-    var front = try FrameBuffer.init(4, 2, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 8);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 4, 2, .tiny);
     defer front.deinit();
 
     front.clear();
@@ -286,7 +273,9 @@ test "fullRedraw graphemes - wide and graphemes" {
 }
 
 test "fullRedraw error handling - invalid codepoint" {
-    var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 3, 1, .tiny);
     defer front.deinit();
 
     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
@@ -306,7 +295,9 @@ test "fullRedraw error handling - invalid codepoint" {
 }
 
 test "fullRedraw error handling - missing grapheme" {
-    var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 3, 1, .tiny);
     defer front.deinit();
 
     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
@@ -326,9 +317,13 @@ test "fullRedraw error handling - missing grapheme" {
 }
 
 test "diffRedraw no changes" {
-    var front = try FrameBuffer.init(5, 2, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 5, 2, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(5, 2, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 5, 2, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -348,9 +343,13 @@ test "diffRedraw no changes" {
 }
 
 test "diffRedraw all changed" {
-    var front = try FrameBuffer.init(5, 2, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 5, 2, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(5, 2, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 5, 2, .tiny);
     defer back.deinit();
 
     back.clear();
@@ -373,9 +372,13 @@ test "diffRedraw all changed" {
 }
 
 test "diffRedraw multiple disjoint segments in one row" {
-    var front = try FrameBuffer.init(10, 1, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 10, 1, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(10, 1, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 10);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 10, 1, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -397,9 +400,13 @@ test "diffRedraw multiple disjoint segments in one row" {
 }
 
 test "diffRedraw changes in multiple rows" {
-    var front = try FrameBuffer.init(5, 3, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 15);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 5, 3, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(5, 3, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 15);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 5, 3, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -422,9 +429,13 @@ test "diffRedraw changes in multiple rows" {
 }
 
 test "diffRedraw grapheme same in both buffers" {
-    var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -449,9 +460,13 @@ test "diffRedraw grapheme same in both buffers" {
 }
 
 test "diffRedraw grapheme changed" {
-    var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -478,9 +493,13 @@ test "diffRedraw grapheme changed" {
 }
 
 test "diffRedraw grapheme vs codepoint" {
-    var front = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const front_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
     defer front.deinit();
-    var back = try FrameBuffer.init(3, 1, Options.tiny_buffer);
+    const back_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
     defer back.deinit();
 
     front.clear();
@@ -503,7 +522,9 @@ test "diffRedraw grapheme vs codepoint" {
 }
 
 test "renderCell basic codepoint" {
-    var front = try FrameBuffer.init(4, 1, Options.tiny_buffer);
+    const cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 4, 1, .tiny);
     defer front.deinit();
 
     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
