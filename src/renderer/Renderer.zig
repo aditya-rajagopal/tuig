@@ -9,7 +9,9 @@ const Event = term.Event;
 const KeyEvent = term.KeyEvent;
 const MouseEvent = term.MouseEvent;
 
-const Cell = @import("root.zig").Cell;
+const c = @import("cell.zig");
+const Cell = c.Cell;
+const Style = c.Style;
 const Context = @import("Context.zig");
 const FrameBuffer = @import("FrameBuffer.zig");
 const Scissor = @import("Scissor.zig");
@@ -46,8 +48,6 @@ mouse_x: u16 = 0,
 mouse_y: u16 = 0,
 current_mouse_down: MouseState = .{},
 previous_mouse_down: MouseState = .{},
-current_keyboard_state: term.PhysicalKeyState = .{},
-previous_keyboard_state: term.PhysicalKeyState = .{},
 // @TODO GILA(generous_magma_3gs)
 memory_pool: MemoryPool,
 arena: MemoryPool.ArenaAllocator,
@@ -79,8 +79,18 @@ pub fn init(self: *Renderer, terminal: *Terminal, config: Config) error{ OutOfMe
 
     self.cell_buffers[0] = try t.CellBuffer.initCapacity(config.max_cells, size);
     self.cell_buffers[1] = try t.CellBuffer.initCapacity(config.max_cells, size);
-    self.buffers[0] = try FrameBuffer.init(self.cell_buffers[0].reserved_pages[0..size], width, height, config.grapheme_buffer_size);
-    self.buffers[1] = try FrameBuffer.init(self.cell_buffers[1].reserved_pages[0..size], width, height, config.grapheme_buffer_size);
+    self.buffers[0] = try FrameBuffer.init(
+        self.cell_buffers[0].reserved_pages[0..size],
+        width,
+        height,
+        config.grapheme_buffer_size,
+    );
+    self.buffers[1] = try FrameBuffer.init(
+        self.cell_buffers[1].reserved_pages[0..size],
+        width,
+        height,
+        config.grapheme_buffer_size,
+    );
     self.render_buffer = &self.buffers[0];
     self.back_buffer = &self.buffers[1];
     self.render_buffer.clear();
@@ -240,18 +250,16 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
     return ctx;
 }
 
-pub fn endFrame(self: *Renderer, force_redraw: bool) void {
+pub fn endFrame(self: *Renderer, force_redraw: bool, style_sheet: *const Style.Sheet) void {
+    self.terminal.bsu() catch {};
+    self.terminal.write(c.ColorFormat.reset_all) catch {};
     if (self.redraw or force_redraw) {
-        self.terminal.bsu() catch {};
-        self.render_buffer.fullRedraw(self.terminal.getWriter()) catch {};
-        self.terminal.esu() catch {};
+        self.render_buffer.fullRedraw(style_sheet, self.terminal.getWriter()) catch {};
         self.redraw = false;
     } else {
-        @branchHint(.likely);
-        self.terminal.bsu() catch {};
-        self.render_buffer.diffRedraw(self.back_buffer, self.terminal.getWriter()) catch {};
-        self.terminal.esu() catch {};
+        self.render_buffer.diffRedraw(self.back_buffer, style_sheet, self.terminal.getWriter()) catch {};
     }
+    self.terminal.esu() catch {};
     self.terminal.flush() catch {};
     self.swapBuffers();
     self.arena.reset();

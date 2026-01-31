@@ -3,6 +3,7 @@ const std = @import("std");
 const tuig = @import("tuig");
 const Context = tuig.renderer.Context;
 const Cell = tuig.renderer.Cell;
+const Style = tuig.renderer.Style;
 const Scissor = tuig.renderer.Scissor;
 
 const stdx = @import("stdx");
@@ -123,9 +124,11 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
         .falling => {
             self.renderInFlightPiece(game_area);
             self.state.gravity_delay -= @intCast(frame_time);
+            const gravity_time = base_gravity_time / self.state.gravity;
             if (self.state.gravity_delay <= 0) {
-                const gravity_time = base_gravity_time / self.state.gravity;
                 self.state.gravity_delay = @intFromFloat(gravity_time);
+                // @TODO this needs to be loop
+                // self.state.gravity_delay += @intFromFloat(gravity_time);
                 self.state.in_flight.position.y += 1;
             }
         },
@@ -157,7 +160,7 @@ fn lockInFlightPiece(self: *Tetris) bool {
         const x_int: u16 = @intFromFloat(@floor(x_cell));
         const y_int: i17 = @intFromFloat(@floor(y_cell));
         if (y_int < 0) return true;
-        self.state.board[@as(u16, @intCast(y_int)) * play_area.width + x_int] = 1;
+        self.state.board[@as(u16, @intCast(y_int)) * play_area.width + x_int] = @intFromEnum(self.state.in_flight.tag) + 1;
     }
     self.state.in_flight = .{ .position = .{ .x = 5, .y = 0 }, .tag = self.state.next_pieces[self.state.ptr] };
     self.state.ptr += 1;
@@ -207,7 +210,7 @@ fn renderInFlightPiece(self: *Tetris, game_area: Scissor) void {
         const x_int: u16 = @intFromFloat(@floor(x_cell));
         const y_int: i17 = @intFromFloat(@floor(y_cell));
         if (y_int < 0) continue;
-        renderCell(game_area, x_int - 1, @intCast(y_int));
+        renderCell(game_area, x_int - 1, @intCast(y_int), Tetromino.color_map[@intFromEnum(self.state.in_flight.tag)]);
     }
 }
 
@@ -341,7 +344,7 @@ fn clearRows(self: *Tetris) void {
     while (row > 0) {
         var total: usize = 0;
         for (0..play_area.width) |col| {
-            total += self.state.board[row * play_area.width + col];
+            total += @intFromBool(self.state.board[row * play_area.width + col] > 0);
         }
         if (total == play_area.width) {
             for (0..row) |r| {
@@ -356,17 +359,20 @@ fn clearRows(self: *Tetris) void {
 fn renderGameArea(self: *Tetris, game_area: Scissor) void {
     for (0..play_area.height) |y| {
         for (0..play_area.width) |x| {
-            if (self.state.board[y * play_area.width + x] == 1) {
+            if (self.state.board[y * play_area.width + x] > 0) {
                 const x_int: u16 = @intCast(x * 2);
-                renderCell(game_area, x_int, @intCast(y));
+                var style: Style = Tetromino.color_map[self.state.board[y * play_area.width + x] - 1];
+                style.flags.dim = true;
+                style.flags.bold = false;
+                renderCell(game_area, x_int, @intCast(y), style);
             }
         }
     }
 }
 
-fn renderCell(game_area: Scissor, x: u16, y: u16) void {
-    game_area.set(x, y, Cell{ .data = .{ .codepoint = '█' } });
-    game_area.set(x + 1, y, Cell{ .data = .{ .codepoint = '█' } });
+fn renderCell(game_area: Scissor, x: u16, y: u16, style: Style) void {
+    game_area.set(x, y, Cell{ .data = .{ .codepoint = '█' }, .style = style });
+    game_area.set(x + 1, y, Cell{ .data = .{ .codepoint = '█' }, .style = style });
 }
 
 const Position = struct {
@@ -380,6 +386,16 @@ pub const Tetromino = struct {
     pub fn getFrame(self: Tetromino, state: State) [4]Position {
         return self.frames[@intFromEnum(state)];
     }
+
+    pub const color_map: [7]Style = [_]Style{
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0x00, .g = 0xFF, .b = 0xFF } }, .flags = .{ .bold = true } }, // I
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0xFF, .g = 0xFF, .b = 0x00 } }, .flags = .{ .bold = true } }, // O
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0x80, .g = 0x00, .b = 0x80 } }, .flags = .{ .bold = true } }, // T
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0x00, .g = 0xFF, .b = 0x00 } }, .flags = .{ .bold = true } }, // S
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0xFF, .g = 0x00, .b = 0x00 } }, .flags = .{ .bold = true } }, // Z
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0x00, .g = 0x00, .b = 0xFF } }, .flags = .{ .bold = true } }, // J
+        .{ .tag = .fg_rgb, .data = .{ .fg_rgb = .{ .r = 0xFF, .g = 0xA5, .b = 0x00 } }, .flags = .{ .bold = true } }, // L
+    };
 
     const State = enum(u2) {
         O = 0,

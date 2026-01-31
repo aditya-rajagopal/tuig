@@ -5,6 +5,7 @@ const assert = stdx.inlineAssert;
 
 const FrameBuffer = @import("FrameBuffer.zig");
 const Cell = @import("root.zig").Cell;
+const Style = @import("root.zig").Style;
 const GraphemeIterator = @import("unicode").GraphemeIterator;
 const Context = @import("Context.zig");
 const t = @import("types.zig");
@@ -164,10 +165,13 @@ pub const PrintOptions = struct {
     /// Number of spaces per tab character
     /// Tab stop: advance to next multiple of tab_width
     tab_width: u8,
+    /// Style for text
+    style: Style = .default,
 
     pub const default: PrintOptions = .{
         .wrap = false,
         .tab_width = 4,
+        .style = .default,
     };
 };
 
@@ -298,11 +302,12 @@ pub fn print(
         const cell: Cell = if (grapheme_result.grapheme.len > 1) blk: {
             @branchHint(.unlikely);
             const id = try self.buffer.grapheme_buffer.put(grapheme_result.bytes);
-            break :blk Cell.initGrapheme(id, if (grapheme_result.width == 2) .wide_start else .narrow);
+            break :blk Cell.initGrapheme(id, if (grapheme_result.width == 2) .wide_start else .narrow, options.style);
         } else .{
             .data = .{ .codepoint = codepoint },
             .tag = .codepoint,
             .width = if (grapheme_result.width == 2) .wide_start else .narrow,
+            .style = options.style,
         };
 
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
@@ -310,7 +315,7 @@ pub fn print(
         if (grapheme_result.width == 2) {
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
-            self.buffer.set(@intCast(second_x), @intCast(y_global), .wide_end);
+            self.buffer.set(@intCast(second_x), @intCast(y_global), .initWideEnd(options.style));
         }
 
         result.graphemes_rendered += 1;
@@ -486,6 +491,7 @@ pub fn printAssumeNoGrapheme(
             .data = .{ .codepoint = codepoint },
             .tag = .codepoint,
             .width = if (width == 2) .wide_start else .narrow,
+            .style = options.style,
         };
 
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
@@ -493,7 +499,7 @@ pub fn printAssumeNoGrapheme(
         if (width == 2) {
             const second_x: i17 = x_global + 1;
             assert(second_x < right_bound);
-            self.buffer.set(@intCast(second_x), @intCast(y_global), .wide_end);
+            self.buffer.set(@intCast(second_x), @intCast(y_global), .initWideEnd(options.style));
         }
 
         result.graphemes_rendered += 1;

@@ -1,6 +1,9 @@
 pub const Renderer = @import("Renderer.zig");
 pub const Context = @import("Context.zig");
-pub const Cell = @import("cell.zig").Cell;
+pub const c = @import("cell.zig");
+pub const Cell = c.Cell;
+pub const Style = c.Style;
+pub const CellSize = @import("cell.zig").CellSize;
 pub const FrameBuffer = @import("FrameBuffer.zig");
 pub const Scissor = @import("Scissor.zig");
 

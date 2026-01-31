@@ -7,6 +7,7 @@ const tg = @import("tuig");
 const r = tg.renderer;
 const Scissor = r.Scissor;
 const Context = r.Context;
+const Style = r.Style;
 
 const SplashScreen = @import("splash_screen.zig");
 const Snake = @import("snake.zig");
@@ -28,6 +29,7 @@ tetris: Tetris = undefined,
 memory: MemoryPool = undefined,
 toggle_metrics: bool = false,
 timer: std.time.Timer = undefined,
+style_sheet: *Style.Sheet,
 
 const Modes = union(enum) {
     render_scene: Scenes,
@@ -40,15 +42,16 @@ const Scenes = enum(u8) {
     tetris = 2,
 };
 
-pub fn init() !Application {
+pub fn init(style_sheet: *Style.Sheet) !Application {
     var application: Application = undefined;
     application.mode = .{ .render_scene = .splash_screen };
-    application.splash_screen.init();
+    application.splash_screen.init(style_sheet);
     application.snake.init();
     application.tetris.init();
     application.memory = try MemoryPool.init();
     application.timer = std.time.Timer.start() catch unreachable;
     application.toggle_metrics = false;
+    application.style_sheet = style_sheet;
     return application;
 }
 
@@ -84,7 +87,7 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
                     const acquires_max_concurrent = std.fmt.bufPrint(&buf, "Max Concurrent: {d}", .{metrics.acquires_max_concurrent}) catch unreachable;
                     _ = metrics_scissr.printAssumeNoGrapheme(acquires_max_concurrent, 0, 4, .default);
                 }
-                switch (self.splash_screen.updateAndRender(ctx, options)) {
+                switch (self.splash_screen.updateAndRender(ctx, self.style_sheet, options)) {
                     .quit => return true,
                     .selection => |to| {
                         continue :loop .{ .transition_to = @enumFromInt(to + 1) };

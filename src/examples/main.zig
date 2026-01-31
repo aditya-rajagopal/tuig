@@ -16,10 +16,6 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) nor
     if (Terminal.global_tty) |tty| {
         tty.deinit();
     }
-    if (global_app) |app| {
-        std.debug.print("Application state:\n", .{});
-        std.debug.print("in_flight_piece: {any}\n", .{app.tetris.state.in_flight});
-    }
 
     std.debug.defaultPanic(msg, ret_addr);
 }
@@ -35,6 +31,10 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
     defer terminal.deinit();
 
+    var style_buffer: [1024]tg.renderer.Style.FullStyle = undefined;
+    var generation_buffer: [1024]u8 = undefined;
+    var style_sheet = tg.renderer.Style.Sheet.initBuffer(style_buffer[0..], generation_buffer[0..]);
+
     var renderer: Renderer = undefined;
     renderer.init(&terminal, .default_screen) catch {
         log.err("Failed to initialize renderer", .{});
@@ -42,13 +42,13 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
 
     var quit = false;
-    var app = Application.init() catch {
+    var app = Application.init(&style_sheet) catch {
         log.err("Failed to initialize application", .{});
         return;
     };
     global_app = &app;
     while (!quit) {
-        const events = terminal.pollEvents(16) catch {
+        const events = terminal.pollEvents(15) catch {
             log.err("Failed to poll events", .{});
             return;
         };
@@ -57,7 +57,7 @@ pub fn main(_: std.process.Init.Minimal) void {
             log.err("Failed to begin frame", .{});
             return;
         };
-        defer renderer.endFrame(false);
+        defer renderer.endFrame(true, &style_sheet);
 
         quit = app.updateAndRender(&ctx);
     }

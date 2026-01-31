@@ -7,6 +7,8 @@ const assert = stdx.inlineAssert;
 const t = @import("types.zig");
 
 const Cell = @import("root.zig").Cell;
+const Style = @import("root.zig").Style;
+const CellSize = @import("root.zig").CellSize;
 const Scissor = @import("Scissor.zig");
 
 pub const FrameBuffer = @This();
@@ -82,7 +84,7 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *
             try writer.writeAll(bytes[0..len]);
         },
         .grapheme => {
-            const id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(cell)));
+            const id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(cell)));
             const bytes = frame_buffer.grapheme_buffer.get(id) orelse blk: {
                 @branchHint(.cold);
                 break :blk &[_]u8{ 0xEF, 0xBF, 0xBD }; // U+FFFD
@@ -92,11 +94,16 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *
     }
 }
 
-pub fn fullRedraw(self: *const FrameBuffer, writer: *std.Io.Writer) error{WriteFailed}!void {
+pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
     assert(self.width * self.height == self.cells.len);
+    var current_style: Style = .default;
     for (0..self.height) |row| {
         try writer.print("\x1b[{d};{d}H", .{ row + 1, 1 });
         for (self.cells[row * self.width ..][0..self.width]) |cell| {
+            if (cell.style != current_style) {
+                try cell.style.write(current_style, style_sheet, writer);
+                current_style = cell.style;
+            }
             switch (cell.width) {
                 .wide_end => continue,
                 else => try self.renderCell(cell, writer),
@@ -114,8 +121,8 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
         return true;
     } else if (old_cell.tag == .grapheme) {
         @branchHint(.unlikely);
-        const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(old_cell)));
-        const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(u64, @bitCast(new_cell)));
+        const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(old_cell)));
+        const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(new_cell)));
         const old_grapheme = back_bufer.grapheme_buffer.get(old_id) orelse return true;
         const new_grapheme = self.grapheme_buffer.get(new_id) orelse return false;
         return !std.mem.eql(u8, old_grapheme, new_grapheme);
@@ -155,7 +162,7 @@ fn rowsEqual(self: *const FrameBuffer, other: *const FrameBuffer, row: usize) bo
     return true;
 }
 
-pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, writer: *std.Io.Writer) error{WriteFailed}!void {
+pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
     assert(back_buffer.width == self.width);
     assert(back_buffer.height == self.height);
     assert(self.width * self.height == self.cells.len);
@@ -163,6 +170,8 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, wri
 
     const height: usize = back_buffer.height;
     const width: usize = back_buffer.width;
+
+    var current_style: Style = .default;
 
     for (0..height) |row| {
         // Fast path: skip entirely unchanged rows
@@ -192,6 +201,10 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, wri
                 }
             }
             if (start >= row_end) break;
+            if (current_style != self.cells[start].style) {
+                try self.cells[start].style.write(current_style, style_sheet, writer);
+                current_style = self.cells[start].style;
+            }
             try writer.print("\x1b[{d};{d}H", .{ row + 1, start - row_start + 1 });
             for (self.cells[start..end]) |cell| {
                 switch (cell.width) {
@@ -283,11 +296,11 @@ test "fullRedraw graphemes - wide and graphemes" {
     front.set(2, 0, .{ .width = .wide_end });
     const e_acute_combining = "e\xCC\x81";
     const id = try front.grapheme_buffer.put(e_acute_combining);
-    front.set(3, 0, Cell.initGrapheme(id, .narrow));
+    front.set(3, 0, Cell.initGrapheme(id, .narrow, .default));
     // 👨‍👩‍👧 (family emoji) - ZWJ sequence
     const family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7";
     const id_1 = try front.grapheme_buffer.put(family);
-    front.set(1, 1, Cell.initGrapheme(id_1, .wide_start));
+    front.set(1, 1, Cell.initGrapheme(id_1, .wide_start, .default));
     front.set(2, 1, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
@@ -471,10 +484,10 @@ test "diffRedraw grapheme same in both buffers" {
 
     const emoji = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"; // 👨‍👩‍👧
     const id = try front.grapheme_buffer.put(emoji);
-    front.set(1, 0, Cell.initGrapheme(id, .wide_start));
+    front.set(1, 0, Cell.initGrapheme(id, .wide_start, .default));
     front.set(2, 0, .wide_end);
     const back_id = try back.grapheme_buffer.put(emoji);
-    back.set(1, 0, Cell.initGrapheme(back_id, .wide_start));
+    back.set(1, 0, Cell.initGrapheme(back_id, .wide_start, .default));
     back.set(2, 0, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
@@ -505,9 +518,9 @@ test "diffRedraw grapheme changed" {
     const emoji2 = "\xF0\x9F\x91\x8E"; // 👎
     const id_1 = try front.grapheme_buffer.put(emoji1);
     const id_2 = try back.grapheme_buffer.put(emoji2);
-    front.set(1, 0, Cell.initGrapheme(id_1, .wide_start));
+    front.set(1, 0, Cell.initGrapheme(id_1, .wide_start, .default));
     front.set(2, 0, .wide_end);
-    back.set(1, 0, Cell.initGrapheme(id_2, .wide_start));
+    back.set(1, 0, Cell.initGrapheme(id_2, .wide_start, .default));
     back.set(2, 0, .wide_end);
 
     var output_buffer: [4096]u8 = undefined;
@@ -535,7 +548,7 @@ test "diffRedraw grapheme vs codepoint" {
 
     const emoji = "\xF0\x9F\x91\x8D"; // 👍
     const id = try back.grapheme_buffer.put(emoji);
-    back.set(1, 0, Cell.initGrapheme(id, .wide_start));
+    back.set(1, 0, Cell.initGrapheme(id, .wide_start, .default));
     back.set(2, 0, .wide_end);
     front.set(1, 0, .{ .data = .{ .codepoint = 'X' } });
 

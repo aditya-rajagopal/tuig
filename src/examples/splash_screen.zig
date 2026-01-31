@@ -5,6 +5,8 @@ const tuig = @import("tuig");
 const r = tuig.renderer;
 const Context = r.Context;
 const Cell = r.Cell;
+const Style = r.Style;
+const StyleReference = r.Style.Sheet.Reference;
 
 const app = @import("app.zig");
 
@@ -39,6 +41,9 @@ splash_progress: u16 = 0,
 splash_animation_mode: enum { start, move_to_top, done } = .start,
 options_width: ?usize = null,
 selection: u16 = 0,
+splash_colour: StyleReference,
+selection_hover: StyleReference,
+selection_pressed: StyleReference,
 
 pub const SplashScreenResult = union(enum) {
     selection: u16,
@@ -46,11 +51,14 @@ pub const SplashScreenResult = union(enum) {
     noop,
 };
 
-pub fn init(self: *SplashScreen) void {
+pub fn init(self: *SplashScreen, style_sheet: *Style.Sheet) void {
     self.splash_animation_mode = .start;
     self.splash_progress = 0;
     self.options_width = null;
     self.selection = 0;
+    self.splash_colour = style_sheet.putBounded(.{ .fg = .{ .rgb = .{ .r = 0, .g = 255, .b = 0 } } }) catch unreachable;
+    self.selection_hover = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 128, .g = 128, .b = 128 } } }) catch unreachable;
+    self.selection_pressed = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 64, .g = 64, .b = 64 } } }) catch unreachable;
 }
 
 pub fn deinit(self: *SplashScreen) void {
@@ -64,7 +72,7 @@ pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool, ctx: *const Cont
     self.splash_progress = 0;
 }
 
-pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []const []const u8) SplashScreenResult {
+pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, style_sheet: *Style.Sheet, options: []const []const u8) SplashScreenResult {
     if (self.options_width == null) {
         self.options_width = 0;
         for (options) |option| {
@@ -105,8 +113,20 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
     };
     var text_iter = std.mem.splitScalar(u8, splash_text, '\n');
     var row: u16 = 0;
+    const splash_style_index = style_sheet.get(self.splash_colour);
     while (text_iter.next()) |line| {
-        _ = area.printAssumeNoGrapheme(line, 0, row, .{ .wrap = false, .tab_width = 4 });
+        _ = area.printAssumeNoGrapheme(
+            line,
+            0,
+            row,
+            .{ .wrap = false, .tab_width = 4, .style = .{
+                .tag = .id,
+                .data = .{ .id = splash_style_index },
+                .flags = .{
+                    .bold = true,
+                },
+            } },
+        );
         row += 1;
     }
 
@@ -132,23 +152,33 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             @intCast(self.options_width.? + 2),
             @intCast(options.len),
         );
-        var selection: [2]u21 = .{ '[', ']' };
+
+        const selection_hover = style_sheet.get(self.selection_hover);
+        const selection_pressed = style_sheet.get(self.selection_pressed);
+        var selection_style: Style = .{ .tag = .id, .data = .{ .id = selection_hover }, .flags = .{
+            .bold = true,
+            .underline = .single,
+        } };
         if (ctx.isHovered(options_scissor)) |local_pos| {
             self.selection = local_pos.y;
             if (ctx.mouse_down.left or ctx.mouse_pressed.left) {
-                selection = .{ '<', '>' };
+                selection_style.data = .{ .id = selection_pressed };
             } else if (ctx.mouse_released.left) {
                 return .{ .selection = self.selection };
             }
         }
         for (options, 0..) |option, i| {
             assert(option.len <= self.options_width.?);
+            var style: Style = .default;
             if (i == self.selection) {
-                _ = options_scissor.set(0, @intCast(i), Cell{ .data = .{ .codepoint = selection[0] } });
-                _ = options_scissor.set(@intCast(self.options_width.? + 1), @intCast(i), Cell{ .data = .{ .codepoint = selection[1] } });
+                style = selection_style;
             }
-            const option_start_x = (self.options_width.? + 2 - option.len) / 2;
-            _ = options_scissor.printAssumeNoGrapheme(option, @intCast(option_start_x), @intCast(i), .{ .wrap = false, .tab_width = 4 });
+            const option_start_x = (self.options_width.? - option.len) / 2;
+            _ = options_scissor.printAssumeNoGrapheme(option, @intCast(option_start_x), @intCast(i), .{
+                .wrap = false,
+                .tab_width = 4,
+                .style = style,
+            });
         }
     }
     return .noop;

@@ -297,18 +297,19 @@ fn benchFullRedrawAscii(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.fullRedraw(&writer.writer) catch {};
+        render_buffer.fullRedraw(&style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.fullRedraw(&writer.writer) catch {};
+        render_buffer.fullRedraw(&style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -337,18 +338,19 @@ fn benchFullRedrawMixed(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.fullRedraw(&writer.writer) catch {};
+        render_buffer.fullRedraw(&style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.fullRedraw(&writer.writer) catch {};
+        render_buffer.fullRedraw(&style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -392,18 +394,19 @@ fn benchDiff(config: Config, change_percent: u8) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark - measure only the diff rendering, not the change application
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -457,18 +460,19 @@ fn benchDiffRectangle(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -513,18 +517,19 @@ fn benchDiffSingleRow(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -569,18 +574,19 @@ fn benchDiffCursor(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
@@ -625,18 +631,19 @@ fn benchDiffMultiRect(config: Config) !BenchmarkResult {
 
     var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
     var writer = std.Io.Writer.Discarding.init(&buf);
+    var style_sheet: renderer.Style.Sheet = .empty;
 
     // Warmup
     for (0..100) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
 
     // Benchmark
     var timer = try std.time.Timer.start();
     for (0..config.iterations) |_| {
         writer.count = 0;
-        render_buffer.diffRedraw(back_buffer, &writer.writer) catch {};
+        render_buffer.diffRedraw(back_buffer, &style_sheet, &writer.writer) catch {};
     }
     const elapsed = timer.read();
 
