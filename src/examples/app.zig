@@ -47,7 +47,7 @@ pub fn init(style_sheet: *Style.Sheet) !Application {
     application.mode = .{ .render_scene = .splash_screen };
     application.splash_screen.init(style_sheet);
     application.snake.init();
-    application.tetris.init();
+    application.tetris.init(style_sheet);
     application.memory = try MemoryPool.init();
     application.timer = std.time.Timer.start() catch unreachable;
     application.toggle_metrics = false;
@@ -87,7 +87,7 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
                     const acquires_max_concurrent = std.fmt.bufPrint(&buf, "Max Concurrent: {d}", .{metrics.acquires_max_concurrent}) catch unreachable;
                     _ = metrics_scissr.printAssumeNoGrapheme(acquires_max_concurrent, 0, 4, .default);
                 }
-                switch (self.splash_screen.updateAndRender(ctx, self.style_sheet, options)) {
+                switch (self.splash_screen.updateAndRender(ctx, options)) {
                     .quit => return true,
                     .selection => |to| {
                         continue :loop .{ .transition_to = @enumFromInt(to + 1) };

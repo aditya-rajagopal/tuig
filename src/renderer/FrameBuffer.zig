@@ -96,12 +96,12 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *
 
 pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
     assert(self.width * self.height == self.cells.len);
-    var current_style: Style = .default;
+    var current_style: Style.Id = .default;
     for (0..self.height) |row| {
         try writer.print("\x1b[{d};{d}H", .{ row + 1, 1 });
         for (self.cells[row * self.width ..][0..self.width]) |cell| {
             if (cell.style != current_style) {
-                try cell.style.write(current_style, style_sheet, writer);
+                try Style.write(cell.style, current_style, style_sheet, writer);
                 current_style = cell.style;
             }
             switch (cell.width) {
@@ -171,7 +171,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
     const height: usize = back_buffer.height;
     const width: usize = back_buffer.width;
 
-    var current_style: Style = .default;
+    var current_style: Style.Id = .default;
 
     for (0..height) |row| {
         // Fast path: skip entirely unchanged rows
@@ -201,11 +201,11 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
                 }
             }
             if (start >= row_end) break;
+            try writer.print("\x1b[{d};{d}H", .{ row + 1, start - row_start + 1 });
             if (current_style != self.cells[start].style) {
-                try self.cells[start].style.write(current_style, style_sheet, writer);
+                try Style.write(self.cells[start].style, current_style, style_sheet, writer);
                 current_style = self.cells[start].style;
             }
-            try writer.print("\x1b[{d};{d}H", .{ row + 1, start - row_start + 1 });
             for (self.cells[start..end]) |cell| {
                 switch (cell.width) {
                     .wide_end => continue,
@@ -249,7 +249,11 @@ test "fullRedraw - multi-byte UTF-8" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.fullRedraw(&writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;1HA\xC3\xA9\xE4\xB8\xAD\xF0\x9D\x84\x9E";
@@ -274,7 +278,11 @@ test "fullRedraw wide characters" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.fullRedraw(&writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;1HA\xE4\xB8\xADB\xE5\x9B\xBD";
@@ -306,7 +314,11 @@ test "fullRedraw graphemes - wide and graphemes" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.fullRedraw(&writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;1HA" ++ thumbs_up ++ e_acute_combining ++ "\x1b[2;1H " ++ family ++ " ";
@@ -327,7 +339,11 @@ test "fullRedraw error handling - invalid codepoint" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.fullRedraw(&writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
     const output = writer.buffered();
 
     // Invalid codepoints should render as U+FFFD (\xEF\xBF\xBD)
@@ -349,7 +365,11 @@ test "fullRedraw error handling - missing grapheme" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.fullRedraw(&writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
     const output = writer.buffered();
 
     // Missing grapheme should render as U+FFFD (\xEF\xBF\xBD)
@@ -374,7 +394,11 @@ test "diffRedraw no changes" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     // No changes: diffRedraw still outputs cursor positions at end of each row
@@ -405,7 +429,11 @@ test "diffRedraw all changed" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;1HXXXXX\x1b[2;1HXXXXX";
@@ -433,7 +461,11 @@ test "diffRedraw multiple disjoint segments in one row" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;3HAB\x1b[1;8HCD";
@@ -461,7 +493,11 @@ test "diffRedraw changes in multiple rows" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     // Each row has a change plus an end-of-row cursor position
@@ -493,7 +529,11 @@ test "diffRedraw grapheme same in both buffers" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "";
@@ -526,7 +566,11 @@ test "diffRedraw grapheme changed" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;2H" ++ emoji1;
@@ -555,39 +599,375 @@ test "diffRedraw grapheme vs codepoint" {
     var output_buffer: [4096]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output_buffer);
 
-    try front.diffRedraw(&back, &writer);
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
     const output = writer.buffered();
 
     const expected = "\x1b[1;2HX ";
     try expectEqualSequences(expected, output);
 }
 
-// test "renderCell basic codepoint" {
-//     const cells = try std.testing.allocator.alloc(Cell, 4);
-//     defer std.testing.allocator.free(cells);
-//     var front = try FrameBuffer.init(cells, 4, 1, .tiny);
-//     defer front.deinit();
-//
-//     front.set(0, 0, .{ .data = .{ .codepoint = 'A' } });
-//     front.set(1, 0, .{ .data = .{ .codepoint = 0x4E2D }, .width = .wide_start }); // 中
-//     front.set(2, 0, .{ .width = .wide_end });
-//     front.set(3, 0, .{ .data = .{ .codepoint = 'B' } });
-//
-//     var output_buffer: [256]u8 = undefined;
-//     var writer = std.Io.Writer.fixed(&output_buffer);
-//
-//     const advance0 = try front.renderCell(0, 0, &writer);
-//     try std.testing.expectEqual(@as(u3, 1), advance0);
-//
-//     const advance1 = try front.renderCell(0, 1, &writer);
-//     try std.testing.expectEqual(@as(u3, 2), advance1);
-//
-//     const advace_wide_end = try front.renderCell(0, 2, &writer);
-//     try std.testing.expectEqual(@as(u3, 1), advace_wide_end);
-//
-//     const advance2 = try front.renderCell(0, 3, &writer);
-//     try std.testing.expectEqual(@as(u3, 1), advance2);
-//
-//     const output = writer.buffered();
-//     try expectEqualSequences("A\xE4\xB8\xADB", output);
-// }
+test "fullRedraw and diffRedraw with ANSI colors" {
+    const cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 4, 1, .tiny);
+    defer front.deinit();
+
+    var style_buffer: [8]Style = undefined;
+    var generator_buffer: [8]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    const style_a = style_sheet.putBounded(.{
+        .fg = .{ .ansi = .red },
+        .bg = .{ .ansi = .black },
+        .underline = .{ .ansi = .black },
+    });
+    const style_b = style_sheet.putBounded(.{
+        .fg = .{ .ansi = .black },
+        .bg = .{ .ansi = .bright_blue },
+        .underline = .{ .ansi = .black },
+    });
+    const style_c = style_sheet.putBounded(.{
+        .fg = .{ .ansi = @enumFromInt(200) },
+        .bg = .{ .ansi = .bright_blue },
+        .underline = .{ .ansi = .red },
+    });
+
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' }, .style = style_a });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'B' }, .style = style_b });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'C' }, .style = style_c });
+    front.set(3, 0, .{ .data = .{ .codepoint = 'D' } });
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
+    const output = writer.buffered();
+
+    // Expected:
+    // - Cursor to row 0, col 0
+    // - Red fg (31), black bg (40), black underline color
+    // - 'A'
+    // - Black fg (30), bright blue bg (104)
+    // - 'B'
+    // - Indexed fg 200, black bg (40)
+    // - 'C'
+    // - Default style (fg reset, bg reset, underline reset)
+    // - 'D'
+    const expected = "\x1b[1;1H" ++
+        "\x1b[31m\x1b[40m\x1b[58:5:0m" ++ "A" ++
+        "\x1b[30m\x1b[104m" ++ "B" ++
+        "\x1b[38:5:200m\x1b[58:5:1m" ++ "C" ++
+        "\x1b[39m\x1b[49m\x1b[59m" ++ "D";
+    try expectEqualSequences(expected, output);
+
+    const back_cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 4, 1, .tiny);
+    defer back.deinit();
+    @memcpy(back.cells, front.cells);
+
+    const style_b_green = style_sheet.putBounded(.{
+        .fg = .{ .ansi = .black },
+        .bg = .{ .ansi = .green },
+        .underline = .{ .ansi = .black },
+    });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'B' }, .style = style_b_green });
+
+    var writer2 = std.Io.Writer.fixed(&output_buffer);
+    try front.diffRedraw(&back, &style_sheet, &writer2);
+    const diff_output = writer2.buffered();
+
+    // Expected:
+    //   - move cursor to column 1, row 0
+    //   - Change style to black fg (30), green bg (42), black underline color
+    //   - 'B'
+    const expected_diff = "\x1b[1;2H" ++ "\x1b[30m\x1b[42m\x1b[58:5:0m" ++ "B";
+    try expectEqualSequences(expected_diff, diff_output);
+}
+
+test "fullRedraw and diffRedraw with RGB colors" {
+    const cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 3, 1, .tiny);
+    defer front.deinit();
+
+    var style_buffer: [8]Style = undefined;
+    var generator_buffer: [8]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    const style_a = style_sheet.putBounded(.{
+        .fg = .{ .rgb = .{ .r = 255, .g = 128, .b = 0 } },
+    });
+    const style_b = style_sheet.putBounded(.{
+        .fg = .{ .rgb = .{ .r = 255, .g = 128, .b = 0 } },
+        .bg = .{ .rgb = .{ .r = 0, .g = 64, .b = 128 } },
+    });
+
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' }, .style = style_a });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'B' }, .style = style_b });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'C' } });
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
+    const output = writer.buffered();
+
+    // Expected:
+    //   - Cursor to row 0, col 0
+    //   - RGB fg (255, 128, 0) - orange
+    //   - 'A'
+    //   - RGB bg (0, 64, 128) - dark blue
+    //   - 'B'
+    //   - Default style (fg reset, bg reset)
+    //   - 'C'
+    const expected = "\x1b[1;1H" ++
+        "\x1b[38:2:255:128:0m" ++ "A" ++
+        "\x1b[48:2:0:64:128m" ++ "B" ++
+        "\x1b[39m\x1b[49m" ++ "C";
+    try expectEqualSequences(expected, output);
+
+    const back_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
+    defer back.deinit();
+    @memcpy(back.cells, front.cells);
+
+    const style_a_new = style_sheet.putBounded(.{
+        .fg = .{ .rgb = .{ .r = 128, .g = 255, .b = 64 } },
+    });
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' }, .style = style_a_new });
+
+    var writer2 = std.Io.Writer.fixed(&output_buffer);
+    try front.diffRedraw(&back, &style_sheet, &writer2);
+    const diff_output = writer2.buffered();
+
+    const expected_diff = "\x1b[1;1H" ++ "\x1b[38:2:128:255:64m" ++ "A";
+    try expectEqualSequences(expected_diff, diff_output);
+}
+
+test "fullRedraw and diffRedraw with text attributes" {
+    const cells = try std.testing.allocator.alloc(Cell, 9);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 3, 3, .tiny);
+    defer front.deinit();
+
+    var style_buffer: [16]Style = undefined;
+    var generator_buffer: [16]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    const style_bold = style_sheet.putBounded(.{ .flags = .{ .bold = true } });
+    const style_italic = style_sheet.putBounded(.{ .flags = .{ .italic = true } });
+    const style_underline = style_sheet.putBounded(.{ .flags = .{ .underline = .single } });
+    const style_dim = style_sheet.putBounded(.{ .flags = .{ .dim = true } });
+    const style_reverse = style_sheet.putBounded(.{ .flags = .{ .reverse = true } });
+    const style_strikethrough = style_sheet.putBounded(.{ .flags = .{ .strikethrough = true } });
+    const style_blink = style_sheet.putBounded(.{ .flags = .{ .blink = true } });
+    const style_invisible = style_sheet.putBounded(.{ .flags = .{ .invisible = true } });
+    const style_curly = style_sheet.putBounded(.{ .flags = .{ .underline = .curly } });
+
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' }, .style = style_bold });
+    front.set(1, 0, .{ .data = .{ .codepoint = 'B' }, .style = style_italic });
+    front.set(2, 0, .{ .data = .{ .codepoint = 'C' }, .style = style_underline });
+    front.set(0, 1, .{ .data = .{ .codepoint = 'D' }, .style = style_dim });
+    front.set(1, 1, .{ .data = .{ .codepoint = 'E' }, .style = style_reverse });
+    front.set(2, 1, .{ .data = .{ .codepoint = 'F' }, .style = style_strikethrough });
+    front.set(0, 2, .{ .data = .{ .codepoint = 'G' }, .style = style_blink });
+    front.set(1, 2, .{ .data = .{ .codepoint = 'H' }, .style = style_invisible });
+    front.set(2, 2, .{ .data = .{ .codepoint = 'I' }, .style = style_curly });
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
+    const output = writer.buffered();
+
+    // Row 0:
+    // A: default colors + bold enable
+    // B: bold disable + italic enable
+    // C: italic disable + underline single
+    // Row 1:
+    // D: dim enable + underline reset (order: bold/dim before underline)
+    // E: dim disable + reverse enable
+    // F: reverse disable + strikethrough enable
+    // Row 2:
+    // G: blink enable + strikethrough disable (order: blink before strikethrough)
+    // H: blink disable + invisible enable
+    // I: invisible disable + underline curly
+    const expected = "\x1b[1;1H" ++
+        "\x1b[1m" ++ "A" ++
+        "\x1b[22m\x1b[3m" ++ "B" ++
+        "\x1b[23m\x1b[4m" ++ "C" ++
+        "\x1b[2;1H" ++
+        "\x1b[2m\x1b[24m" ++ "D" ++
+        "\x1b[22m\x1b[7m" ++ "E" ++
+        "\x1b[27m\x1b[9m" ++ "F" ++
+        "\x1b[3;1H" ++
+        "\x1b[5m\x1b[29m" ++ "G" ++
+        "\x1b[25m\x1b[8m" ++ "H" ++
+        "\x1b[28m\x1b[4:3m" ++ "I";
+    try expectEqualSequences(expected, output);
+}
+
+test "fullRedraw and diffRedraw bold/dim interaction" {
+    const cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(cells);
+    var front = try FrameBuffer.init(cells, 4, 1, .tiny);
+    defer front.deinit();
+
+    var style_buffer: [8]Style = undefined;
+    var generator_buffer: [8]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    const style_bold = style_sheet.putBounded(.{ .flags = .{ .bold = true } });
+    const style_bold_dim = style_sheet.putBounded(.{ .flags = .{ .bold = true, .dim = true } });
+    const style_dim = style_sheet.putBounded(.{ .flags = .{ .dim = true } });
+
+    // Cell 0: bold
+    front.set(0, 0, .{ .data = .{ .codepoint = 'A' }, .style = style_bold });
+    // Cell 1: bold + dim
+    front.set(1, 0, .{ .data = .{ .codepoint = 'B' }, .style = style_bold_dim });
+    // Cell 2: dim only (bold off)
+    front.set(2, 0, .{ .data = .{ .codepoint = 'C' }, .style = style_dim });
+    // Cell 3: default (both off)
+    front.set(3, 0, .{ .data = .{ .codepoint = 'D' } });
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    try front.fullRedraw(&style_sheet, &writer);
+    const output = writer.buffered();
+
+    // A: default → bold: enable bold
+    // B: bold → bold+dim: re-emit bold (since dim changed), add dim
+    // C: bold+dim → dim: disable both (22), re-enable dim (2)
+    // D: dim → default: disable bold/dim (22)
+    const expected = "\x1b[1;1H" ++
+        "\x1b[1m" ++ "A" ++
+        "\x1b[1m\x1b[2m" ++ "B" ++
+        "\x1b[22m\x1b[2m" ++ "C" ++
+        "\x1b[22m" ++ "D";
+    try expectEqualSequences(expected, output);
+}
+
+test "diffRedraw style change only" {
+    const front_cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 4, 1, .tiny);
+    defer front.deinit();
+    const back_cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 4, 1, .tiny);
+    defer back.deinit();
+
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    const red_style_id = style_sheet.putBounded(.{
+        .fg = .{ .ansi = .red },
+        .bg = .{ .ansi = .black },
+        .underline = .{ .ansi = .black },
+    });
+
+    for (0..4) |i| {
+        back.set(@intCast(i), 0, .{ .data = .{ .codepoint = 'A' } });
+    }
+
+    for (0..4) |i| {
+        front.set(@intCast(i), 0, .{
+            .data = .{ .codepoint = 'A' },
+            .style = red_style_id,
+        });
+    }
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
+    const output = writer.buffered();
+
+    const expected = "\x1b[1;1H" ++ "\x1b[31m\x1b[40m\x1b[58:5:0m" ++ "AAAA";
+    try expectEqualSequences(expected, output);
+}
+
+test "fullRedraw and diffRedraw with stylesheet update" {
+    const front_cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 4, 1, .tiny);
+    defer front.deinit();
+    const back_cells = try std.testing.allocator.alloc(Cell, 4);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 4, 1, .tiny);
+    defer back.deinit();
+    front.clear();
+    back.clear();
+
+    var style_buffer: [8]Style = undefined;
+    var generator_buffer: [8]u8 = undefined;
+    var style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    // Add custom style: cyan RGB fg, magenta RGB bg
+    var id = style_sheet.putAssumeCapacity(.{
+        .fg = .{ .rgb = .{ .r = 0, .g = 255, .b = 255 } },
+        .bg = .{ .rgb = .{ .r = 255, .g = 0, .b = 255 } },
+        .underline = .none,
+    });
+
+    { // First frame
+        front.set(0, 0, .{
+            .data = .{ .codepoint = 'A' },
+            .style = id,
+        });
+        // Cell 1: default
+        front.set(1, 0, .{ .data = .{ .codepoint = 'B' } });
+
+        var output_buffer: [4096]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&output_buffer);
+
+        try front.fullRedraw(&style_sheet, &writer);
+        const output = writer.buffered();
+
+        // Custom style: RGB fg cyan, RGB bg magenta, underline reset
+        const expected = "\x1b[1;1H" ++
+            "\x1b[38:2:0:255:255m\x1b[48:2:255:0:255m" ++ "A" ++
+            "\x1b[39m\x1b[49m" ++ "B" ++ "  ";
+        try expectEqualSequences(expected, output);
+    }
+
+    // Swap buffers
+    @memcpy(back.cells, front.cells);
+    // Something causes style to change
+    id = try style_sheet.update(id, .{
+        .bg = .{ .rgb = .{ .r = 255, .g = 255, .b = 255 } },
+        .flags = .{ .bold = true },
+    });
+
+    { // Same reference. Simulating usage in an update loop
+        front.set(0, 0, .{
+            .data = .{ .codepoint = 'A' },
+            .style = id,
+        });
+        // Cell 1: default
+        front.set(1, 0, .{ .data = .{ .codepoint = 'B' } });
+
+        var output_buffer: [4096]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&output_buffer);
+        try front.diffRedraw(&back, &style_sheet, &writer);
+        const diff_output = writer.buffered();
+
+        // Expected:
+        //     - Cursor to row 0, col 0
+        //     - Foreground color 0 255 255
+        //     - Background color changed to 255,255,255
+        //     - Bold flag changed to true
+        //     - 'A'
+        const diff_expected = "\x1b[1;1H" ++
+            "\x1b[38:2:0:255:255m\x1b[48:2:255:255:255m\x1b[1m" ++ "A";
+        try expectEqualSequences(diff_expected, diff_output);
+    }
+}

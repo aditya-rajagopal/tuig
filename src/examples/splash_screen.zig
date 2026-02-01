@@ -41,9 +41,9 @@ splash_progress: u16 = 0,
 splash_animation_mode: enum { start, move_to_top, done } = .start,
 options_width: ?usize = null,
 selection: u16 = 0,
-splash_colour: StyleReference,
-selection_hover: StyleReference,
-selection_pressed: StyleReference,
+splash_colour: Style.Id,
+selection_hover: Style.Id,
+selection_pressed: Style.Id,
 
 pub const SplashScreenResult = union(enum) {
     selection: u16,
@@ -56,9 +56,9 @@ pub fn init(self: *SplashScreen, style_sheet: *Style.Sheet) void {
     self.splash_progress = 0;
     self.options_width = null;
     self.selection = 0;
-    self.splash_colour = style_sheet.putBounded(.{ .fg = .{ .rgb = .{ .r = 0, .g = 255, .b = 0 } } }) catch unreachable;
-    self.selection_hover = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 128, .g = 128, .b = 128 } } }) catch unreachable;
-    self.selection_pressed = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 64, .g = 64, .b = 64 } } }) catch unreachable;
+    self.splash_colour = style_sheet.putBounded(.{ .fg = .{ .rgb = .{ .r = 0, .g = 255, .b = 0 } } });
+    self.selection_hover = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 128, .g = 128, .b = 128 } } });
+    self.selection_pressed = style_sheet.putBounded(.{ .bg = .{ .rgb = .{ .r = 64, .g = 64, .b = 64 } } });
 }
 
 pub fn deinit(self: *SplashScreen) void {
@@ -72,7 +72,7 @@ pub fn reset(self: *SplashScreen, memory_pool: *app.MemoryPool, ctx: *const Cont
     self.splash_progress = 0;
 }
 
-pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, style_sheet: *Style.Sheet, options: []const []const u8) SplashScreenResult {
+pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []const []const u8) SplashScreenResult {
     if (self.options_width == null) {
         self.options_width = 0;
         for (options) |option| {
@@ -113,19 +113,12 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, style_sheet: *S
     };
     var text_iter = std.mem.splitScalar(u8, splash_text, '\n');
     var row: u16 = 0;
-    const splash_style_index = style_sheet.get(self.splash_colour);
     while (text_iter.next()) |line| {
         _ = area.printAssumeNoGrapheme(
             line,
             0,
             row,
-            .{ .wrap = false, .tab_width = 4, .style = .{
-                .tag = .id,
-                .data = .{ .id = splash_style_index },
-                .flags = .{
-                    .bold = true,
-                },
-            } },
+            .{ .wrap = false, .tab_width = 4, .style = self.splash_colour },
         );
         row += 1;
     }
@@ -153,23 +146,18 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, style_sheet: *S
             @intCast(options.len),
         );
 
-        const selection_hover = style_sheet.get(self.selection_hover);
-        const selection_pressed = style_sheet.get(self.selection_pressed);
-        var selection_style: Style = .{ .tag = .id, .data = .{ .id = selection_hover }, .flags = .{
-            .bold = true,
-            .underline = .single,
-        } };
+        var selection_style: Style.Id = self.selection_hover;
         if (ctx.isHovered(options_scissor)) |local_pos| {
             self.selection = local_pos.y;
             if (ctx.mouse_down.left or ctx.mouse_pressed.left) {
-                selection_style.data = .{ .id = selection_pressed };
+                selection_style = self.selection_pressed;
             } else if (ctx.mouse_released.left) {
                 return .{ .selection = self.selection };
             }
         }
         for (options, 0..) |option, i| {
             assert(option.len <= self.options_width.?);
-            var style: Style = .default;
+            var style: Style.Id = .default;
             if (i == self.selection) {
                 style = selection_style;
             }

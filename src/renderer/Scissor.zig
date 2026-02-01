@@ -166,7 +166,7 @@ pub const PrintOptions = struct {
     /// Tab stop: advance to next multiple of tab_width
     tab_width: u8,
     /// Style for text
-    style: Style = .default,
+    style: Style.Id = .default,
 
     pub const default: PrintOptions = .{
         .wrap = false,

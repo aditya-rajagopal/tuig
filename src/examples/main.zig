@@ -31,7 +31,7 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
     defer terminal.deinit();
 
-    var style_buffer: [1024]tg.renderer.Style.FullStyle = undefined;
+    var style_buffer: [1024]tg.renderer.Style = undefined;
     var generation_buffer: [1024]u8 = undefined;
     var style_sheet = tg.renderer.Style.Sheet.initBuffer(style_buffer[0..], generation_buffer[0..]);
 
