@@ -57,6 +57,8 @@ pub fn set(self: Scissor, x: u16, y: u16, cell: Cell) void {
     if (x >= self.width_global or y >= self.height_global) return;
     const global_x: i17 = self.x_global + x;
     const global_y: i17 = self.y_global + y;
+    if (global_x < self.x_global or global_y < self.y_global) return;
+    if (global_x >= self.x_global + self.width_global or global_y >= self.y_global + self.height_global) return;
     if (global_x < 0 or global_y < 0) return;
     if (global_x >= self.buffer.width or global_y >= self.buffer.height) return;
 
@@ -161,10 +163,10 @@ pub const PrintResult = struct {
 pub const PrintOptions = struct {
     /// Enable text wrapping at scissor's right edge
     /// When false: text truncates at right edge
-    wrap: bool,
+    wrap: bool = false,
     /// Number of spaces per tab character
     /// Tab stop: advance to next multiple of tab_width
-    tab_width: u8,
+    tab_width: u8 = 4,
     /// Style for text
     style: Style.Id = .default,
 

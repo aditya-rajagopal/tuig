@@ -28,7 +28,7 @@ pub fn init(self: *Tetris, style_sheet: *Style.Sheet) void {
     self.rng = std.Random.DefaultPrng.init(@bitCast(std.mem.asBytes(&now)[0..8].*));
     self.state.gravity_delay = @intFromFloat(base_gravity_time / self.state.gravity);
     for (&self.color_map_board, &self.color_map_inflight, 0..) |*id_board, *id_inflight, i| {
-        id_board.* = style_sheet.putBounded(.{ .fg = .{ .rgb = Tetromino.color_map[i] }, .flags = .{ .dim = true } });
+        id_board.* = style_sheet.putBounded(.{ .fg = .{ .rgb = .fromHex(0xaaaaaa) }, .flags = .{ .dim = false } });
         id_inflight.* = style_sheet.putBounded(.{ .fg = .{ .rgb = Tetromino.color_map[i] }, .flags = .{ .bold = true } });
     }
 }

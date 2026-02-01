@@ -12,6 +12,7 @@ const Style = r.Style;
 const SplashScreen = @import("splash_screen.zig");
 const Snake = @import("snake.zig");
 const Tetris = @import("tetris.zig");
+const Widgets = @import("widgets.zig");
 
 const Application = @This();
 
@@ -26,6 +27,7 @@ current_scene: Scenes = .splash_screen,
 splash_screen: SplashScreen = undefined,
 snake: Snake = undefined,
 tetris: Tetris = undefined,
+widgets: Widgets = undefined,
 memory: MemoryPool = undefined,
 toggle_metrics: bool = false,
 timer: std.time.Timer = undefined,
@@ -40,6 +42,7 @@ const Scenes = enum(u8) {
     splash_screen = 0,
     snake = 1,
     tetris = 2,
+    widgets = 3,
 };
 
 pub fn init(style_sheet: *Style.Sheet) !Application {
@@ -48,6 +51,7 @@ pub fn init(style_sheet: *Style.Sheet) !Application {
     application.splash_screen.init(style_sheet);
     application.snake.init();
     application.tetris.init(style_sheet);
+    application.widgets.init(style_sheet);
     application.memory = try MemoryPool.init();
     application.timer = std.time.Timer.start() catch unreachable;
     application.toggle_metrics = false;
@@ -58,6 +62,7 @@ pub fn init(style_sheet: *Style.Sheet) !Application {
 pub const options: []const []const u8 = &.{
     "Snake",
     "Tetris",
+    "Widgets",
 };
 
 pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
@@ -100,6 +105,13 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
                     .quit => return true,
                     .noop => return false,
                     .back => continue :loop .{ .transition_to = .splash_screen },
+                }
+            },
+            .widgets => {
+                if (!self.widgets.updateAndRender(ctx)) {
+                    return false;
+                } else {
+                    continue :loop .{ .transition_to = .splash_screen };
                 }
             },
             .tetris => {

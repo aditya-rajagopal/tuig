@@ -77,9 +77,13 @@ pub const Style = struct {
     pub const Id = enum(u24) { default = 0, error_style = 1, _ };
 
     pub const RGB = packed struct(u24) {
-        r: u8,
-        g: u8,
         b: u8,
+        g: u8,
+        r: u8,
+
+        pub inline fn fromHex(rrggbb: u24) RGB {
+            return @bitCast(rrggbb);
+        }
     };
 
     pub const Color = union(enum(u8)) {
@@ -87,7 +91,7 @@ pub const Style = struct {
         ansi: Indexed,
         rgb: RGB,
 
-        pub fn eql(self: Color, other: Color) bool {
+        pub inline fn eql(self: Color, other: Color) bool {
             return switch (self) {
                 .none => return other == .none,
                 .ansi => |ansi| return switch (other) {
