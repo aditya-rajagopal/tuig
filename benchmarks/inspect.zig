@@ -54,10 +54,11 @@ const InspectState = struct {
 
 pub fn runInspect(config: InspectConfig) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer if (gpa.deinit() == .leak) std.debug.print("leaked memory\n", .{});
+
     const allocator = gpa.allocator();
 
-    var write_buffer: [4096]u8 align(4096) = undefined;
+    var write_buffer: [4096]u8 align(std.atomic.cache_line) = undefined;
     var term_config: terminal_mod.TerminalConfig = .tui_default;
     term_config.cursor_visable = false;
     var terminal: terminal_mod.Terminal = undefined;
