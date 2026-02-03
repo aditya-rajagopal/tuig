@@ -75,11 +75,11 @@ pub const GraphemeBuffer = struct {
     }
 
     pub fn ensureTotalCapacity(self: *Self, total_bytes: usize) !void {
-        try self.buffer.grow(total_bytes);
+        try self.buffer.ensureTotalCapacity(total_bytes);
     }
 
     pub fn ensureUnusedCapacity(self: *Self, total_bytes: usize) !void {
-        try self.buffer.grow(self.end_index + total_bytes);
+        try self.buffer.ensureTotalCapacity(self.end_index + total_bytes);
     }
 
     pub fn put(self: *Self, bytes: []const u8) error{OutOfMemory}!GraphemeIndex {

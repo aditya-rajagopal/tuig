@@ -11,11 +11,11 @@ pub const CellSize = u64;
 pub const Cell = packed struct(CellSize) {
     data: Data = .{ .codepoint = ' ' },
     grapheme_id_extension: u4 = 0,
+    _padding2: u7 = 0,
     tag: Tag = .codepoint,
     width: Width = .narrow,
-    _padding1: u4 = 0,
+    _padding1: u5 = 0,
     style: Style.Id = .default,
-    _padding2: u8 = 0,
 
     pub const Width = enum(u2) {
         narrow = 0,
@@ -264,8 +264,8 @@ pub const Style = struct {
 
         pub fn initCapacity(allocator: std.mem.Allocator, capacity: usize) !Sheet {
             assert(capacity <= max_style_count);
-            var sheet: Sheet = .{};
-            sheet.styles = try std.ArrayList(Style.FullStyle).initCapacity(allocator, capacity + 2);
+            var sheet: Sheet = .empty;
+            sheet.styles = try std.ArrayList(Style).initCapacity(allocator, capacity + 2);
             sheet.generation = try std.ArrayList(u8).initCapacity(allocator, capacity + 2);
             sheet.styles.appendAssumeCapacity(.{ .fg = .none, .bg = .none, .underline = .none, .flags = .{} });
             sheet.generation.appendAssumeCapacity(0);
@@ -302,7 +302,7 @@ pub const Style = struct {
             return sheet;
         }
 
-        pub fn deinit(self: Sheet, allocator: std.mem.Allocator) void {
+        pub fn deinit(self: *Sheet, allocator: std.mem.Allocator) void {
             self.styles.deinit(allocator);
             self.generation.deinit(allocator);
         }
