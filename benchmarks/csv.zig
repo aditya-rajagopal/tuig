@@ -71,10 +71,8 @@ pub const Row = struct {
 };
 
 pub fn writeHeader(writer: *std.Io.Writer) !void {
-    assert(@intFromPtr(writer) != 0);
-    assert(@sizeOf(@TypeOf(writer.*)) > 0);
     try writer.writeAll(
-        "timestamp,mode,e2e,dataset,text_mix,style_mix," ++
+        "timestamp_ns,mode,e2e,dataset,text_mix,style_mix," ++
             "cols,rows,frames_total,warmup_frames,seed," ++
             "time_min_ns,time_median_ns,time_p95_ns,time_max_ns,time_mean_ns," ++
             "cpu_time_ns,cpu_user_ns,cpu_sys_ns,page_faults_minor,page_faults_major," ++
@@ -92,7 +90,6 @@ pub fn writeHeader(writer: *std.Io.Writer) !void {
 }
 
 pub fn writeRow(writer: *std.Io.Writer, row: Row) !void {
-    assert(@intFromPtr(writer) != 0);
     assert(row.mode.len > 0);
 
     var csv = CsvWriter.init(writer);
@@ -170,14 +167,10 @@ const CsvWriter = struct {
     needs_comma: bool,
 
     fn init(writer: *std.Io.Writer) CsvWriter {
-        assert(@intFromPtr(writer) != 0);
-        assert(@sizeOf(@TypeOf(writer.*)) > 0);
         return .{ .writer = writer, .needs_comma = false };
     }
 
     fn writeSeparator(self: *CsvWriter) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         if (self.needs_comma) {
             try self.writer.writeAll(",");
         } else {
@@ -186,29 +179,21 @@ const CsvWriter = struct {
     }
 
     fn writeNA(self: *CsvWriter) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         try self.writeSeparator();
         try self.writer.writeAll("NA");
     }
 
     fn writeU64(self: *CsvWriter, value: u64) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         try self.writeSeparator();
         try self.writer.print("{d}", .{value});
     }
 
     fn writeBool(self: *CsvWriter, value: bool) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         try self.writeSeparator();
         try self.writer.writeAll(if (value) "1" else "0");
     }
 
     fn writeOptionalU64(self: *CsvWriter, value: ?u64) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         if (value) |val| {
             try self.writeU64(val);
         } else {
@@ -217,8 +202,6 @@ const CsvWriter = struct {
     }
 
     fn writeOptionalU32(self: *CsvWriter, value: ?u32) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         if (value) |val| {
             try self.writeU64(@as(u64, val));
         } else {
@@ -227,15 +210,11 @@ const CsvWriter = struct {
     }
 
     fn writeF64(self: *CsvWriter, value: f64) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         try self.writeSeparator();
         try self.writer.print("{d:.6}", .{value});
     }
 
     fn writeOptionalF64(self: *CsvWriter, value: ?f64) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         if (value) |val| {
             try self.writeF64(val);
         } else {
@@ -244,8 +223,6 @@ const CsvWriter = struct {
     }
 
     fn writeOptionalStr(self: *CsvWriter, value: ?[]const u8) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         if (value) |val| {
             try self.writeStr(val);
         } else {
@@ -254,8 +231,6 @@ const CsvWriter = struct {
     }
 
     fn writeStr(self: *CsvWriter, value: []const u8) !void {
-        assert(@intFromPtr(self) != 0);
-        assert(@intFromPtr(self.writer) != 0);
         try self.writeSeparator();
 
         var needs_quotes = false;

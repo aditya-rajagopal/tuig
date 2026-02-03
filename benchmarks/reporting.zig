@@ -45,14 +45,29 @@ pub fn writeHumanRow(writer: *std.Io.Writer, row: csv.Row) !void {
     );
     try writer.writeAll("\n");
 
-    try writer.writeAll("bytes\n");
-    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9} {s: >9}\n", .{ "metric", "total", "mean", "dirty", "style" });
-    try writeBytesRow(writer, "frame", row.bytes_total, row.bytes_mean, row.dirty_ratio_mean, row.style_runs_mean);
+    try writer.writeAll("bytes(bytes)\n");
+    try writer.print("{s: <9} {s: >9} {s: >9}\n", .{ "metric", "total", "mean" });
+    try writeBytesRow(writer, "frame", row.bytes_total, row.bytes_mean);
+    try writer.writeAll("\n");
+
+    try writer.writeAll("ratios\n");
+    try writer.print("{s: <9} {s: >9}\n", .{ "metric", "mean" });
+    try writeMeanF64Row(writer, "dirty", row.dirty_ratio_mean);
+    try writer.writeAll("\n");
+
+    try writer.writeAll("styles(counts)\n");
+    try writer.print("{s: <9} {s: >9}\n", .{ "metric", "mean" });
+    try writeMeanF64Row(writer, "runs", row.style_runs_mean);
     try writer.writeAll("\n");
 
     try writer.writeAll("cpu(ms)\n");
-    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9} {s: >9}\n", .{ "metric", "total", "user", "sys", "rss" });
-    try writeCpuRow(writer, "process", row.cpu_time_ns, row.cpu_user_ns, row.cpu_sys_ns, row.max_rss_bytes);
+    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9}\n", .{ "metric", "total", "user", "sys" });
+    try writeCpuRow(writer, "process", row.cpu_time_ns, row.cpu_user_ns, row.cpu_sys_ns);
+    try writer.writeAll("\n");
+
+    try writer.writeAll("memory(bytes)\n");
+    try writer.print("{s: <9} {s: >9}\n", .{ "metric", "rss" });
+    try writeMemoryRow(writer, "process", row.max_rss_bytes);
 
     if (hasFaultStats(row)) {
         try writer.writeAll("\nfaults(counts)\n");
@@ -153,18 +168,18 @@ fn writeBytesRow(
     label: []const u8,
     total: ?u64,
     mean: ?f64,
-    dirty: ?f64,
-    style_runs: ?f64,
 ) !void {
     var total_buf: [24]u8 = undefined;
     var mean_buf: [24]u8 = undefined;
-    var dirty_buf: [24]u8 = undefined;
-    var style_buf: [24]u8 = undefined;
     const total_str = formatOptionalU64(&total_buf, total);
     const mean_str = formatOptionalF64(&mean_buf, mean);
-    const dirty_str = formatOptionalF64(&dirty_buf, dirty);
-    const style_str = formatOptionalF64(&style_buf, style_runs);
-    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9} {s: >9}\n", .{ label, total_str, mean_str, dirty_str, style_str });
+    try writer.print("{s: <9} {s: >9} {s: >9}\n", .{ label, total_str, mean_str });
+}
+
+fn writeMeanF64Row(writer: *std.Io.Writer, label: []const u8, mean: ?f64) !void {
+    var mean_buf: [24]u8 = undefined;
+    const mean_str = formatOptionalF64(&mean_buf, mean);
+    try writer.print("{s: <9} {s: >9}\n", .{ label, mean_str });
 }
 
 fn writeCpuRow(
@@ -173,17 +188,20 @@ fn writeCpuRow(
     total: ?u64,
     user: ?u64,
     sys: ?u64,
-    rss: ?u64,
 ) !void {
     var total_buf: [24]u8 = undefined;
     var user_buf: [24]u8 = undefined;
     var sys_buf: [24]u8 = undefined;
-    var rss_buf: [24]u8 = undefined;
     const total_str = formatOptionalNsMs(&total_buf, total);
     const user_str = formatOptionalNsMs(&user_buf, user);
     const sys_str = formatOptionalNsMs(&sys_buf, sys);
+    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9}\n", .{ label, total_str, user_str, sys_str });
+}
+
+fn writeMemoryRow(writer: *std.Io.Writer, label: []const u8, rss: ?u64) !void {
+    var rss_buf: [24]u8 = undefined;
     const rss_str = formatOptionalU64(&rss_buf, rss);
-    try writer.print("{s: <9} {s: >9} {s: >9} {s: >9} {s: >9}\n", .{ label, total_str, user_str, sys_str, rss_str });
+    try writer.print("{s: <9} {s: >9}\n", .{ label, rss_str });
 }
 
 fn formatOptionalU64(buf: []u8, value: ?u64) []const u8 {

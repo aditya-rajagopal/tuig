@@ -134,65 +134,8 @@ pub fn build(b: *std.Build) void {
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
     check_step.dependOn(&check_exe.step);
-    // check_step.dependOn(&run_renderer_tests.step);
 
-    // Print benchmark
     const benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("src/renderer/benchmark.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "renderer", .module = renderer },
-            .{ .name = "unicode", .module = unicode },
-            .{ .name = "stdx", .module = stdx },
-        },
-    });
-
-    const benchmark = b.addExecutable(.{
-        .name = "print_benchmark",
-        .root_module = benchmark_mod,
-    });
-
-    b.installArtifact(benchmark);
-    const bench_step = b.step("bench-print", "Run print benchmark");
-    const bench_cmd = b.addRunArtifact(benchmark);
-    bench_step.dependOn(&bench_cmd.step);
-    bench_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        bench_cmd.addArgs(args);
-    }
-
-    // Renderer benchmark
-    const renderer_benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("src/renderer/renderer_benchmark.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "renderer", .module = renderer },
-            .{ .name = "unicode", .module = unicode },
-            .{ .name = "stdx", .module = stdx },
-        },
-    });
-
-    const renderer_benchmark = b.addExecutable(.{
-        .name = "renderer_benchmark",
-        .root_module = renderer_benchmark_mod,
-    });
-
-    b.installArtifact(renderer_benchmark);
-    const bench_renderer_step = b.step("bench-renderer", "Run renderer benchmark");
-    const bench_renderer_cmd = b.addRunArtifact(renderer_benchmark);
-    bench_renderer_step.dependOn(&bench_renderer_cmd.step);
-    bench_renderer_cmd.step.dependOn(b.getInstallStep());
-    // check_step.dependOn(&bench_renderer_cmd.step);
-
-    if (b.args) |args| {
-        bench_renderer_cmd.addArgs(args);
-    }
-
-    // New benchmark infrastructure module
-    const benchmark_infra_mod = b.createModule(.{
         .root_source_file = b.path("benchmarks/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -206,8 +149,9 @@ pub fn build(b: *std.Build) void {
 
     const benchmark_exe = b.addExecutable(.{
         .name = "benchmark",
-        .root_module = benchmark_infra_mod,
+        .root_module = benchmark_mod,
     });
+    check_step.dependOn(&benchmark_exe.step);
 
     b.installArtifact(benchmark_exe);
 
@@ -219,17 +163,5 @@ pub fn build(b: *std.Build) void {
 
     if (b.args) |args| {
         benchmark_cmd.addArgs(args);
-    }
-
-    // Dummy benchmark only step
-    const benchmark_dummy_step = b.step("benchmark-dummy", "Run dummy benchmark only");
-    const benchmark_dummy_cmd = b.addRunArtifact(benchmark_exe);
-    benchmark_dummy_cmd.addArg("--mode=dummy");
-    benchmark_dummy_step.dependOn(&benchmark_dummy_cmd.step);
-    benchmark_dummy_cmd.step.dependOn(b.getInstallStep());
-    check_step.dependOn(&benchmark_dummy_cmd.step);
-
-    if (b.args) |args| {
-        benchmark_dummy_cmd.addArgs(args);
     }
 }

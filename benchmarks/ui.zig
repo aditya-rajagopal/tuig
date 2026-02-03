@@ -532,7 +532,24 @@ fn renderMetricsColumn(scissor: renderer.Scissor, ctx: *PrimitiveContext) render
 
                     const heatmap_width = events_inner.width_global - list_width - gap;
                     const heatmap_scissor = events_inner.initChild(@intCast(list_width + gap), 0, heatmap_width, events_inner.height_global);
-                    fillStyleField(heatmap_scissor, ctx, ".:+*#", 5, 2);
+                    const heatmap_pattern = ".:+*#";
+                    const heatmap_skip_mod: u8 = 5;
+                    const heatmap_skip_val: u8 = 2;
+                    const fill_width = heatmap_scissor.width_global;
+                    const fill_height = heatmap_scissor.height_global;
+                    if (fill_width > 0 and fill_height > 0 and heatmap_pattern.len > 0) {
+                        var heatmap_y: u16 = 0;
+                        while (heatmap_y < fill_height) : (heatmap_y += 1) {
+                            var heatmap_x: u16 = 0;
+                            while (heatmap_x < fill_width) : (heatmap_x += 1) {
+                                const sum = @as(u32, heatmap_x) + @as(u32, heatmap_y);
+                                if (heatmap_skip_mod != 0 and @as(u8, @intCast(sum % heatmap_skip_mod)) == heatmap_skip_val) continue;
+                                const idx: usize = @intCast(sum % @as(u32, @intCast(heatmap_pattern.len)));
+                                const style_id = ctx.styleFor(heatmap_x, heatmap_y);
+                                setAsciiCell(heatmap_scissor, heatmap_x, heatmap_y, heatmap_pattern[idx], style_id);
+                            }
+                        }
+                    }
                     return;
                 }
             }
@@ -653,7 +670,38 @@ fn renderUnicodeContent(scissor: renderer.Scissor, ctx: *PrimitiveContext) rende
     }
 
     if (width >= 40 and height >= 6) {
-        try renderUnicodeStack(scissor, ctx);
+        const stack_width = scissor.width_global;
+        const stack_height = scissor.height_global;
+        if (stack_width < 4 or stack_height < 3) return;
+
+        const gap_y: u16 = if (stack_height >= 12) 1 else 0;
+        const available = stack_height - gap_y;
+        if (available == 0) return;
+
+        const top_height: u16 = @intCast((@as(u32, available) * 2) / 3);
+        const bottom_height = available - top_height;
+
+        const top_scissor = scissor.initChild(0, 0, stack_width, top_height);
+        const top_inner = try panel(top_scissor, ctx, "Stream");
+        if (top_inner.width_global >= 4 and top_inner.height_global >= 2) {
+            try textBlock(top_inner, ctx);
+        }
+
+        if (bottom_height > 0) {
+            const bottom_scissor = scissor.initChild(0, @intCast(top_height + gap_y), stack_width, bottom_height);
+            const bottom_inner = try panel(bottom_scissor, ctx, "Updates");
+            if (bottom_inner.width_global >= 4 and bottom_inner.height_global >= 2) {
+                if (bottom_inner.height_global > 2) {
+                    const text_height = bottom_inner.height_global - 1;
+                    const text_scissor = bottom_inner.initChild(0, 0, bottom_inner.width_global, text_height);
+                    try textBlock(text_scissor, ctx);
+                    const spark_scissor = bottom_inner.initChild(0, @intCast(text_height), bottom_inner.width_global, 1);
+                    try sparkline(spark_scissor, ctx);
+                } else {
+                    try textBlock(bottom_inner, ctx);
+                }
+            }
+        }
         return;
     }
 
@@ -703,41 +751,6 @@ fn renderUnicodeColumn(scissor: renderer.Scissor, ctx: *PrimitiveContext, with_l
     }
 }
 
-fn renderUnicodeStack(scissor: renderer.Scissor, ctx: *PrimitiveContext) renderer.Scissor.PrintError!void {
-    const width = scissor.width_global;
-    const height = scissor.height_global;
-    if (width < 4 or height < 3) return;
-
-    const gap_y: u16 = if (height >= 12) 1 else 0;
-    const available = height - gap_y;
-    if (available == 0) return;
-
-    const top_height: u16 = @intCast((@as(u32, available) * 2) / 3);
-    const bottom_height = available - top_height;
-
-    const top_scissor = scissor.initChild(0, 0, width, top_height);
-    const top_inner = try panel(top_scissor, ctx, "Stream");
-    if (top_inner.width_global >= 4 and top_inner.height_global >= 2) {
-        try textBlock(top_inner, ctx);
-    }
-
-    if (bottom_height > 0) {
-        const bottom_scissor = scissor.initChild(0, @intCast(top_height + gap_y), width, bottom_height);
-        const bottom_inner = try panel(bottom_scissor, ctx, "Updates");
-        if (bottom_inner.width_global >= 4 and bottom_inner.height_global >= 2) {
-            if (bottom_inner.height_global > 2) {
-                const text_height = bottom_inner.height_global - 1;
-                const text_scissor = bottom_inner.initChild(0, 0, bottom_inner.width_global, text_height);
-                try textBlock(text_scissor, ctx);
-                const spark_scissor = bottom_inner.initChild(0, @intCast(text_height), bottom_inner.width_global, 1);
-                try sparkline(spark_scissor, ctx);
-            } else {
-                try textBlock(bottom_inner, ctx);
-            }
-        }
-    }
-}
-
 fn renderDynamicContent(scissor: renderer.Scissor, ctx: *PrimitiveContext) renderer.Scissor.PrintError!void {
     const width = scissor.width_global;
     const height = scissor.height_global;
@@ -759,7 +772,39 @@ fn renderDynamicContent(scissor: renderer.Scissor, ctx: *PrimitiveContext) rende
                     try textBlock(main_inner, ctx);
                 }
 
-                try renderDynamicSidebar(side_scissor, ctx);
+                const sidebar_width = side_scissor.width_global;
+                const sidebar_height = side_scissor.height_global;
+                if (sidebar_width >= 4 and sidebar_height >= 3) {
+                    const sidebar_gap_y: u16 = if (sidebar_height >= 12) 1 else 0;
+                    const sidebar_available = sidebar_height - sidebar_gap_y;
+                    if (sidebar_available > 0) {
+                        const sidebar_top_height: u16 = @intCast((@as(u32, sidebar_available) * 3) / 5);
+                        const sidebar_bottom_height = sidebar_available - sidebar_top_height;
+
+                        const top_scissor = side_scissor.initChild(0, 0, sidebar_width, sidebar_top_height);
+                        const top_inner = try panel(top_scissor, ctx, "Events");
+                        if (top_inner.width_global >= 4 and top_inner.height_global >= 2) {
+                            const items = @min(top_inner.height_global, @as(u16, 10));
+                            try list(top_inner, ctx, items);
+                        }
+
+                        if (sidebar_bottom_height > 0) {
+                            const bottom_scissor = side_scissor.initChild(0, @intCast(sidebar_top_height + sidebar_gap_y), sidebar_width, sidebar_bottom_height);
+                            const bottom_inner = try panel(bottom_scissor, ctx, "Pulse");
+                            if (bottom_inner.width_global >= 4 and bottom_inner.height_global >= 2) {
+                                if (bottom_inner.height_global > 2) {
+                                    const text_height = bottom_inner.height_global - 1;
+                                    const text_scissor = bottom_inner.initChild(0, 0, bottom_inner.width_global, text_height);
+                                    try textBlock(text_scissor, ctx);
+                                    const spark_scissor = bottom_inner.initChild(0, @intCast(text_height), bottom_inner.width_global, 1);
+                                    try sparkline(spark_scissor, ctx);
+                                } else {
+                                    try sparkline(bottom_inner, ctx);
+                                }
+                            }
+                        }
+                    }
+                }
                 return;
             }
         }
@@ -768,61 +813,6 @@ fn renderDynamicContent(scissor: renderer.Scissor, ctx: *PrimitiveContext) rende
     const inner = try panel(scissor, ctx, "Animation");
     if (inner.width_global >= 4 and inner.height_global >= 2) {
         try textBlock(inner, ctx);
-    }
-}
-
-fn renderDynamicSidebar(scissor: renderer.Scissor, ctx: *PrimitiveContext) renderer.Scissor.PrintError!void {
-    const width = scissor.width_global;
-    const height = scissor.height_global;
-    if (width < 4 or height < 3) return;
-
-    const gap_y: u16 = if (height >= 12) 1 else 0;
-    const available = height - gap_y;
-    if (available == 0) return;
-
-    const top_height: u16 = @intCast((@as(u32, available) * 3) / 5);
-    const bottom_height = available - top_height;
-
-    const top_scissor = scissor.initChild(0, 0, width, top_height);
-    const top_inner = try panel(top_scissor, ctx, "Events");
-    if (top_inner.width_global >= 4 and top_inner.height_global >= 2) {
-        const items = @min(top_inner.height_global, @as(u16, 10));
-        try list(top_inner, ctx, items);
-    }
-
-    if (bottom_height > 0) {
-        const bottom_scissor = scissor.initChild(0, @intCast(top_height + gap_y), width, bottom_height);
-        const bottom_inner = try panel(bottom_scissor, ctx, "Pulse");
-        if (bottom_inner.width_global >= 4 and bottom_inner.height_global >= 2) {
-            if (bottom_inner.height_global > 2) {
-                const text_height = bottom_inner.height_global - 1;
-                const text_scissor = bottom_inner.initChild(0, 0, bottom_inner.width_global, text_height);
-                try textBlock(text_scissor, ctx);
-                const spark_scissor = bottom_inner.initChild(0, @intCast(text_height), bottom_inner.width_global, 1);
-                try sparkline(spark_scissor, ctx);
-            } else {
-                try sparkline(bottom_inner, ctx);
-            }
-        }
-    }
-}
-
-fn fillStyleField(scissor: renderer.Scissor, ctx: *PrimitiveContext, pattern: []const u8, skip_mod: u8, skip_val: u8) void {
-    const width = scissor.width_global;
-    const height = scissor.height_global;
-    if (width == 0 or height == 0) return;
-    if (pattern.len == 0) return;
-
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const sum = @as(u32, x) + @as(u32, y);
-            if (skip_mod != 0 and @as(u8, @intCast(sum % skip_mod)) == skip_val) continue;
-            const idx: usize = @intCast(sum % @as(u32, @intCast(pattern.len)));
-            const style_id = ctx.styleFor(x, y);
-            setAsciiCell(scissor, x, y, pattern[idx], style_id);
-        }
     }
 }
 
@@ -887,20 +877,6 @@ fn renderDatasetOnce(
     return .{ .fb = fb, .cells = cells };
 }
 
-fn expectSameRender(a: Rendered, b: Rendered) !void {
-    const testing = std.testing;
-    try testing.expectEqual(a.fb.width, b.fb.width);
-    try testing.expectEqual(a.fb.height, b.fb.height);
-    try testing.expect(std.mem.eql(renderer.Cell, a.fb.cells, b.fb.cells));
-
-    const end_a = a.fb.grapheme_buffer.end_index;
-    const end_b = b.fb.grapheme_buffer.end_index;
-    try testing.expectEqual(end_a, end_b);
-    const slice_a = a.fb.grapheme_buffer.buffer.reserved_pages[0..end_a];
-    const slice_b = b.fb.grapheme_buffer.buffer.reserved_pages[0..end_b];
-    try testing.expect(std.mem.eql(u8, slice_a, slice_b));
-}
-
 fn assertDatasetDeterministic(
     dataset_fn: *const fn (renderer.Scissor, *PrimitiveContext) renderer.Scissor.PrintError!void,
     mix_text: text_mix.TextMix,
@@ -914,7 +890,17 @@ fn assertDatasetDeterministic(
     defer first.deinit(allocator);
     var second = try renderDatasetOnce(allocator, dataset_fn, width, height, seed, mix_text, mix_style);
     defer second.deinit(allocator);
-    try expectSameRender(first, second);
+    const testing = std.testing;
+    try testing.expectEqual(first.fb.width, second.fb.width);
+    try testing.expectEqual(first.fb.height, second.fb.height);
+    try testing.expect(std.mem.eql(renderer.Cell, first.fb.cells, second.fb.cells));
+
+    const end_a = first.fb.grapheme_buffer.end_index;
+    const end_b = second.fb.grapheme_buffer.end_index;
+    try testing.expectEqual(end_a, end_b);
+    const slice_a = first.fb.grapheme_buffer.buffer.reserved_pages[0..end_a];
+    const slice_b = second.fb.grapheme_buffer.buffer.reserved_pages[0..end_b];
+    try testing.expect(std.mem.eql(u8, slice_a, slice_b));
 }
 
 test "datasets deterministic with same seed" {

@@ -106,9 +106,6 @@ pub const Pmc = struct {
     }
 
     pub fn deinit(self: *Pmc) void {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(Pmc) > 0);
-
         if (self.kperfdata) |*lib| {
             lib.close();
             self.kperfdata = null;
@@ -179,9 +176,6 @@ pub const Pmc = struct {
     }
 
     pub fn stop(self: *Pmc) error{Failed}!Result {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(Result) > 0);
-
         var result = Result{
             .cycles = null,
             .instructions = null,
@@ -228,9 +222,6 @@ pub const Pmc = struct {
     }
 
     pub fn snapshot(self: *Pmc) error{Failed}!Result {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(Result) > 0);
-
         var result = Result{
             .cycles = null,
             .instructions = null,
@@ -277,7 +268,6 @@ pub const Pmc = struct {
     }
 
     pub fn resetStart(self: *Pmc) error{Failed}!bool {
-        assert(@intFromPtr(self) != 0);
         if (!self.active) return false;
         const fns = self.fns orelse return false;
 
@@ -290,15 +280,11 @@ pub const Pmc = struct {
     }
 
     fn resetEvents(self: *Pmc) void {
-        assert(@intFromPtr(self) != 0);
-        assert(max_events == 4);
-
         self.cycles_counter = null;
         self.instructions_counter = null;
         self.kpc_reg_count = 0;
         self.kpc_regs = [_]kpc_config_t{0} ** max_counters;
         for (0..max_events) |i| {
-            assert(i < max_events);
             self.event_counters[i] = null;
             self.event_names[i] = null;
         }
@@ -361,7 +347,6 @@ pub const Pmc = struct {
             }
         }
         for (selection.event_index_for_slot, 0..) |event_index_opt, slot| {
-            assert(slot < max_events);
             if (event_index_opt) |event_index| {
                 if (event_index < counter_map.len) {
                     self.event_counters[slot] = counter_map[event_index];
@@ -385,7 +370,6 @@ pub const Pmc = struct {
         selection.instructions_index = addEventByCandidates(kpep, db, instruction_candidates[0..], &selection);
 
         for (requested, 0..) |name, slot| {
-            assert(slot < max_events);
             const candidates = candidatesForName(name);
             if (candidates.len == 0) continue;
             if (addEventByCandidates(kpep, db, candidates, &selection)) |event_index| {
@@ -486,9 +470,6 @@ const kperfdata_paths = [_][]const u8{
 };
 
 fn openFirst(paths: []const []const u8) ?std.DynLib {
-    assert(paths.len > 0);
-    assert(paths[0].len > 0);
-
     for (paths) |path| {
         if (std.DynLib.open(path)) |lib| {
             return lib;
@@ -498,9 +479,6 @@ fn openFirst(paths: []const []const u8) ?std.DynLib {
 }
 
 fn resolveKperf(lib: *std.DynLib) ?KperfFns {
-    assert(@intFromPtr(lib) != 0);
-    assert(@sizeOf(@TypeOf(lib.*)) > 0);
-
     const kpc_get_counter_count = lib.lookup(FnKpcGetCounterCount, "kpc_get_counter_count") orelse return null;
     const kpc_set_counting = lib.lookup(FnKpcSetCounting, "kpc_set_counting") orelse return null;
     const kpc_set_thread_counting = lib.lookup(FnKpcSetThreadCounting, "kpc_set_thread_counting") orelse return null;
@@ -521,9 +499,6 @@ fn resolveKperf(lib: *std.DynLib) ?KperfFns {
 }
 
 fn resolveKpep(lib: *std.DynLib) ?KpepFns {
-    assert(@intFromPtr(lib) != 0);
-    assert(@sizeOf(@TypeOf(lib.*)) > 0);
-
     const kpep_db_create = lib.lookup(FnKpepDbCreate, "kpep_db_create") orelse return null;
     const kpep_db_free = lib.lookup(FnKpepDbFree, "kpep_db_free") orelse return null;
     const kpep_db_event = lib.lookup(FnKpepDbEvent, "kpep_db_event") orelse return null;

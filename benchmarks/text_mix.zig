@@ -164,6 +164,17 @@ fn pickFromList(random: std.Random, list: []const Glyph) Glyph {
 }
 
 fn weightedIndex(random: std.Random, weights: []const u32) usize {
-    const table = rng.WeightedTable.init(weights);
-    return table.pick(random);
+    var total: u32 = 0;
+    for (weights) |weight| {
+        total += weight;
+    }
+    std.debug.assert(total > 0);
+
+    const roll = random.intRangeLessThan(u32, 0, total);
+    var acc: u32 = 0;
+    for (weights, 0..) |weight, idx| {
+        acc += weight;
+        if (roll < acc) return idx;
+    }
+    return weights.len - 1;
 }
