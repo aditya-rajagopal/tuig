@@ -4,6 +4,8 @@ const assert = std.debug.assert;
 const renderer = @import("renderer");
 const rng = @import("rng.zig");
 
+const buffer_alignment = std.mem.Alignment.fromByteUnits(std.heap.page_size_min);
+
 pub const Pattern = enum {
     static,
     cursor_move,
@@ -47,7 +49,7 @@ pub const PatternState = struct {
         style_ids: []const renderer.Style.Id,
     ) !PatternState {
         const cell_count = @as(usize, source.width) * @as(usize, source.height);
-        const base_cells = try allocator.alloc(renderer.Cell, cell_count);
+        const base_cells = try allocator.alignedAlloc(renderer.Cell, buffer_alignment, cell_count);
         var base = try renderer.FrameBuffer.init(base_cells, source.width, source.height, .default);
         try base.grapheme_buffer.ensureTotalCapacity(source.grapheme_buffer.end_index);
         copyFrame(&base, source);
@@ -124,7 +126,7 @@ const Rect = struct {
 fn buildCursorPositions(allocator: std.mem.Allocator, base: *const renderer.FrameBuffer) ![]renderer.Position {
     const width = base.width;
     const height = base.height;
-    if (width == 0 or height == 0) return try allocator.alloc(renderer.Position, 0);
+    if (width == 0 or height == 0) return try allocator.alignedAlloc(renderer.Position, buffer_alignment, 0);
 
     var count: usize = 0;
     var y: u16 = 0;
@@ -137,12 +139,12 @@ fn buildCursorPositions(allocator: std.mem.Allocator, base: *const renderer.Fram
     }
 
     if (count == 0) {
-        const fallback = try allocator.alloc(renderer.Position, 1);
+        const fallback = try allocator.alignedAlloc(renderer.Position, buffer_alignment, 1);
         fallback[0] = .{ .x = 0, .y = 0 };
         return fallback;
     }
 
-    const positions = try allocator.alloc(renderer.Position, count);
+    const positions = try allocator.alignedAlloc(renderer.Position, buffer_alignment, count);
     var idx: usize = 0;
     y = 0;
     while (y < height) : (y += 1) {
@@ -282,6 +284,14 @@ fn applyStyleFlicker(dest: *renderer.FrameBuffer, style_ids: []const renderer.St
     }
 }
 
+fn clearWideEndNeighbor(buffer: *renderer.FrameBuffer, x: u16, y: u16) void {
+    const next_x: u16 = x + 1;
+    if (next_x >= buffer.width) return;
+    const neighbor = buffer.get(next_x, y);
+    if (neighbor.width != .wide_end) return;
+    setAsciiCell(buffer, next_x, y, ' ', neighbor.style);
+}
+
 fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, frame_index: u64) void {
     if (rect.width < 2 or rect.height == 0) return;
 
@@ -314,7 +324,8 @@ fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, fr
                 continue;
             }
 
-            const style_id = dest.get(x, y).style;
+            const existing = dest.get(x, y);
+            const style_id = existing.style;
             const pick_wide = random.intRangeLessThan(u16, 0, 100) < wide_ratio;
             if (pick_wide and x + 1 < x_end) {
                 const idx = random.intRangeLessThan(usize, 0, rect_wide_glyphs.len);
@@ -324,12 +335,11 @@ fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, fr
                 continue;
             }
 
-            const existing = dest.get(x, y);
             const idx = random.intRangeLessThan(usize, 0, rect_narrow_glyphs.len);
-            setCodepointCell(dest, x, y, rect_narrow_glyphs[idx], style_id);
-            if (existing.width == .wide_start and x + 1 < x_end) {
-                setAsciiCell(dest, x + 1, y, ' ', style_id);
+            if (existing.width == .wide_start) {
+                clearWideEndNeighbor(dest, x, y);
             }
+            setCodepointCell(dest, x, y, rect_narrow_glyphs[idx], style_id);
             x += 1;
         }
     }
@@ -419,7 +429,11 @@ fn applyRectChurn(
                     setWideEnd(dest, x + 1, y, style_id);
                     x += 2;
                 } else {
+                    const existing = dest.get(x, y);
                     const idx = random.intRangeLessThan(usize, 0, rect_narrow_glyphs.len);
+                    if (existing.width == .wide_start) {
+                        clearWideEndNeighbor(dest, x, y);
+                    }
                     setCodepointCell(dest, x, y, rect_narrow_glyphs[idx], style_id);
                     x += 1;
                 }

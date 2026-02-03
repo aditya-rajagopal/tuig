@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const parseArgs = @import("flags.zig").parseArgs;
+
 const memory_pool = @import("memory_pool.zig");
 pub const BufferPool = memory_pool.BufferPool;
 pub const BufferPoolExtra = memory_pool.BufferPoolExtra;

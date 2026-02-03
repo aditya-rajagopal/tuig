@@ -23,6 +23,16 @@ pub const Row = struct {
     cpu_sys_ns: ?u64,
     page_faults_minor: ?u64,
     page_faults_major: ?u64,
+    page_faults_minor_min: ?u64,
+    page_faults_minor_median: ?u64,
+    page_faults_minor_p95: ?u64,
+    page_faults_minor_max: ?u64,
+    page_faults_minor_mean: ?u64,
+    page_faults_major_min: ?u64,
+    page_faults_major_median: ?u64,
+    page_faults_major_p95: ?u64,
+    page_faults_major_max: ?u64,
+    page_faults_major_mean: ?u64,
     max_rss_bytes: ?u64,
     bytes_total: ?u64,
     bytes_mean: ?f64,
@@ -67,7 +77,10 @@ pub fn writeHeader(writer: *std.Io.Writer) !void {
         "timestamp,mode,e2e,dataset,text_mix,style_mix," ++
             "cols,rows,frames_total,warmup_frames,seed," ++
             "time_min_ns,time_median_ns,time_p95_ns,time_max_ns,time_mean_ns," ++
-            "cpu_time_ns,cpu_user_ns,cpu_sys_ns,page_faults_minor,page_faults_major,max_rss_bytes," ++
+            "cpu_time_ns,cpu_user_ns,cpu_sys_ns,page_faults_minor,page_faults_major," ++
+            "page_faults_minor_min,page_faults_minor_median,page_faults_minor_p95,page_faults_minor_max,page_faults_minor_mean," ++
+            "page_faults_major_min,page_faults_major_median,page_faults_major_p95,page_faults_major_max,page_faults_major_mean," ++
+            "max_rss_bytes," ++
             "bytes_total,bytes_mean,dirty_ratio_mean,style_runs_mean," ++
             "pmc_cycles_min,pmc_cycles_median,pmc_cycles_p95,pmc_cycles_max,pmc_cycles_mean," ++
             "pmc_instructions_min,pmc_instructions_median,pmc_instructions_p95,pmc_instructions_max,pmc_instructions_mean," ++
@@ -104,6 +117,16 @@ pub fn writeRow(writer: *std.Io.Writer, row: Row) !void {
     try csv.writeOptionalU64(row.cpu_sys_ns);
     try csv.writeOptionalU64(row.page_faults_minor);
     try csv.writeOptionalU64(row.page_faults_major);
+    try csv.writeOptionalU64(row.page_faults_minor_min);
+    try csv.writeOptionalU64(row.page_faults_minor_median);
+    try csv.writeOptionalU64(row.page_faults_minor_p95);
+    try csv.writeOptionalU64(row.page_faults_minor_max);
+    try csv.writeOptionalU64(row.page_faults_minor_mean);
+    try csv.writeOptionalU64(row.page_faults_major_min);
+    try csv.writeOptionalU64(row.page_faults_major_median);
+    try csv.writeOptionalU64(row.page_faults_major_p95);
+    try csv.writeOptionalU64(row.page_faults_major_max);
+    try csv.writeOptionalU64(row.page_faults_major_mean);
     try csv.writeOptionalU64(row.max_rss_bytes);
     try csv.writeOptionalU64(row.bytes_total);
     try csv.writeOptionalF64(row.bytes_mean);
