@@ -74,7 +74,6 @@ pub inline fn get(self: FrameBuffer, x: u16, y: u16) Cell {
 pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *std.Io.Writer) error{WriteFailed}!void {
     switch (cell.tag) {
         .codepoint => {
-            @branchHint(.likely);
             var bytes: [4]u8 = undefined;
             const len = std.unicode.utf8Encode(cell.data.codepoint, &bytes) catch blk: {
                 @branchHint(.cold);
@@ -100,14 +99,12 @@ pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, wri
     for (0..self.height) |row| {
         try writer.print("\x1b[{d};{d}H", .{ row + 1, 1 });
         for (self.cells[row * self.width ..][0..self.width]) |cell| {
+            if (cell.width == .wide_end) continue;
             if (cell.style != current_style) {
                 try Style.write(cell.style, current_style, style_sheet, writer);
                 current_style = cell.style;
             }
-            switch (cell.width) {
-                .wide_end => continue,
-                else => try self.renderCell(cell, writer),
-            }
+            try self.renderCell(cell, writer);
         }
     }
 }

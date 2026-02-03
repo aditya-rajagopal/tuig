@@ -108,7 +108,7 @@ pub fn build(b: *std.Build) void {
     const run_ui_tests = b.addRunArtifact(ui_tests);
 
     const benchmark_tests_mod = b.createModule(.{
-        .root_source_file = b.path("benchmarks/datasets.zig"),
+        .root_source_file = b.path("benchmarks/ui.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -224,9 +224,10 @@ pub fn build(b: *std.Build) void {
     // Dummy benchmark only step
     const benchmark_dummy_step = b.step("benchmark-dummy", "Run dummy benchmark only");
     const benchmark_dummy_cmd = b.addRunArtifact(benchmark_exe);
-    benchmark_dummy_cmd.addArg("dummy");
+    benchmark_dummy_cmd.addArg("--mode=dummy");
     benchmark_dummy_step.dependOn(&benchmark_dummy_cmd.step);
     benchmark_dummy_cmd.step.dependOn(b.getInstallStep());
+    check_step.dependOn(&benchmark_dummy_cmd.step);
 
     if (b.args) |args| {
         benchmark_dummy_cmd.addArgs(args);
