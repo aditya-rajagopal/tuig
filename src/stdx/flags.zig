@@ -156,6 +156,7 @@
 //!     - GILA(fatherly_axe_dtd) Consider adding true default for booleans and disabling with --no-<flag>
 //!
 //! @REVISION
+//!     0.5 - Use std.sort.heap instead of std.mem.sort to avoid @memcpy
 //!     0.4 - Added inline assertion instead of using std.debug.assert
 //!     0.3 - Moved to zig 0.16 Args
 //!         - Changed type creations to reflect new system using @Struct instead of @Type
@@ -354,7 +355,7 @@ fn parseFlags(io: std.Io, args: *std.process.Args.Iterator, comptime Flags: type
     // @NOTE We can have flags with the same prefix like --foo-bar and --foo. So to make sure we parse them correctly
     // We need to sort the fields by longest name first so that we can check if the given argument is a prefix of a flag.
     // This way we ensure that when we check against --foo we have already checked against --foo-bar.
-    comptime std.mem.sort(Type.StructField, parsed_fields.fields[0..parsed_fields.field_count], {}, struct {
+    comptime std.sort.heap(Type.StructField, parsed_fields.fields[0..parsed_fields.field_count], {}, struct {
         fn lessThan(context: void, l: Type.StructField, r: Type.StructField) bool {
             _ = context;
             const lhs = comptime std.mem.span(l.name.ptr);

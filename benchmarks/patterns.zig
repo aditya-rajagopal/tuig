@@ -7,29 +7,12 @@ const rng = @import("rng.zig");
 const buffer_alignment = std.mem.Alignment.fromByteUnits(std.heap.page_size_min);
 
 pub const Pattern = enum {
-    static,
     cursor_move,
-    scroll,
     panel_swap,
-    full_swap,
     style_flicker,
     unicode_width_churn,
     rect_churn,
 };
-
-pub fn parsePattern(name: []const u8) ?Pattern {
-    if (std.mem.eql(u8, name, "static")) return .static;
-    if (std.mem.eql(u8, name, "cursor")) return .cursor_move;
-    if (std.mem.eql(u8, name, "cursor-move")) return .cursor_move;
-    if (std.mem.eql(u8, name, "scroll")) return .scroll;
-    if (std.mem.eql(u8, name, "panel-swap")) return .panel_swap;
-    if (std.mem.eql(u8, name, "full-swap")) return .full_swap;
-    if (std.mem.eql(u8, name, "style-flicker")) return .style_flicker;
-    if (std.mem.eql(u8, name, "unicode-churn")) return .unicode_width_churn;
-    if (std.mem.eql(u8, name, "unicode-width-churn")) return .unicode_width_churn;
-    if (std.mem.eql(u8, name, "rect-churn")) return .rect_churn;
-    return null;
-}
 
 pub const PatternState = struct {
     pattern: Pattern,
@@ -56,13 +39,54 @@ pub const PatternState = struct {
 
         var cursor_positions: ?[]renderer.Position = null;
         if (pattern == .cursor_move) {
-            cursor_positions = try buildCursorPositions(allocator, &base);
+            const width = base.width;
+            const height = base.height;
+            if (width == 0 or height == 0) {
+                cursor_positions = try allocator.alignedAlloc(renderer.Position, buffer_alignment, 0);
+            } else {
+                var count: usize = 0;
+                var y: u16 = 0;
+                while (y < height) : (y += 1) {
+                    var x: u16 = 0;
+                    while (x < width) : (x += 1) {
+                        const cell = base.get(x, y);
+                        if (cell.width == .narrow) count += 1;
+                    }
+                }
+
+                if (count == 0) {
+                    const fallback = try allocator.alignedAlloc(renderer.Position, buffer_alignment, 1);
+                    fallback[0] = .{ .x = 0, .y = 0 };
+                    cursor_positions = fallback;
+                } else {
+                    const positions = try allocator.alignedAlloc(renderer.Position, buffer_alignment, count);
+                    var idx: usize = 0;
+                    y = 0;
+                    while (y < height) : (y += 1) {
+                        var x: u16 = 0;
+                        while (x < width) : (x += 1) {
+                            const cell = base.get(x, y);
+                            if (cell.width == .narrow) {
+                                positions[idx] = .{ .x = x, .y = y };
+                                idx += 1;
+                            }
+                        }
+                    }
+                    cursor_positions = positions;
+                }
+            }
         }
 
-        const panel_rect = if (pattern == .panel_swap or pattern == .full_swap)
-            computePanelRect(base.width, base.height, seed)
-        else
-            Rect.zero;
+        const panel_rect = if (pattern == .panel_swap) blk: {
+            const width = base.width;
+            const height = base.height;
+            if (width == 0 or height == 0) break :blk Rect.zero;
+            const min_w: u16 = 12;
+            const min_h: u16 = 5;
+            const target_w: u16 = if (width < min_w) width else @max(min_w, width / 3);
+            const target_h: u16 = if (height < min_h) height else @max(min_h, height / 3);
+            break :blk placeRect(width, height, target_w, target_h, seed);
+        } else Rect.zero;
 
         const churn_rect = if (pattern == .unicode_width_churn)
             computeChurnRect(base.width, base.height, seed ^ 0x9e3779b97f4a7c15)
@@ -102,11 +126,8 @@ pub const PatternState = struct {
         copyFrame(dest, &self.base);
 
         switch (self.pattern) {
-            .static => {},
             .cursor_move => applyCursorMove(dest, self.cursor_positions, frame_index),
-            .scroll => applyScroll(dest, &self.base, frame_index),
             .panel_swap => applyPanelSwap(dest, self.panel_rect, frame_index),
-            .full_swap => applyFullSwap(dest, frame_index),
             .style_flicker => applyStyleFlicker(dest, self.style_ids, frame_index),
             .unicode_width_churn => applyUnicodeWidthChurn(dest, self.churn_rect, self.seed, frame_index),
             .rect_churn => applyRectChurn(dest, self.rect_churn_rect, self.style_ids, self.seed, frame_index),
@@ -122,53 +143,6 @@ const Rect = struct {
 
     const zero = Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
 };
-
-fn buildCursorPositions(allocator: std.mem.Allocator, base: *const renderer.FrameBuffer) ![]renderer.Position {
-    const width = base.width;
-    const height = base.height;
-    if (width == 0 or height == 0) return try allocator.alignedAlloc(renderer.Position, buffer_alignment, 0);
-
-    var count: usize = 0;
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const cell = base.get(x, y);
-            if (cell.width == .narrow) count += 1;
-        }
-    }
-
-    if (count == 0) {
-        const fallback = try allocator.alignedAlloc(renderer.Position, buffer_alignment, 1);
-        fallback[0] = .{ .x = 0, .y = 0 };
-        return fallback;
-    }
-
-    const positions = try allocator.alignedAlloc(renderer.Position, buffer_alignment, count);
-    var idx: usize = 0;
-    y = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const cell = base.get(x, y);
-            if (cell.width == .narrow) {
-                positions[idx] = .{ .x = x, .y = y };
-                idx += 1;
-            }
-        }
-    }
-
-    return positions;
-}
-
-fn computePanelRect(width: u16, height: u16, seed: u64) Rect {
-    if (width == 0 or height == 0) return Rect.zero;
-    const min_w: u16 = 12;
-    const min_h: u16 = 5;
-    const target_w: u16 = if (width < min_w) width else @max(min_w, width / 3);
-    const target_h: u16 = if (height < min_h) height else @max(min_h, height / 3);
-    return placeRect(width, height, target_w, target_h, seed);
-}
 
 fn computeChurnRect(width: u16, height: u16, seed: u64) Rect {
     if (width == 0 or height == 0) return Rect.zero;
@@ -237,32 +211,10 @@ fn applyCursorMove(dest: *renderer.FrameBuffer, positions_opt: ?[]renderer.Posit
     setAsciiCell(dest, pos.x, pos.y, '@', style_id);
 }
 
-fn applyScroll(dest: *renderer.FrameBuffer, base: *const renderer.FrameBuffer, frame_index: u64) void {
-    const width = base.width;
-    const height = base.height;
-    if (width == 0 or height == 0) return;
-
-    const offset: u16 = @intCast(frame_index % height);
-    const row_len: usize = @as(usize, width);
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        const src_row: u16 = @intCast((@as(u32, y) + @as(u32, offset)) % @as(u32, height));
-        const src_start: usize = @as(usize, src_row) * row_len;
-        const dst_start: usize = @as(usize, y) * row_len;
-        @memcpy(dest.cells[dst_start..][0..row_len], base.cells[src_start..][0..row_len]);
-    }
-}
-
 fn applyPanelSwap(dest: *renderer.FrameBuffer, rect: Rect, frame_index: u64) void {
     if (rect.width == 0 or rect.height == 0) return;
     const variant: u8 = @intCast(frame_index % 2);
     renderPanelVariant(dest, rect, variant);
-}
-
-fn applyFullSwap(dest: *renderer.FrameBuffer, frame_index: u64) void {
-    if (dest.width == 0 or dest.height == 0) return;
-    if ((frame_index & 1) == 0) return;
-    renderFullSwap(dest, frame_index);
 }
 
 fn applyStyleFlicker(dest: *renderer.FrameBuffer, style_ids: []const renderer.Style.Id, frame_index: u64) void {
@@ -520,21 +472,6 @@ fn renderPanelVariant(buffer: *renderer.FrameBuffer, rect: Rect, variant: u8) vo
             const gx = rect.x + 2 + @as(u16, @intCast(i));
             const style_id = buffer.get(gx, rect.y).style;
             setAsciiCell(buffer, gx, rect.y, title[i], style_id);
-        }
-    }
-}
-
-fn renderFullSwap(buffer: *renderer.FrameBuffer, frame_index: u64) void {
-    const pattern = "0123456789ABCDEF";
-    const width = buffer.width;
-    const height = buffer.height;
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const idx = (@as(usize, x) + @as(usize, y) * 3 + @as(usize, frame_index)) % pattern.len;
-            const style_id = buffer.get(x, y).style;
-            setAsciiCell(buffer, x, y, pattern[idx], style_id);
         }
     }
 }

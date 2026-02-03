@@ -15,7 +15,7 @@ pub fn buildPrintText(
     out: *std.ArrayList(u8),
     mix: text_mix.TextMix,
     seed: u64,
-    target_cells: u32,
+    target_glyph_cells: u32,
 ) !void {
     out.clearRetainingCapacity();
 
@@ -24,7 +24,7 @@ pub fn buildPrintText(
     var cell_count: u32 = 0;
     var word_index: u32 = 0;
 
-    while (cell_count < target_cells) {
+    while (cell_count < target_glyph_cells) {
         const word_len = random.intRangeLessThan(u8, 3, 9);
         var i: u8 = 0;
         while (i < word_len) : (i += 1) {
@@ -54,7 +54,14 @@ pub fn buildPrintText(
     }
 }
 
-pub fn printDatasetScissor(base: renderer.Scissor, dataset: bench_catalog.PrintDatasetSpec) renderer.Scissor {
+pub fn renderPrintDataset(
+    base: renderer.Scissor,
+    dataset: bench_catalog.PrintDatasetSpec,
+    mode: PrintMode,
+    codepoint_buffer: []u21,
+    text: []const u8,
+    style_id: renderer.Style.Id,
+) !renderer.Scissor.PrintResult {
     const base_w: i17 = @intCast(base.width_global);
     const base_h: i17 = @intCast(base.height_global);
     const width: i17 = @intCast(dataset.width);
@@ -65,18 +72,7 @@ pub fn printDatasetScissor(base: renderer.Scissor, dataset: bench_catalog.PrintD
         .offset => |value| value,
     };
 
-    return base.initChild(offset.x, offset.y, dataset.width, dataset.height);
-}
-
-pub fn renderPrintDataset(
-    base: renderer.Scissor,
-    dataset: bench_catalog.PrintDatasetSpec,
-    mode: PrintMode,
-    codepoint_buffer: []u21,
-    text: []const u8,
-    style_id: renderer.Style.Id,
-) !renderer.Scissor.PrintResult {
-    const scissor = printDatasetScissor(base, dataset);
+    const scissor = base.initChild(offset.x, offset.y, dataset.width, dataset.height);
     return switch (mode) {
         .print => try scissor.print(
             codepoint_buffer,

@@ -14,30 +14,26 @@ const NoPmc = struct {
     enabled: bool,
 
     pub fn init(enable: bool) NoPmc {
-        assert(enable == true or enable == false);
-        assert(@sizeOf(NoPmc) > 0);
         return .{ .enabled = enable };
     }
 
     pub fn deinit(self: *NoPmc) void {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(NoPmc) > 0);
+        _ = self;
     }
 
     pub fn start(self: *NoPmc, event_names: [MaxEvents][]const u8) bool {
-        assert(@intFromPtr(self) != 0);
-        assert(event_names.len == MaxEvents);
+        _ = self;
+        _ = event_names;
         return false;
     }
 
     pub fn resetStart(self: *NoPmc) error{Failed}!bool {
-        assert(@intFromPtr(self) != 0);
+        _ = self;
         return false;
     }
 
     pub fn snapshot(self: *NoPmc) error{Failed}!Result {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(Result) > 0);
+        _ = self;
         return .{
             .cycles = null,
             .instructions = null,
@@ -51,8 +47,7 @@ const NoPmc = struct {
     }
 
     pub fn stop(self: *NoPmc) error{Failed}!Result {
-        assert(@intFromPtr(self) != 0);
-        assert(@sizeOf(Result) > 0);
+        _ = self;
         return .{
             .cycles = null,
             .instructions = null,

@@ -59,9 +59,9 @@ pub const render_datasets = [_]DatasetSpec{
 };
 
 pub const print_datasets = [_]PrintDatasetSpec{
-    .{ .name = "scissor-small", .width = 20, .height = 6, .origin = .centered },
-    .{ .name = "scissor-large", .width = 40, .height = 12, .origin = .centered },
-    .{ .name = "scissor-out-of-bounds", .width = 40, .height = 12, .origin = .{ .offset = .{ .x = -5, .y = -2 } } },
+    .{ .name = "scissor_small", .width = 20, .height = 6, .origin = .centered },
+    .{ .name = "scissor_large", .width = 40, .height = 12, .origin = .centered },
+    .{ .name = "scissor_out_of_bounds", .width = 40, .height = 12, .origin = .{ .offset = .{ .x = -5, .y = -2 } } },
 };
 
 pub const all_text_mixes = [_]text_mix.TextMix{

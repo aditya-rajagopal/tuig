@@ -3,23 +3,15 @@ const std = @import("std");
 const renderer = @import("renderer");
 const terminal_mod = @import("terminal");
 
+const dataset_setup = @import("dataset_setup.zig");
 const bench_catalog = @import("bench_catalog.zig");
-const patterns = @import("patterns.zig");
 const print_helpers = @import("print_helpers.zig");
-const rng = @import("rng.zig");
 const style_mix = @import("style_mix.zig");
 const text_mix = @import("text_mix.zig");
-const ui = @import("ui.zig");
+const types = @import("types.zig");
 
 const buffer_alignment = std.mem.Alignment.fromByteUnits(std.heap.page_size_min);
-
-pub const BenchMode = enum {
-    dummy,
-    full_redraw,
-    diff_redraw,
-    print,
-    print_assume_no_grapheme,
-};
+pub const BenchMode = types.BenchMode;
 
 pub const InspectConfig = struct {
     bench_mode: BenchMode,
@@ -29,35 +21,9 @@ pub const InspectConfig = struct {
     seed: u64,
 };
 
-pub fn benchModeFromRoot(mode: anytype) BenchMode {
-    return switch (mode) {
-        .dummy => .dummy,
-        .full_redraw => .full_redraw,
-        .diff_redraw => .diff_redraw,
-        .print => .print,
-        .print_assume_no_grapheme => .print_assume_no_grapheme,
-    };
-}
-
 const InspectMode = enum { form, view };
 
-const Buffer = struct {
-    fb: renderer.FrameBuffer,
-    cells: []renderer.Cell,
-
-    fn init(allocator: std.mem.Allocator, width: u16, height: u16) !Buffer {
-        const cell_count = @as(usize, width) * @as(usize, height);
-        const cells = try allocator.alignedAlloc(renderer.Cell, buffer_alignment, cell_count);
-        var fb = try renderer.FrameBuffer.init(cells, width, height, .default);
-        fb.clear();
-        return .{ .fb = fb, .cells = cells };
-    }
-
-    fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
-        self.fb.deinit();
-        allocator.free(self.cells);
-    }
-};
+const Buffer = types.Buffer;
 
 const InspectFrames = struct {
     style_sheet: renderer.Style.Sheet,
@@ -83,6 +49,7 @@ const InspectState = struct {
     frame_index: u8,
     show_help: bool,
     frames: ?InspectFrames,
+    release_frames: bool,
 };
 
 pub fn runInspect(config: InspectConfig) !void {
@@ -111,7 +78,9 @@ pub fn runInspect(config: InspectConfig) !void {
     while (!quit) {
         const events = try terminal.pollEvents(15);
         const ctx = try renderer_state.beginFrame(events);
-        defer renderer_state.endFrame(true, activeStyleSheet(&state, &ui_style_sheet));
+        var rendered_sheet: *renderer.Style.Sheet = &ui_style_sheet;
+        var needs_end_frame = true;
+        errdefer if (needs_end_frame) renderer_state.endFrame(true, &ui_style_sheet);
 
         switch (state.mode) {
             .form => {
@@ -119,21 +88,37 @@ pub fn runInspect(config: InspectConfig) !void {
                 quit = try handleInspectFormInput(&ctx, &state, allocator);
             },
             .view => {
+                if (state.frames) |*frames| {
+                    rendered_sheet = &frames.style_sheet;
+                }
                 try renderInspectView(&ctx, &state);
-                quit = handleInspectViewInput(&ctx, &state, allocator);
+                quit = handleInspectViewInput(&ctx, &state);
             },
+        }
+
+        renderer_state.endFrame(true, rendered_sheet);
+        needs_end_frame = false;
+
+        if (state.release_frames) {
+            if (state.frames) |*frames| {
+                frames.deinit(allocator);
+                state.frames = null;
+            }
+            state.release_frames = false;
         }
     }
 }
 
 fn initInspectState(config: InspectConfig) InspectState {
-    var bench_mode = config.bench_mode;
-    if (bench_mode == .dummy) bench_mode = .full_redraw;
-    const print_mode = isPrintMode(bench_mode);
+    const mode = config.bench_mode;
+    const print_mode = switch (mode) {
+        .print, .print_assume_no_grapheme => true,
+        else => false,
+    };
     const dataset_index = if (print_mode) 0 else findRenderDatasetIndex(config.dataset_name);
     return .{
         .mode = .form,
-        .bench_mode = bench_mode,
+        .bench_mode = mode,
         .print_mode = print_mode,
         .field_index = 0,
         .dataset_index = dataset_index,
@@ -143,31 +128,8 @@ fn initInspectState(config: InspectConfig) InspectState {
         .frame_index = 0,
         .show_help = true,
         .frames = null,
+        .release_frames = false,
     };
-}
-
-fn isPrintMode(mode: BenchMode) bool {
-    return switch (mode) {
-        .print, .print_assume_no_grapheme => true,
-        else => false,
-    };
-}
-
-fn printModeFromBench(mode: BenchMode) print_helpers.PrintMode {
-    return switch (mode) {
-        .print => .print,
-        .print_assume_no_grapheme => .print_assume_no_grapheme,
-        else => unreachable,
-    };
-}
-
-fn activeStyleSheet(state: *InspectState, ui_style_sheet: *renderer.Style.Sheet) *renderer.Style.Sheet {
-    if (state.mode == .view) {
-        if (state.frames) |*frames| {
-            return &frames.style_sheet;
-        }
-    }
-    return ui_style_sheet;
 }
 
 fn handleInspectFormInput(ctx: *const renderer.Context, state: *InspectState, allocator: std.mem.Allocator) !bool {
@@ -182,13 +144,75 @@ fn handleInspectFormInput(ctx: *const renderer.Context, state: *InspectState, al
         const text_mix_item = bench_catalog.all_text_mixes[state.text_mix_index];
         const style_mix_item = bench_catalog.all_style_mixes[state.style_mix_index];
         if (state.print_mode) {
-            const dataset = inspectPrintDataset(state, state.dataset_index);
-            const frames = try buildInspectPrintFrames(allocator, dataset, text_mix_item, style_mix_item, state.seed, cols, rows, state.bench_mode, 2);
-            state.frames = frames;
+            const dataset = bench_catalog.print_datasets[state.dataset_index];
+            const palette_len = style_mix.paletteLen(style_mix_item);
+            var style_sheet = try renderer.Style.Sheet.initCapacity(allocator, palette_len);
+            const style_ids = try allocator.alignedAlloc(renderer.Style.Id, buffer_alignment, palette_len);
+            defer allocator.free(style_ids);
+            const style_slice = style_mix.fillStyleIds(&style_sheet, allocator, style_mix_item, style_ids);
+
+            var frame0 = try Buffer.init(allocator, cols, rows);
+            var frame1 = try Buffer.init(allocator, cols, rows);
+
+            var text_buffer: std.ArrayList(u8) = .empty;
+            defer text_buffer.deinit(allocator);
+            const target_glyph_cells = @as(u32, dataset.width) * @as(u32, dataset.height) * 2;
+            try print_helpers.buildPrintText(allocator, &text_buffer, text_mix_item, state.seed, target_glyph_cells);
+
+            const style_id = if (style_slice.len > 0) style_slice[0] else .default;
+            var codepoint_buffer: [256]u21 = undefined;
+            const print_mode: print_helpers.PrintMode = switch (state.bench_mode) {
+                .print => .print,
+                .print_assume_no_grapheme => .print_assume_no_grapheme,
+                else => unreachable,
+            };
+            const frame_count: u8 = 2;
+
+            frame0.fb.clear();
+            _ = try print_helpers.renderPrintDataset(frame0.fb.scissor(), dataset, print_mode, codepoint_buffer[0..], text_buffer.items, style_id);
+            if (frame_count > 1) {
+                frame1.fb.clear();
+                _ = try print_helpers.renderPrintDataset(frame1.fb.scissor(), dataset, print_mode, codepoint_buffer[0..], text_buffer.items, style_id);
+            }
+
+            state.frames = .{
+                .style_sheet = style_sheet,
+                .frames = .{ frame0, frame1 },
+                .frame_count = frame_count,
+            };
         } else {
-            const dataset = inspectRenderDataset(state, state.dataset_index);
-            const frames = try buildInspectRenderFrames(allocator, dataset, text_mix_item, style_mix_item, state.seed, cols, rows, 2);
-            state.frames = frames;
+            const dataset = bench_catalog.render_datasets[state.dataset_index];
+            var base = try Buffer.init(allocator, cols, rows);
+            defer base.deinit(allocator);
+
+            var assets = try dataset_setup.buildDatasetAssets(
+                allocator,
+                dataset,
+                text_mix_item,
+                style_mix_item,
+                state.seed,
+                &base.fb,
+            );
+            defer {
+                assets.pattern_state.deinit(allocator);
+                allocator.free(assets.style_ids);
+            }
+
+            const style_sheet = assets.style_sheet;
+            const frame_count: u8 = 2;
+
+            var frame0 = try Buffer.init(allocator, cols, rows);
+            var frame1 = try Buffer.init(allocator, cols, rows);
+            try assets.pattern_state.renderFrame(&frame0.fb, 0);
+            if (frame_count > 1) {
+                try assets.pattern_state.renderFrame(&frame1.fb, 1);
+            }
+
+            state.frames = .{
+                .style_sheet = style_sheet,
+                .frames = .{ frame0, frame1 },
+                .frame_count = frame_count,
+            };
         }
         state.mode = .view;
         state.frame_index = 0;
@@ -208,21 +232,15 @@ fn handleInspectFormInput(ctx: *const renderer.Context, state: *InspectState, al
     return false;
 }
 
-fn handleInspectViewInput(ctx: *const renderer.Context, state: *InspectState, allocator: std.mem.Allocator) bool {
+fn handleInspectViewInput(ctx: *const renderer.Context, state: *InspectState) bool {
     if (ctx.resize != null) {
-        if (state.frames) |*frames| {
-            frames.deinit(allocator);
-            state.frames = null;
-        }
         state.mode = .form;
+        state.release_frames = true;
         return false;
     }
     if (ctx.isKeyPressedThisFrame(.escape)) {
-        if (state.frames) |*frames| {
-            frames.deinit(allocator);
-            state.frames = null;
-        }
         state.mode = .form;
+        state.release_frames = true;
         return false;
     }
     if (ctx.isKeyPressedThisFrame(.Q)) return true;
@@ -241,7 +259,11 @@ fn handleInspectViewInput(ctx: *const renderer.Context, state: *InspectState, al
 
 fn adjustInspectField(state: *InspectState, forward: bool) void {
     switch (state.field_index) {
-        0 => state.dataset_index = rotateIndex(state.dataset_index, inspectDatasetCount(state), forward),
+        0 => state.dataset_index = rotateIndex(
+            state.dataset_index,
+            if (state.print_mode) bench_catalog.print_datasets.len else bench_catalog.render_datasets.len,
+            forward,
+        ),
         1 => state.text_mix_index = rotateIndex(state.text_mix_index, bench_catalog.all_text_mixes.len, forward),
         2 => state.style_mix_index = rotateIndex(state.style_mix_index, bench_catalog.all_style_mixes.len, forward),
         3 => {
@@ -268,31 +290,6 @@ fn findRenderDatasetIndex(name: []const u8) usize {
     return 0;
 }
 
-fn findPrintDatasetIndex(name: []const u8) usize {
-    for (bench_catalog.print_datasets, 0..) |dataset, idx| {
-        if (std.mem.eql(u8, dataset.name, name)) return idx;
-    }
-    return 0;
-}
-
-fn inspectDatasetCount(state: *InspectState) usize {
-    return if (state.print_mode) bench_catalog.print_datasets.len else bench_catalog.render_datasets.len;
-}
-
-fn inspectDatasetName(state: *InspectState, index: usize) []const u8 {
-    return if (state.print_mode) bench_catalog.print_datasets[index].name else bench_catalog.render_datasets[index].name;
-}
-
-fn inspectRenderDataset(state: *InspectState, index: usize) bench_catalog.DatasetSpec {
-    if (state.print_mode) return bench_catalog.render_datasets[0];
-    return bench_catalog.render_datasets[index];
-}
-
-fn inspectPrintDataset(state: *InspectState, index: usize) bench_catalog.PrintDatasetSpec {
-    if (!state.print_mode) return bench_catalog.print_datasets[0];
-    return bench_catalog.print_datasets[index];
-}
-
 fn findTextMixIndex(mix: text_mix.TextMix) usize {
     for (bench_catalog.all_text_mixes, 0..) |item, idx| {
         if (item == mix) return idx;
@@ -317,7 +314,10 @@ fn renderInspectForm(ctx: *const renderer.Context, state: *InspectState) void {
     _ = scissor.printAssumeNoGrapheme(mode_line, 0, 1, .{ .wrap = false, .tab_width = 4 });
 
     var line_buf: [256]u8 = undefined;
-    const dataset_name = inspectDatasetName(state, state.dataset_index);
+    const dataset_name = if (state.print_mode)
+        bench_catalog.print_datasets[state.dataset_index].name
+    else
+        bench_catalog.render_datasets[state.dataset_index].name;
     const text_mix_name = @tagName(bench_catalog.all_text_mixes[state.text_mix_index]);
     const style_mix_name = @tagName(bench_catalog.all_style_mixes[state.style_mix_index]);
 
@@ -356,11 +356,38 @@ fn renderInspectView(ctx: *const renderer.Context, state: *InspectState) !void {
 
     if (state.frames) |frames| {
         const frame_index: u8 = if (state.frame_index > 0 and frames.frame_count > 1) 1 else 0;
-        try blitFrame(scissor, &frames.frames[frame_index].fb);
+        const src = &frames.frames[frame_index].fb;
+        const blit_width: u16 = @min(scissor.width_global, src.width);
+        const blit_height: u16 = @min(scissor.height_global, src.height);
+        var y: u16 = 0;
+        while (y < blit_height) : (y += 1) {
+            var x: u16 = 0;
+            while (x < blit_width) : (x += 1) {
+                const cell = src.get(x, y);
+                scissor.set(x, y, cell);
+            }
+        }
+        const src_end = src.grapheme_buffer.end_index;
+        try scissor.buffer.grapheme_buffer.ensureTotalCapacity(src_end);
+        scissor.buffer.grapheme_buffer.end_index = src_end;
+        scissor.buffer.grapheme_buffer.generation = src.grapheme_buffer.generation;
+        if (src_end > 0) {
+            @memcpy(
+                scissor.buffer.grapheme_buffer.buffer.reserved_pages[0..src_end],
+                src.grapheme_buffer.buffer.reserved_pages[0..src_end],
+            );
+        }
 
         if (state.show_help and scissor.height_global > 0) {
             const bar = scissor.initChild(0, @intCast(scissor.height_global - 1), scissor.width_global, 1);
-            clearScissorRow(bar, 0);
+            const row: u16 = 0;
+            if (row < bar.height_global) {
+                const bar_width = bar.width_global;
+                var x: u16 = 0;
+                while (x < bar_width) : (x += 1) {
+                    bar.set(x, row, renderer.Cell.empty);
+                }
+            }
             var info_buf: [160]u8 = undefined;
             const info = std.fmt.bufPrint(
                 &info_buf,
@@ -373,133 +400,4 @@ fn renderInspectView(ctx: *const renderer.Context, state: *InspectState) !void {
     }
 
     _ = scissor.printAssumeNoGrapheme("No frames generated", 0, 0, .{ .wrap = false, .tab_width = 4 });
-}
-
-fn clearScissorRow(scissor: renderer.Scissor, row: u16) void {
-    if (row >= scissor.height_global) return;
-    const width = scissor.width_global;
-    var x: u16 = 0;
-    while (x < width) : (x += 1) {
-        scissor.set(x, row, renderer.Cell.empty);
-    }
-}
-
-fn blitFrame(dest: renderer.Scissor, src: *const renderer.FrameBuffer) !void {
-    const width: u16 = @min(dest.width_global, src.width);
-    const height: u16 = @min(dest.height_global, src.height);
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const cell = src.get(x, y);
-            dest.set(x, y, cell);
-        }
-    }
-    try copyGraphemeBuffer(dest.buffer, src);
-}
-
-fn copyGraphemeBuffer(dest: *renderer.FrameBuffer, src: *const renderer.FrameBuffer) !void {
-    const src_end = src.grapheme_buffer.end_index;
-    try dest.grapheme_buffer.ensureTotalCapacity(src_end);
-    dest.grapheme_buffer.end_index = src_end;
-    dest.grapheme_buffer.generation = src.grapheme_buffer.generation;
-    if (src_end > 0) {
-        @memcpy(
-            dest.grapheme_buffer.buffer.reserved_pages[0..src_end],
-            src.grapheme_buffer.buffer.reserved_pages[0..src_end],
-        );
-    }
-}
-
-fn buildInspectRenderFrames(
-    allocator: std.mem.Allocator,
-    dataset: bench_catalog.DatasetSpec,
-    text_mix_item: text_mix.TextMix,
-    style_mix_item: style_mix.StyleMix,
-    seed: u64,
-    cols: u16,
-    rows: u16,
-    frame_count: u8,
-) !InspectFrames {
-    const palette_len = style_mix.paletteLen(style_mix_item);
-    var style_sheet = try renderer.Style.Sheet.initCapacity(allocator, palette_len);
-    const style_ids = try allocator.alignedAlloc(renderer.Style.Id, buffer_alignment, palette_len);
-    defer allocator.free(style_ids);
-    const style_slice = style_mix.fillStyleIds(&style_sheet, allocator, style_mix_item, style_ids);
-
-    var base = try Buffer.init(allocator, cols, rows);
-    defer base.deinit(allocator);
-
-    var prng = rng.init(seed);
-    const random = prng.random();
-    var style_sequence = style_mix.StyleSequence.init(style_mix_item, random, palette_len);
-    var codepoint_buffer: [256]u21 = undefined;
-    var ctx = ui.PrimitiveContext{
-        .random = random,
-        .text_mix = text_mix_item,
-        .style_sequence = &style_sequence,
-        .style_ids = style_slice,
-        .codepoint_buffer = codepoint_buffer[0..],
-    };
-
-    try dataset.render(base.fb.scissor(), &ctx);
-
-    var pattern_state = try patterns.PatternState.init(allocator, dataset.pattern, &base.fb, seed, style_slice);
-    defer pattern_state.deinit(allocator);
-
-    var frame0 = try Buffer.init(allocator, cols, rows);
-    var frame1 = try Buffer.init(allocator, cols, rows);
-    try pattern_state.renderFrame(&frame0.fb, 0);
-    if (frame_count > 1) {
-        try pattern_state.renderFrame(&frame1.fb, 1);
-    }
-
-    return .{
-        .style_sheet = style_sheet,
-        .frames = .{ frame0, frame1 },
-        .frame_count = frame_count,
-    };
-}
-
-fn buildInspectPrintFrames(
-    allocator: std.mem.Allocator,
-    dataset: bench_catalog.PrintDatasetSpec,
-    text_mix_item: text_mix.TextMix,
-    style_mix_item: style_mix.StyleMix,
-    seed: u64,
-    cols: u16,
-    rows: u16,
-    mode: BenchMode,
-    frame_count: u8,
-) !InspectFrames {
-    const palette_len = style_mix.paletteLen(style_mix_item);
-    var style_sheet = try renderer.Style.Sheet.initCapacity(allocator, palette_len);
-    const style_ids = try allocator.alignedAlloc(renderer.Style.Id, buffer_alignment, palette_len);
-    defer allocator.free(style_ids);
-    const style_slice = style_mix.fillStyleIds(&style_sheet, allocator, style_mix_item, style_ids);
-
-    var frame0 = try Buffer.init(allocator, cols, rows);
-    var frame1 = try Buffer.init(allocator, cols, rows);
-
-    var text_buffer: std.ArrayList(u8) = .empty;
-    defer text_buffer.deinit(allocator);
-    const target_cells = @as(u32, dataset.width) * @as(u32, dataset.height) * 2;
-    try print_helpers.buildPrintText(allocator, &text_buffer, text_mix_item, seed, target_cells);
-
-    const style_id = if (style_slice.len > 0) style_slice[0] else .default;
-    var codepoint_buffer: [256]u21 = undefined;
-    const print_mode = printModeFromBench(mode);
-
-    frame0.fb.clear();
-    _ = try print_helpers.renderPrintDataset(frame0.fb.scissor(), dataset, print_mode, codepoint_buffer[0..], text_buffer.items, style_id);
-    if (frame_count > 1) {
-        frame1.fb.clear();
-        _ = try print_helpers.renderPrintDataset(frame1.fb.scissor(), dataset, print_mode, codepoint_buffer[0..], text_buffer.items, style_id);
-    }
-
-    return .{
-        .style_sheet = style_sheet,
-        .frames = .{ frame0, frame1 },
-        .frame_count = frame_count,
-    };
 }
