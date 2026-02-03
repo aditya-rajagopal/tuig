@@ -107,11 +107,29 @@ pub fn build(b: *std.Build) void {
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
 
+    const benchmark_tests_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/datasets.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "unicode", .module = unicode },
+            .{ .name = "stdx", .module = stdx },
+            .{ .name = "terminal", .module = terminal },
+        },
+    });
+    const benchmark_tests = b.addTest(.{
+        .root_module = benchmark_tests_mod,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_benchmark_tests = b.addRunArtifact(benchmark_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_terminal_tests.step);
     test_step.dependOn(&run_renderer_tests.step);
     test_step.dependOn(&run_unicode_tests.step);
     test_step.dependOn(&run_ui_tests.step);
+    test_step.dependOn(&run_benchmark_tests.step);
 
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });
     const check_step = b.step("check", "Run ast check");
@@ -171,5 +189,46 @@ pub fn build(b: *std.Build) void {
 
     if (b.args) |args| {
         bench_renderer_cmd.addArgs(args);
+    }
+
+    // New benchmark infrastructure module
+    const benchmark_infra_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "renderer", .module = renderer },
+            .{ .name = "unicode", .module = unicode },
+            .{ .name = "stdx", .module = stdx },
+            .{ .name = "terminal", .module = terminal },
+        },
+    });
+
+    const benchmark_exe = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = benchmark_infra_mod,
+    });
+
+    b.installArtifact(benchmark_exe);
+
+    // Main benchmark step (runs all benchmarks)
+    const benchmark_step = b.step("benchmark", "Run all benchmarks");
+    const benchmark_cmd = b.addRunArtifact(benchmark_exe);
+    benchmark_step.dependOn(&benchmark_cmd.step);
+    benchmark_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        benchmark_cmd.addArgs(args);
+    }
+
+    // Dummy benchmark only step
+    const benchmark_dummy_step = b.step("benchmark-dummy", "Run dummy benchmark only");
+    const benchmark_dummy_cmd = b.addRunArtifact(benchmark_exe);
+    benchmark_dummy_cmd.addArg("dummy");
+    benchmark_dummy_step.dependOn(&benchmark_dummy_cmd.step);
+    benchmark_dummy_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        benchmark_dummy_cmd.addArgs(args);
     }
 }
