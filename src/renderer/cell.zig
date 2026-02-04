@@ -237,7 +237,7 @@ pub const Style = struct {
             try writer.writeAll(if (flags_new.strikethrough) ColorFormat.strikethrough_enable else ColorFormat.strikethrough_disable);
         }
 
-        if (@intFromEnum(flags_old.underline) != @intFromEnum(flags_new.underline)) {
+        if (flags_old.underline != flags_new.underline) {
             try writer.writeAll(switch (flags_new.underline) {
                 .none => ColorFormat.underline_style_reset,
                 .single => ColorFormat.underline_style_single,

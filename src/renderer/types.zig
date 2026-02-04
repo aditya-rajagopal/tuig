@@ -91,8 +91,9 @@ pub const GraphemeBuffer = struct {
         if (end > self.buffer.reserved_pages.len) {
             self.buffer.ensureTotalCapacity(end) catch return error.OutOfMemory;
         }
-        @memcpy(self.buffer.reserved_pages[self.end_index..start], std.mem.asBytes(&bytes.len)[0..4]);
-        @memcpy(self.buffer.reserved_pages[start..end], bytes);
+        const length = @as(u32, @intCast(bytes.len));
+        @memcpy(self.buffer.reserved_pages[self.end_index..start], std.mem.asBytes(&length)[0..4]);
+        @memcpy(self.buffer.reserved_pages[start..end], bytes[0..length]);
         return @intCast(self.end_index);
     }
 
