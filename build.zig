@@ -108,7 +108,7 @@ pub fn build(b: *std.Build) void {
     const run_ui_tests = b.addRunArtifact(ui_tests);
 
     const benchmark_tests_mod = b.createModule(.{
-        .root_source_file = b.path("benchmarks/ui.zig"),
+        .root_source_file = b.path("benchmarks/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

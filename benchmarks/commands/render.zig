@@ -166,7 +166,6 @@ pub fn execute(self: Render, ctx: common.CommandContext, mode: types.BenchMode) 
                 const timestamp_ns = common.nowTimestampNs();
 
                 var assets = try buildDatasetAssets(allocator, micro_config);
-                defer assets.deinit(ctx.allocator);
                 const result = try runEmitBenchmark(&local_arena, micro_config, &assets, &pmc_state, terminal_ptr, ctx.io);
                 const pmc_stats = result.pmc_stats;
                 const row = csv_mod.Row{

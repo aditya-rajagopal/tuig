@@ -44,6 +44,7 @@ pub fn execute(_: Inspect, _: common.CommandContext) !void {
 
     var renderer_state: renderer.Renderer = undefined;
     try renderer_state.init(&terminal, .default_screen);
+    defer renderer_state.deinit();
 
     var style_buffer: [64]renderer.Style = undefined;
     var generation_buffer: [64]u8 = undefined;

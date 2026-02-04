@@ -236,12 +236,25 @@ fn applyStyleFlicker(dest: *renderer.FrameBuffer, style_ids: []const renderer.St
     }
 }
 
-fn clearWideEndNeighbor(buffer: *renderer.FrameBuffer, x: u16, y: u16) void {
-    const next_x: u16 = x + 1;
-    if (next_x >= buffer.width) return;
-    const neighbor = buffer.get(next_x, y);
-    if (neighbor.width != .wide_end) return;
-    setAsciiCell(buffer, next_x, y, ' ', neighbor.style);
+fn clearWideNeighbors(buffer: *renderer.FrameBuffer, x: u16, y: u16) void {
+    const cell = buffer.get(x, y);
+    switch (cell.width) {
+        .wide_start => {
+            const next_x: u16 = x + 1;
+            if (next_x >= buffer.width) return;
+            const neighbor = buffer.get(next_x, y);
+            if (neighbor.width != .wide_end) return;
+            setAsciiCell(buffer, next_x, y, ' ', neighbor.style);
+        },
+        .wide_end => {
+            if (x == 0) return;
+            const prev_x: u16 = x - 1;
+            const neighbor = buffer.get(prev_x, y);
+            if (neighbor.width != .wide_start) return;
+            setAsciiCell(buffer, prev_x, y, ' ', neighbor.style);
+        },
+        else => {},
+    }
 }
 
 fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, frame_index: u64) void {
@@ -281,6 +294,8 @@ fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, fr
             const pick_wide = random.intRangeLessThan(u16, 0, 100) < wide_ratio;
             if (pick_wide and x + 1 < x_end) {
                 const idx = random.intRangeLessThan(usize, 0, rect_wide_glyphs.len);
+                clearWideNeighbors(dest, x, y);
+                clearWideNeighbors(dest, x + 1, y);
                 setWideCell(dest, x, y, rect_wide_glyphs[idx], style_id);
                 setWideEnd(dest, x + 1, y, style_id);
                 x += 2;
@@ -288,9 +303,7 @@ fn applyUnicodeWidthChurn(dest: *renderer.FrameBuffer, rect: Rect, seed: u64, fr
             }
 
             const idx = random.intRangeLessThan(usize, 0, rect_narrow_glyphs.len);
-            if (existing.width == .wide_start) {
-                clearWideEndNeighbor(dest, x, y);
-            }
+            clearWideNeighbors(dest, x, y);
             setCodepointCell(dest, x, y, rect_narrow_glyphs[idx], style_id);
             x += 1;
         }
@@ -377,21 +390,68 @@ fn applyRectChurn(
                 const pick_wide = random.intRangeLessThan(u16, 0, 100) < 40;
                 if (pick_wide and x + 1 < x1) {
                     const idx = random.intRangeLessThan(usize, 0, rect_wide_glyphs.len);
+                    clearWideNeighbors(dest, x, y);
+                    clearWideNeighbors(dest, x + 1, y);
                     setWideCell(dest, x, y, rect_wide_glyphs[idx], style_id);
                     setWideEnd(dest, x + 1, y, style_id);
                     x += 2;
                 } else {
-                    const existing = dest.get(x, y);
                     const idx = random.intRangeLessThan(usize, 0, rect_narrow_glyphs.len);
-                    if (existing.width == .wide_start) {
-                        clearWideEndNeighbor(dest, x, y);
-                    }
+                    clearWideNeighbors(dest, x, y);
                     setCodepointCell(dest, x, y, rect_narrow_glyphs[idx], style_id);
                     x += 1;
                 }
             }
         }
     }
+}
+
+test "clearWideNeighbors clears right neighbor" {
+    const allocator = std.testing.allocator;
+    const width: u16 = 4;
+    const height: u16 = 1;
+    const cell_count = @as(usize, width) * @as(usize, height);
+    const cells = try allocator.alignedAlloc(renderer.Cell, buffer_alignment, cell_count);
+    defer allocator.free(cells);
+
+    var fb = try renderer.FrameBuffer.init(cells, width, height, .default);
+    defer fb.deinit();
+    fb.clear();
+
+    const style_id: renderer.Style.Id = .default;
+    setWideCell(&fb, 1, 0, rect_wide_glyphs[0], style_id);
+    setWideEnd(&fb, 2, 0, style_id);
+
+    clearWideNeighbors(&fb, 1, 0);
+    setCodepointCell(&fb, 1, 0, 'A', style_id);
+
+    const right = fb.get(2, 0);
+    try std.testing.expectEqual(renderer.Cell.Width.narrow, right.width);
+    try std.testing.expectEqual(@as(u21, ' '), right.data.codepoint);
+}
+
+test "clearWideNeighbors clears left neighbor" {
+    const allocator = std.testing.allocator;
+    const width: u16 = 3;
+    const height: u16 = 1;
+    const cell_count = @as(usize, width) * @as(usize, height);
+    const cells = try allocator.alignedAlloc(renderer.Cell, buffer_alignment, cell_count);
+    defer allocator.free(cells);
+
+    var fb = try renderer.FrameBuffer.init(cells, width, height, .default);
+    defer fb.deinit();
+    fb.clear();
+
+    const style_id: renderer.Style.Id = .default;
+    setWideCell(&fb, 0, 0, rect_wide_glyphs[0], style_id);
+    setWideEnd(&fb, 1, 0, style_id);
+
+    clearWideNeighbors(&fb, 1, 0);
+    setCodepointCell(&fb, 1, 0, 'B', style_id);
+
+    const left = fb.get(0, 0);
+    try std.testing.expectEqual(renderer.Cell.Width.narrow, left.width);
+    try std.testing.expectEqual(@as(u21, ' '), left.data.codepoint);
 }
 
 fn renderPanelVariant(buffer: *renderer.FrameBuffer, rect: Rect, variant: u8) void {

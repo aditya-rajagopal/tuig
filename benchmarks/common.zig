@@ -147,7 +147,7 @@ pub fn computeDirtyRatio(front: *const renderer.FrameBuffer, back: *const render
 
 const DirtyRatioTestBuffer = struct {
     fb: renderer.FrameBuffer,
-    cells: []renderer.Cell,
+    cells: []align(std.heap.page_size_min) renderer.Cell,
 
     fn init(allocator: std.mem.Allocator, width: u16, height: u16) !DirtyRatioTestBuffer {
         const cell_count = @as(usize, width) * @as(usize, height);

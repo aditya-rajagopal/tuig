@@ -62,3 +62,9 @@ pub fn main(init: std.process.Init) !void {
         .inspect => |cmd| try cmd.execute(ctx),
     }
 }
+
+test "benchmarks module tests" {
+    _ = @import("common.zig");
+    _ = @import("patterns.zig");
+    _ = @import("ui.zig");
+}
