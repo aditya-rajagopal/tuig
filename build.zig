@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&check_exe.step);
 
     const benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("benchmarks/root.zig"),
+        .root_source_file = b.path("benchmarks/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

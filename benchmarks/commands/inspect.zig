@@ -1,58 +1,35 @@
 const std = @import("std");
 
+const common = @import("../common.zig");
 const renderer = @import("renderer");
 const terminal_mod = @import("terminal");
 
-const dataset_setup = @import("dataset_setup.zig");
-const bench_catalog = @import("bench_catalog.zig");
-const print_helpers = @import("print_helpers.zig");
-const style_mix = @import("style_mix.zig");
-const text_mix = @import("text_mix.zig");
-const types = @import("types.zig");
+const dataset_setup = @import("../dataset_setup.zig");
+const bench_catalog = @import("../bench_catalog.zig");
+const print_helpers = @import("../print_helpers.zig");
+const style_mix = @import("../style_mix.zig");
+const text_mix = @import("../text_mix.zig");
+const types = @import("../types.zig");
 
-const buffer_alignment = std.mem.Alignment.fromByteUnits(std.heap.page_size_min);
-pub const BenchMode = types.BenchMode;
+const Inspect = @This();
 
-pub const InspectConfig = struct {
-    bench_mode: BenchMode,
-    dataset_name: []const u8,
-    text_mix: text_mix.TextMix,
-    style_mix: style_mix.StyleMix,
-    seed: u64,
-};
+pub const help =
+    \\Usage:
+    \\  zig build benchmark -- inspect
+    \\
+    \\Options:
+    \\  -h, --help
+;
 
-const InspectMode = enum { form, view };
+pub fn execute(_: Inspect, _: common.CommandContext) !void {
+    const config = InspectConfig{
+        .bench_mode = .full_redraw,
+        .dataset_name = bench_catalog.dataset_typical_panel_swap.name,
+        .text_mix = .common,
+        .style_mix = .flat,
+        .seed = common.default_seed,
+    };
 
-const Buffer = types.Buffer;
-
-const InspectFrames = struct {
-    style_sheet: renderer.Style.Sheet,
-    frames: [2]Buffer,
-    frame_count: u8,
-
-    fn deinit(self: *InspectFrames, allocator: std.mem.Allocator) void {
-        self.frames[0].deinit(allocator);
-        self.frames[1].deinit(allocator);
-        self.style_sheet.deinit(allocator);
-    }
-};
-
-const InspectState = struct {
-    mode: InspectMode,
-    bench_mode: BenchMode,
-    print_mode: bool,
-    field_index: u8,
-    dataset_index: usize,
-    text_mix_index: usize,
-    style_mix_index: usize,
-    seed: u64,
-    frame_index: u8,
-    show_help: bool,
-    frames: ?InspectFrames,
-    release_frames: bool,
-};
-
-pub fn runInspect(config: InspectConfig) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) std.debug.print("leaked memory\n", .{});
 
@@ -109,6 +86,48 @@ pub fn runInspect(config: InspectConfig) !void {
         }
     }
 }
+
+const buffer_alignment = common.buffer_alignment;
+pub const BenchMode = types.BenchMode;
+
+pub const InspectConfig = struct {
+    bench_mode: BenchMode,
+    dataset_name: []const u8,
+    text_mix: text_mix.TextMix,
+    style_mix: style_mix.StyleMix,
+    seed: u64,
+};
+
+const InspectMode = enum { form, view };
+
+const Buffer = types.Buffer;
+
+const InspectFrames = struct {
+    style_sheet: renderer.Style.Sheet,
+    frames: [2]Buffer,
+    frame_count: u8,
+
+    fn deinit(self: *InspectFrames, allocator: std.mem.Allocator) void {
+        self.frames[0].deinit(allocator);
+        self.frames[1].deinit(allocator);
+        self.style_sheet.deinit(allocator);
+    }
+};
+
+const InspectState = struct {
+    mode: InspectMode,
+    bench_mode: BenchMode,
+    print_mode: bool,
+    field_index: u8,
+    dataset_index: usize,
+    text_mix_index: usize,
+    style_mix_index: usize,
+    seed: u64,
+    frame_index: u8,
+    show_help: bool,
+    frames: ?InspectFrames,
+    release_frames: bool,
+};
 
 fn initInspectState(config: InspectConfig) InspectState {
     const mode = config.bench_mode;
