@@ -125,7 +125,7 @@ pub fn execute(self: Print, ctx: common.CommandContext, mode: types.BenchMode) !
                     .style_mix = style_mix_item,
                 };
                 const timestamp_ns = common.nowTimestampNs();
-                const result = try runPrintBenchmark(ctx.allocator, print_config, &pmc_state);
+                const result = try runPrintBenchmark(ctx.allocator, print_config, &pmc_state, ctx.io);
                 const pmc_stats = result.pmc_stats;
                 const row = csv_mod.Row{
                     .timestamp_ns = timestamp_ns,
@@ -174,26 +174,26 @@ pub fn execute(self: Print, ctx: common.CommandContext, mode: types.BenchMode) !
                     .pmc_instructions_p95 = common.statValue(pmc_stats.instructions, .p95),
                     .pmc_instructions_max = common.statValue(pmc_stats.instructions, .max),
                     .pmc_instructions_mean = common.statValue(pmc_stats.instructions, .mean),
-                    .pmc_cache_misses_min = common.statValue(pmc_stats.events[0], .min),
-                    .pmc_cache_misses_median = common.statValue(pmc_stats.events[0], .median),
-                    .pmc_cache_misses_p95 = common.statValue(pmc_stats.events[0], .p95),
-                    .pmc_cache_misses_max = common.statValue(pmc_stats.events[0], .max),
-                    .pmc_cache_misses_mean = common.statValue(pmc_stats.events[0], .mean),
-                    .pmc_cache_references_min = common.statValue(pmc_stats.events[1], .min),
-                    .pmc_cache_references_median = common.statValue(pmc_stats.events[1], .median),
-                    .pmc_cache_references_p95 = common.statValue(pmc_stats.events[1], .p95),
-                    .pmc_cache_references_max = common.statValue(pmc_stats.events[1], .max),
-                    .pmc_cache_references_mean = common.statValue(pmc_stats.events[1], .mean),
-                    .pmc_branches_min = common.statValue(pmc_stats.events[2], .min),
-                    .pmc_branches_median = common.statValue(pmc_stats.events[2], .median),
-                    .pmc_branches_p95 = common.statValue(pmc_stats.events[2], .p95),
-                    .pmc_branches_max = common.statValue(pmc_stats.events[2], .max),
-                    .pmc_branches_mean = common.statValue(pmc_stats.events[2], .mean),
-                    .pmc_branch_misses_min = common.statValue(pmc_stats.events[3], .min),
-                    .pmc_branch_misses_median = common.statValue(pmc_stats.events[3], .median),
-                    .pmc_branch_misses_p95 = common.statValue(pmc_stats.events[3], .p95),
-                    .pmc_branch_misses_max = common.statValue(pmc_stats.events[3], .max),
-                    .pmc_branch_misses_mean = common.statValue(pmc_stats.events[3], .mean),
+                    .pmc_cache_misses_min = common.statValue(pmc_stats.cache_misses, .min),
+                    .pmc_cache_misses_median = common.statValue(pmc_stats.cache_misses, .median),
+                    .pmc_cache_misses_p95 = common.statValue(pmc_stats.cache_misses, .p95),
+                    .pmc_cache_misses_max = common.statValue(pmc_stats.cache_misses, .max),
+                    .pmc_cache_misses_mean = common.statValue(pmc_stats.cache_misses, .mean),
+                    .pmc_cache_references_min = common.statValue(pmc_stats.cache_references, .min),
+                    .pmc_cache_references_median = common.statValue(pmc_stats.cache_references, .median),
+                    .pmc_cache_references_p95 = common.statValue(pmc_stats.cache_references, .p95),
+                    .pmc_cache_references_max = common.statValue(pmc_stats.cache_references, .max),
+                    .pmc_cache_references_mean = common.statValue(pmc_stats.cache_references, .mean),
+                    .pmc_branches_min = common.statValue(pmc_stats.branches, .min),
+                    .pmc_branches_median = common.statValue(pmc_stats.branches, .median),
+                    .pmc_branches_p95 = common.statValue(pmc_stats.branches, .p95),
+                    .pmc_branches_max = common.statValue(pmc_stats.branches, .max),
+                    .pmc_branches_mean = common.statValue(pmc_stats.branches, .mean),
+                    .pmc_branch_misses_min = common.statValue(pmc_stats.branch_misses, .min),
+                    .pmc_branch_misses_median = common.statValue(pmc_stats.branch_misses, .median),
+                    .pmc_branch_misses_p95 = common.statValue(pmc_stats.branch_misses, .p95),
+                    .pmc_branch_misses_max = common.statValue(pmc_stats.branch_misses, .max),
+                    .pmc_branch_misses_mean = common.statValue(pmc_stats.branch_misses, .mean),
                 };
                 if (row_buffer) |*rows_list| {
                     try rows_list.append(ctx.allocator, row);
@@ -245,6 +245,7 @@ fn runPrintBenchmark(
     allocator: std.mem.Allocator,
     config: PrintBenchConfig,
     pmc_state: *pmc_mod.Pmc,
+    io: std.Io,
 ) !MicrobenchResult {
     const warmup_frames: usize = @intCast(config.warmup_frames);
     const measured_frames: usize = @intCast(config.frames_total - config.warmup_frames);
@@ -271,12 +272,7 @@ fn runPrintBenchmark(
     try print_helpers.buildPrintText(allocator, &text_buffer, config.text_mix, config.seed, target_glyph_cells);
 
     var frame_timer = try std.time.Timer.start();
-    const pmc_active = pmc_state.start(.{
-        "cache-misses",
-        "cache-references",
-        "branches",
-        "branch-misses",
-    });
+    const pmc_active = pmc_state.start();
     var pmc_samples = try PmcSamples.init(allocator, pmc_active, measured_frames);
     defer pmc_samples.deinit(allocator);
     var fault_samples = try ResourceSamples.init(allocator, measured_frames);
@@ -309,28 +305,26 @@ fn runPrintBenchmark(
     while (measured_index < measured_frames) : (measured_index += 1) {
         front.fb.clear();
         if (pmc_samples.active) {
-            _ = try pmc_state.resetStart();
+            try pmc_state.reset();
+            io.sleep(.{ .nanoseconds = 50 * 1000 }, .real) catch {};
         }
-        _ = frame_timer.lap();
+        frame_timer.reset();
         const result = try print_helpers.renderPrintDataset(front.fb.scissor(), config.dataset, print_mode, codepoint_buffer[0..], text_buffer.items, style_id);
-        const delta_ns = frame_timer.lap();
+        const delta_ns = frame_timer.read();
+        if (pmc_samples.active) {
+            const snapshot = try pmc_state.lap();
+            pmc_samples.record(measured_index, snapshot);
+        }
         durations[measured_index] = delta_ns;
         bytes_total += @as(u64, @intCast(result.bytes_consumed));
         dirty_ratio_sum += common.computeDirtyRatio(&front.fb, &back.fb);
         style_runs_sum += @as(f64, @floatFromInt(common.countStyleRuns(&front.fb)));
-        if (pmc_samples.active) {
-            const snapshot = try pmc_state.snapshot();
-            pmc_samples.record(measured_index, snapshot);
-        }
         const usage_curr = std.posix.getrusage(std.posix.rusage.SELF);
         fault_samples.record(measured_index, usage_prev, usage_curr);
         usage_prev = usage_curr;
         std.mem.swap(Buffer, &front, &back);
     }
 
-    if (pmc_samples.active) {
-        _ = try pmc_state.stop();
-    }
     const timing = stats.computeStats(durations, scratch);
     const usage_end = if (measured_frames == 0) usage_start else usage_prev;
     const resources = common.computeResourceStats(usage_start, usage_end);

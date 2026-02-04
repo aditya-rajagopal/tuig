@@ -4,9 +4,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 const log = std.log.scoped(.bench_pmc);
 
-pub const max_events: usize = 4;
-pub const max_counters: usize = 32;
-pub const MaxEvents: usize = max_events;
+const Result = @import("root.zig").Result;
+
+const max_events: usize = 4;
+const max_counters: usize = 32;
 
 const KPC_CLASS_FIXED_MASK: u32 = 1 << 0;
 const KPC_CLASS_CONFIGURABLE_MASK: u32 = 1 << 1;
@@ -16,18 +17,14 @@ const kpep_db = opaque {};
 const kpep_config = opaque {};
 const kpep_event = opaque {};
 
-pub const EventResult = struct {
-    name: ?[]const u8,
-    value: ?u64,
-};
-
-pub const Result = struct {
-    cycles: ?u64,
-    instructions: ?u64,
-    events: [max_events]EventResult,
-};
-
 const max_selection: usize = max_events + 2;
+
+const default_events = [_][]const u8{
+    "cache-misses",
+    "cache-references",
+    "branches",
+    "branch-misses",
+};
 
 const EventSelection = struct {
     event_ptrs: [max_selection]*kpep_event,
@@ -49,9 +46,11 @@ pub const Pmc = struct {
     instructions_counter: ?usize,
     kpc_reg_count: usize,
     kpc_regs: [max_counters]kpc_config_t,
-    event_counters: [max_events]?usize,
-    event_names: [max_events]?[]const u8,
-    counters_start: [max_counters]u64,
+    cache_misses_counter: ?usize,
+    cache_references_counter: ?usize,
+    branches_counter: ?usize,
+    branch_misses_counter: ?usize,
+    started: Result,
     use_force_all: bool,
 
     pub fn init(enable: bool) !Pmc {
@@ -67,9 +66,11 @@ pub const Pmc = struct {
             .instructions_counter = null,
             .kpc_reg_count = 0,
             .kpc_regs = [_]kpc_config_t{0} ** max_counters,
-            .event_counters = .{ null, null, null, null },
-            .event_names = .{ null, null, null, null },
-            .counters_start = [_]u64{0} ** max_counters,
+            .cache_misses_counter = null,
+            .cache_references_counter = null,
+            .branches_counter = null,
+            .branch_misses_counter = null,
+            .started = .empty,
             .use_force_all = false,
         };
 
@@ -106,6 +107,12 @@ pub const Pmc = struct {
     }
 
     pub fn deinit(self: *Pmc) void {
+        if (self.active) {
+            if (self.fns) |fns| {
+                _ = self.stopCounting(fns.kperf) catch {};
+            }
+            self.active = false;
+        }
         if (self.kperfdata) |*lib| {
             lib.close();
             self.kperfdata = null;
@@ -116,7 +123,7 @@ pub const Pmc = struct {
         }
     }
 
-    pub fn start(self: *Pmc, event_names: [max_events][]const u8) bool {
+    pub fn start(self: *Pmc) bool {
         self.active = false;
         if (!self.enabled) return false;
 
@@ -126,10 +133,11 @@ pub const Pmc = struct {
         self.resetEvents();
         self.classes = 0;
         self.use_force_all = false;
+        self.started = .empty;
 
         var configured = false;
         if (fns.kpep) |kpep| {
-            configured = self.configureWithKpep(kpep, fns.kperf, event_names);
+            configured = self.configureWithKpep(kpep, fns.kperf, default_events);
         }
 
         if (!configured) {
@@ -166,117 +174,100 @@ pub const Pmc = struct {
             return false;
         }
 
-        if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &self.counters_start[0]) != 0) {
+        var counters = [_]u64{0} ** max_counters;
+        if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &counters[0]) != 0) {
             log.warn("PMC disabled: failed to read counters", .{});
             return false;
+        }
+
+        if (self.cycles_counter) |counter_idx| {
+            self.started.cycles = counters[counter_idx];
+        }
+        if (self.instructions_counter) |counter_idx| {
+            self.started.instructions = counters[counter_idx];
+        }
+        if (self.cache_misses_counter) |counter_idx| {
+            self.started.cache_misses = counters[counter_idx];
+        }
+        if (self.cache_references_counter) |counter_idx| {
+            self.started.cache_references = counters[counter_idx];
+        }
+        if (self.branches_counter) |counter_idx| {
+            self.started.branches = counters[counter_idx];
+        }
+        if (self.branch_misses_counter) |counter_idx| {
+            self.started.branch_misses = counters[counter_idx];
         }
 
         self.active = true;
         return true;
     }
 
-    pub fn stop(self: *Pmc) error{Failed}!Result {
-        var result = Result{
-            .cycles = null,
-            .instructions = null,
-            .events = .{
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-            },
-        };
+    pub fn reset(self: *Pmc) error{Failed}!void {
+        if (!self.active) return;
+        const current = try self.sample();
+        self.started = current;
+    }
 
-        if (!self.active) return result;
-        const fns = self.fns orelse return result;
+    pub fn read(self: *Pmc) error{Failed}!Result {
+        if (!self.active) return .empty;
+        const current = try self.sample();
+        return current.subtract(self.started);
+    }
+
+    pub fn lap(self: *Pmc) error{Failed}!Result {
+        if (!self.active) return .empty;
+        const current = try self.sample();
+        defer self.started = current;
+        return current.subtract(self.started);
+    }
+
+    fn sample(self: *Pmc) error{Failed}!Result {
+        assert(self.active);
+        const fns = self.fns orelse return .empty;
 
         var counters_end = [_]u64{0} ** max_counters;
         if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &counters_end[0]) != 0) {
             log.warn("PMC disabled: failed to read counters", .{});
             try self.stopCounting(fns.kperf);
-            return result;
+            return .empty;
         }
+
+        var result: Result = .empty;
 
         if (self.cycles_counter) |counter_idx| {
             if (counter_idx < self.counter_count) {
-                result.cycles = counters_end[counter_idx] - self.counters_start[counter_idx];
+                result.cycles = counters_end[counter_idx];
             }
         }
         if (self.instructions_counter) |counter_idx| {
             if (counter_idx < self.counter_count) {
-                result.instructions = counters_end[counter_idx] - self.counters_start[counter_idx];
+                result.instructions = counters_end[counter_idx];
             }
         }
 
-        for (self.event_counters, 0..) |counter_idx_opt, i| {
-            if (counter_idx_opt) |counter_idx| {
-                if (counter_idx < self.counter_count) {
-                    const diff = counters_end[counter_idx] - self.counters_start[counter_idx];
-                    result.events[i] = .{ .name = self.event_names[i], .value = diff };
-                }
-            }
-        }
-
-        try self.stopCounting(fns.kperf);
-        return result;
-    }
-
-    pub fn snapshot(self: *Pmc) error{Failed}!Result {
-        var result = Result{
-            .cycles = null,
-            .instructions = null,
-            .events = .{
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-                .{ .name = null, .value = null },
-            },
-        };
-
-        if (!self.active) return result;
-        const fns = self.fns orelse return result;
-
-        var counters_end = [_]u64{0} ** max_counters;
-        if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &counters_end[0]) != 0) {
-            log.warn("PMC disabled: failed to read counters", .{});
-            try self.stopCounting(fns.kperf);
-            return result;
-        }
-
-        if (self.cycles_counter) |counter_idx| {
+        if (self.cache_misses_counter) |counter_idx| {
             if (counter_idx < self.counter_count) {
-                result.cycles = counters_end[counter_idx] - self.counters_start[counter_idx];
+                result.cache_misses = counters_end[counter_idx];
             }
         }
-        if (self.instructions_counter) |counter_idx| {
+        if (self.cache_references_counter) |counter_idx| {
             if (counter_idx < self.counter_count) {
-                result.instructions = counters_end[counter_idx] - self.counters_start[counter_idx];
+                result.cache_references = counters_end[counter_idx];
+            }
+        }
+        if (self.branches_counter) |counter_idx| {
+            if (counter_idx < self.counter_count) {
+                result.branches = counters_end[counter_idx];
+            }
+        }
+        if (self.branch_misses_counter) |counter_idx| {
+            if (counter_idx < self.counter_count) {
+                result.branch_misses = counters_end[counter_idx];
             }
         }
 
-        for (self.event_counters, 0..) |counter_idx_opt, i| {
-            if (counter_idx_opt) |counter_idx| {
-                if (counter_idx < self.counter_count) {
-                    const diff = counters_end[counter_idx] - self.counters_start[counter_idx];
-                    result.events[i] = .{ .name = self.event_names[i], .value = diff };
-                }
-            }
-        }
-
-        self.counters_start = counters_end;
         return result;
-    }
-
-    pub fn resetStart(self: *Pmc) error{Failed}!bool {
-        if (!self.active) return false;
-        const fns = self.fns orelse return false;
-
-        if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &self.counters_start[0]) != 0) {
-            log.warn("PMC disabled: failed to read counters", .{});
-            try self.stopCounting(fns.kperf);
-            return false;
-        }
-        return true;
     }
 
     fn resetEvents(self: *Pmc) void {
@@ -284,10 +275,10 @@ pub const Pmc = struct {
         self.instructions_counter = null;
         self.kpc_reg_count = 0;
         self.kpc_regs = [_]kpc_config_t{0} ** max_counters;
-        for (0..max_events) |i| {
-            self.event_counters[i] = null;
-            self.event_names[i] = null;
-        }
+        self.cache_misses_counter = null;
+        self.cache_references_counter = null;
+        self.branches_counter = null;
+        self.branch_misses_counter = null;
     }
 
     fn configureWithKpep(
@@ -349,8 +340,14 @@ pub const Pmc = struct {
         for (selection.event_index_for_slot, 0..) |event_index_opt, slot| {
             if (event_index_opt) |event_index| {
                 if (event_index < counter_map.len) {
-                    self.event_counters[slot] = counter_map[event_index];
-                    self.event_names[slot] = requested[slot];
+                    const counter_idx = counter_map[event_index];
+                    switch (slot) {
+                        0 => self.cache_misses_counter = counter_idx,
+                        1 => self.cache_references_counter = counter_idx,
+                        2 => self.branches_counter = counter_idx,
+                        3 => self.branch_misses_counter = counter_idx,
+                        else => {},
+                    }
                 }
             }
         }

@@ -214,26 +214,26 @@ pub fn execute(self: Render, ctx: common.CommandContext, mode: types.BenchMode) 
                     .pmc_instructions_p95 = common.statValue(pmc_stats.instructions, .p95),
                     .pmc_instructions_max = common.statValue(pmc_stats.instructions, .max),
                     .pmc_instructions_mean = common.statValue(pmc_stats.instructions, .mean),
-                    .pmc_cache_misses_min = common.statValue(pmc_stats.events[0], .min),
-                    .pmc_cache_misses_median = common.statValue(pmc_stats.events[0], .median),
-                    .pmc_cache_misses_p95 = common.statValue(pmc_stats.events[0], .p95),
-                    .pmc_cache_misses_max = common.statValue(pmc_stats.events[0], .max),
-                    .pmc_cache_misses_mean = common.statValue(pmc_stats.events[0], .mean),
-                    .pmc_cache_references_min = common.statValue(pmc_stats.events[1], .min),
-                    .pmc_cache_references_median = common.statValue(pmc_stats.events[1], .median),
-                    .pmc_cache_references_p95 = common.statValue(pmc_stats.events[1], .p95),
-                    .pmc_cache_references_max = common.statValue(pmc_stats.events[1], .max),
-                    .pmc_cache_references_mean = common.statValue(pmc_stats.events[1], .mean),
-                    .pmc_branches_min = common.statValue(pmc_stats.events[2], .min),
-                    .pmc_branches_median = common.statValue(pmc_stats.events[2], .median),
-                    .pmc_branches_p95 = common.statValue(pmc_stats.events[2], .p95),
-                    .pmc_branches_max = common.statValue(pmc_stats.events[2], .max),
-                    .pmc_branches_mean = common.statValue(pmc_stats.events[2], .mean),
-                    .pmc_branch_misses_min = common.statValue(pmc_stats.events[3], .min),
-                    .pmc_branch_misses_median = common.statValue(pmc_stats.events[3], .median),
-                    .pmc_branch_misses_p95 = common.statValue(pmc_stats.events[3], .p95),
-                    .pmc_branch_misses_max = common.statValue(pmc_stats.events[3], .max),
-                    .pmc_branch_misses_mean = common.statValue(pmc_stats.events[3], .mean),
+                    .pmc_cache_misses_min = common.statValue(pmc_stats.cache_misses, .min),
+                    .pmc_cache_misses_median = common.statValue(pmc_stats.cache_misses, .median),
+                    .pmc_cache_misses_p95 = common.statValue(pmc_stats.cache_misses, .p95),
+                    .pmc_cache_misses_max = common.statValue(pmc_stats.cache_misses, .max),
+                    .pmc_cache_misses_mean = common.statValue(pmc_stats.cache_misses, .mean),
+                    .pmc_cache_references_min = common.statValue(pmc_stats.cache_references, .min),
+                    .pmc_cache_references_median = common.statValue(pmc_stats.cache_references, .median),
+                    .pmc_cache_references_p95 = common.statValue(pmc_stats.cache_references, .p95),
+                    .pmc_cache_references_max = common.statValue(pmc_stats.cache_references, .max),
+                    .pmc_cache_references_mean = common.statValue(pmc_stats.cache_references, .mean),
+                    .pmc_branches_min = common.statValue(pmc_stats.branches, .min),
+                    .pmc_branches_median = common.statValue(pmc_stats.branches, .median),
+                    .pmc_branches_p95 = common.statValue(pmc_stats.branches, .p95),
+                    .pmc_branches_max = common.statValue(pmc_stats.branches, .max),
+                    .pmc_branches_mean = common.statValue(pmc_stats.branches, .mean),
+                    .pmc_branch_misses_min = common.statValue(pmc_stats.branch_misses, .min),
+                    .pmc_branch_misses_median = common.statValue(pmc_stats.branch_misses, .median),
+                    .pmc_branch_misses_p95 = common.statValue(pmc_stats.branch_misses, .p95),
+                    .pmc_branch_misses_max = common.statValue(pmc_stats.branch_misses, .max),
+                    .pmc_branch_misses_mean = common.statValue(pmc_stats.branch_misses, .mean),
                 };
                 if (row_buffer) |*rows_list| {
                     try rows_list.append(ctx.allocator, row);
@@ -327,12 +327,7 @@ fn runEmitBenchmark(
     }
 
     var frame_timer = try std.time.Timer.start();
-    const pmc_active = pmc_state.start(.{
-        "cache-misses",
-        "cache-references",
-        "branches",
-        "branch-misses",
-    });
+    const pmc_active = pmc_state.start();
     var pmc_samples = try PmcSamples.init(allocator, pmc_active, measured_frames);
     var fault_samples = try ResourceSamples.init(allocator, measured_frames);
 
@@ -341,12 +336,10 @@ fn runEmitBenchmark(
     while (warmup_index < warmup_frames) : (warmup_index += 1) {
         try assets.pattern_state.renderFrame(&front.fb, frame_index);
         output_count.* = 0;
-        _ = frame_timer.lap();
         switch (config.mode) {
             .diff_redraw => front.fb.diffRedraw(&back.fb, &assets.style_sheet, output_writer) catch {},
             else => front.fb.fullRedraw(&assets.style_sheet, output_writer) catch {},
         }
-        _ = frame_timer.lap();
         std.mem.swap(Buffer, &front, &back);
         frame_index += 1;
     }
@@ -364,10 +357,10 @@ fn runEmitBenchmark(
         style_runs_sum += @as(f64, @floatFromInt(common.countStyleRuns(&front.fb)));
         output_count.* = 0;
         if (pmc_samples.active) {
-            _ = try pmc_state.resetStart();
+            try pmc_state.reset();
             io.sleep(.{ .nanoseconds = 50 * 1000 }, .real) catch {};
         }
-        _ = frame_timer.lap();
+        frame_timer.reset();
         try output_writer.writeAll("\x1bP=1s\x1b\\");
         switch (config.mode) {
             .diff_redraw => front.fb.diffRedraw(&back.fb, &assets.style_sheet, output_writer) catch {},
@@ -375,9 +368,9 @@ fn runEmitBenchmark(
         }
         try output_writer.writeAll("\x1bP=2s\x1b\\");
         output_writer.flush() catch {};
-        const delta_ns = frame_timer.lap();
+        const delta_ns = frame_timer.read();
         if (pmc_samples.active) {
-            const snapshot = try pmc_state.snapshot();
+            const snapshot = try pmc_state.read();
             pmc_samples.record(measured_index, snapshot);
         }
         const usage_curr = std.posix.getrusage(std.posix.rusage.SELF);
@@ -389,9 +382,6 @@ fn runEmitBenchmark(
         frame_index += 1;
     }
 
-    if (pmc_samples.active) {
-        _ = try pmc_state.stop();
-    }
     const timing = stats.computeStats(durations, scratch);
     const usage_end = if (measured_frames == 0) usage_start else usage_prev;
     const resources = common.computeResourceStats(usage_start, usage_end);

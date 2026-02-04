@@ -31,7 +31,10 @@ pub const MicrobenchResult = struct {
 pub const PmcStats = struct {
     cycles: ?stats.Stats,
     instructions: ?stats.Stats,
-    events: [pmc.MaxEvents]?stats.Stats,
+    cache_misses: ?stats.Stats,
+    cache_references: ?stats.Stats,
+    branches: ?stats.Stats,
+    branch_misses: ?stats.Stats,
 };
 
 pub const FaultStats = struct {
@@ -44,10 +47,16 @@ pub const PmcSamples = struct {
     allocated: bool,
     cycles: []u64,
     instructions: []u64,
-    events: [pmc.MaxEvents][]u64,
+    cache_misses: []u64,
+    cache_references: []u64,
+    branches: []u64,
+    branch_misses: []u64,
     has_cycles: bool,
     has_instructions: bool,
-    has_events: [pmc.MaxEvents]bool,
+    has_cache_misses: bool,
+    has_cache_references: bool,
+    has_branches: bool,
+    has_branch_misses: bool,
 
     pub fn init(allocator: std.mem.Allocator, active: bool, sample_count: usize) !PmcSamples {
         var samples = PmcSamples{
@@ -55,23 +64,28 @@ pub const PmcSamples = struct {
             .allocated = false,
             .cycles = &.{},
             .instructions = &.{},
-            .events = undefined,
+            .cache_misses = &.{},
+            .cache_references = &.{},
+            .branches = &.{},
+            .branch_misses = &.{},
             .has_cycles = false,
             .has_instructions = false,
-            .has_events = .{ false, false, false, false },
+            .has_cache_misses = false,
+            .has_cache_references = false,
+            .has_branches = false,
+            .has_branch_misses = false,
         };
 
         if (!active or sample_count == 0) {
-            samples.events = .{ &.{}, &.{}, &.{}, &.{} };
             return samples;
         }
 
         samples.cycles = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
         samples.instructions = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
-        var i: usize = 0;
-        while (i < pmc.MaxEvents) : (i += 1) {
-            samples.events[i] = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
-        }
+        samples.cache_misses = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
+        samples.cache_references = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
+        samples.branches = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
+        samples.branch_misses = try allocator.alignedAlloc(u64, buffer_alignment, sample_count);
         samples.allocated = true;
         return samples;
     }
@@ -80,9 +94,10 @@ pub const PmcSamples = struct {
         if (!self.allocated) return;
         allocator.free(self.cycles);
         allocator.free(self.instructions);
-        for (self.events) |event_samples| {
-            allocator.free(event_samples);
-        }
+        allocator.free(self.cache_misses);
+        allocator.free(self.cache_references);
+        allocator.free(self.branches);
+        allocator.free(self.branch_misses);
     }
 
     pub fn record(self: *PmcSamples, index: usize, snapshot: pmc.Result) void {
@@ -101,18 +116,44 @@ pub const PmcSamples = struct {
             self.instructions[index] = 0;
         }
 
-        for (snapshot.events, 0..) |event, idx| {
-            if (event.value) |value| {
-                self.events[idx][index] = value;
-                self.has_events[idx] = true;
-            } else {
-                self.events[idx][index] = 0;
-            }
+        if (snapshot.cache_misses) |value| {
+            self.cache_misses[index] = value;
+            self.has_cache_misses = true;
+        } else {
+            self.cache_misses[index] = 0;
+        }
+
+        if (snapshot.cache_references) |value| {
+            self.cache_references[index] = value;
+            self.has_cache_references = true;
+        } else {
+            self.cache_references[index] = 0;
+        }
+
+        if (snapshot.branches) |value| {
+            self.branches[index] = value;
+            self.has_branches = true;
+        } else {
+            self.branches[index] = 0;
+        }
+
+        if (snapshot.branch_misses) |value| {
+            self.branch_misses[index] = value;
+            self.has_branch_misses = true;
+        } else {
+            self.branch_misses[index] = 0;
         }
     }
 
     pub fn computeStats(self: *PmcSamples, scratch: []u64) PmcStats {
-        var result = PmcStats{ .cycles = null, .instructions = null, .events = .{ null, null, null, null } };
+        var result = PmcStats{
+            .cycles = null,
+            .instructions = null,
+            .cache_misses = null,
+            .cache_references = null,
+            .branches = null,
+            .branch_misses = null,
+        };
         if (!self.active or !self.allocated or self.cycles.len == 0) return result;
 
         if (self.has_cycles) {
@@ -121,11 +162,17 @@ pub const PmcSamples = struct {
         if (self.has_instructions) {
             result.instructions = stats.computeStats(self.instructions, scratch);
         }
-        var i: usize = 0;
-        while (i < pmc.MaxEvents) : (i += 1) {
-            if (self.has_events[i]) {
-                result.events[i] = stats.computeStats(self.events[i], scratch);
-            }
+        if (self.has_cache_misses) {
+            result.cache_misses = stats.computeStats(self.cache_misses, scratch);
+        }
+        if (self.has_cache_references) {
+            result.cache_references = stats.computeStats(self.cache_references, scratch);
+        }
+        if (self.has_branches) {
+            result.branches = stats.computeStats(self.branches, scratch);
+        }
+        if (self.has_branch_misses) {
+            result.branch_misses = stats.computeStats(self.branch_misses, scratch);
         }
         return result;
     }
