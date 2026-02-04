@@ -5,7 +5,6 @@ const csv_mod = @import("../csv.zig");
 const reporting = @import("../reporting.zig");
 const bench_catalog = @import("../bench_catalog.zig");
 const stats = @import("../stats.zig");
-const timer = @import("../timer.zig");
 const types = @import("../types.zig");
 const pmc_mod = @import("../pmc/root.zig");
 const renderer = @import("renderer");
@@ -271,7 +270,7 @@ fn runPrintBenchmark(
     const target_glyph_cells = @as(u32, config.dataset.width) * @as(u32, config.dataset.height) * 2;
     try print_helpers.buildPrintText(allocator, &text_buffer, config.text_mix, config.seed, target_glyph_cells);
 
-    var frame_timer = try timer.FrameTimer.start();
+    var frame_timer = try std.time.Timer.start();
     const pmc_active = pmc_state.start(.{
         "cache-misses",
         "cache-references",

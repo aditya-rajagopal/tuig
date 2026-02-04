@@ -6,7 +6,6 @@ const reporting = @import("../reporting.zig");
 const bench_catalog = @import("../bench_catalog.zig");
 const dataset_setup = @import("../dataset_setup.zig");
 const stats = @import("../stats.zig");
-const timer = @import("../timer.zig");
 const types = @import("../types.zig");
 const pmc_mod = @import("../pmc/root.zig");
 const terminal_mod = @import("terminal");
@@ -327,7 +326,7 @@ fn runEmitBenchmark(
         output_count = &count;
     }
 
-    var frame_timer = try timer.FrameTimer.start();
+    var frame_timer = try std.time.Timer.start();
     const pmc_active = pmc_state.start(.{
         "cache-misses",
         "cache-references",
