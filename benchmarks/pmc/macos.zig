@@ -174,30 +174,10 @@ pub const Pmc = struct {
             return false;
         }
 
-        var counters = [_]u64{0} ** max_counters;
-        if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &counters[0]) != 0) {
+        self.started = self.sample() catch {
             log.warn("PMC disabled: failed to read counters", .{});
             return false;
-        }
-
-        if (self.cycles_counter) |counter_idx| {
-            self.started.cycles = counters[counter_idx];
-        }
-        if (self.instructions_counter) |counter_idx| {
-            self.started.instructions = counters[counter_idx];
-        }
-        if (self.cache_misses_counter) |counter_idx| {
-            self.started.cache_misses = counters[counter_idx];
-        }
-        if (self.cache_references_counter) |counter_idx| {
-            self.started.cache_references = counters[counter_idx];
-        }
-        if (self.branches_counter) |counter_idx| {
-            self.started.branches = counters[counter_idx];
-        }
-        if (self.branch_misses_counter) |counter_idx| {
-            self.started.branch_misses = counters[counter_idx];
-        }
+        };
 
         self.active = true;
         return true;
