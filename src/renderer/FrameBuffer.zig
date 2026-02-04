@@ -74,13 +74,45 @@ pub inline fn get(self: FrameBuffer, x: u16, y: u16) Cell {
 pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *std.Io.Writer) error{WriteFailed}!void {
     switch (cell.tag) {
         .codepoint => {
-            var bytes: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(cell.data.codepoint, &bytes) catch blk: {
+            const c = cell.data.codepoint;
+            if (c < 0x80) {
+                return writer.writeByte(@as(u8, @truncate(c)));
+            }
+            if (c < 0x800) {
+                _ = try writer.writeAll(&[_]u8{
+                    @as(u8, @intCast(0b11000000 | (c >> 6))),
+                    @as(u8, @intCast(0b10000000 | (c & 0b111111))),
+                });
+                return;
+            }
+            if (c < 0x10000) {
+                switch (c) {
+                    0xD800...0xDFFF => {
+                        @branchHint(.cold);
+                        return writer.writeAll(&[_]u8{ 0xEF, 0xBF, 0xBD });
+                    },
+                    else => {
+                        _ = try writer.writeAll(&[_]u8{
+                            @as(u8, @intCast(0b11100000 | (c >> 12))),
+                            @as(u8, @intCast(0b10000000 | ((c >> 6) & 0b111111))),
+                            @as(u8, @intCast(0b10000000 | (c & 0b111111))),
+                        });
+                        return;
+                    },
+                }
+            }
+            if (c < 0x110000) {
+                _ = try writer.writeAll(&[_]u8{
+                    @as(u8, @intCast(0b11110000 | (c >> 18))),
+                    @as(u8, @intCast(0b10000000 | ((c >> 12) & 0b111111))),
+                    @as(u8, @intCast(0b10000000 | ((c >> 6) & 0b111111))),
+                    @as(u8, @intCast(0b10000000 | (c & 0b111111))),
+                });
+                return;
+            } else {
                 @branchHint(.cold);
-                bytes = [_]u8{ 0xEF, 0xBF, 0xBD, 0x00 }; // U+FFFD
-                break :blk 3;
-            };
-            try writer.writeAll(bytes[0..len]);
+                return writer.writeAll(&[_]u8{ 0xEF, 0xBF, 0xBD });
+            }
         },
         .grapheme => {
             const id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(cell)));
@@ -117,7 +149,6 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
     if (!new_cell.eql(old_cell)) {
         return true;
     } else if (old_cell.tag == .grapheme) {
-        @branchHint(.unlikely);
         const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(old_cell)));
         const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(new_cell)));
         const old_grapheme = back_bufer.grapheme_buffer.get(old_id) orelse return true;
@@ -126,37 +157,6 @@ pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, r
     } else {
         return false;
     }
-}
-
-/// Compares an entire row between two buffers using byte-level comparison.
-/// This is faster than cell-by-cell comparison and allows skipping unchanged rows entirely.
-/// @NOTE When cells are byte-equal but contain graphemes, the actual grapheme buffer content
-/// may differ. We must fall back to cell-by-cell comparison for rows containing graphemes.
-fn rowsEqual(self: *const FrameBuffer, other: *const FrameBuffer, row: usize) bool {
-    const width: usize = self.width;
-    const start = row * width;
-    const end = start + width;
-
-    // Fast byte comparison
-    if (!std.mem.eql(
-        u8,
-        std.mem.sliceAsBytes(self.cells[start..end]),
-        std.mem.sliceAsBytes(other.cells[start..end]),
-    )) {
-        return false;
-    }
-
-    // Rows are byte-equal, but if any cell contains a grapheme, we must do
-    // cell-by-cell comparison because grapheme buffers may have different content
-    // for the same grapheme ID.
-    // @NOTE it seems it is faster to look at all cells and count graphemes than to have an if statement in the loop
-    var num_graphemes: usize = 0;
-    for (self.cells[start..end]) |cell| {
-        num_graphemes += @intFromEnum(cell.tag);
-    }
-    if (num_graphemes > 0) return false;
-
-    return true;
 }
 
 pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
@@ -171,15 +171,22 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
     var current_style: Style.Id = .default;
 
     for (0..height) |row| {
-        // Fast path: skip entirely unchanged rows
-        if (self.rowsEqual(back_buffer, row)) continue;
-
         const row_start: usize = row * width;
         const row_end: usize = row_start + width;
         var col: usize = 0;
+        // Fast path: skip entirely unchanged rows
+        for (self.cells[row_start..row_end], back_buffer.cells[row_start..row_end], 0..) |self_cell, other_cell, i| {
+            if (@as(u64, @bitCast(self_cell)) != @as(u64, @bitCast(other_cell)) or self_cell.tag == .grapheme) {
+                col = i;
+                break;
+            }
+        } else {
+            continue;
+        }
+
         while (col < width) {
-            var start: usize = row_start + col;
-            while (start < row_end and !self.isDiff(back_buffer, row, start - row_start)) {
+            var start: usize = col;
+            while (start < width and !self.isDiff(back_buffer, row, start)) {
                 if (back_buffer.cells[start].width == .wide_start) {
                     assert(start < row_end - 1);
                     start += 2;
@@ -187,9 +194,11 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
                     start += 1;
                 }
             }
+            if (start >= width) break;
+
             var end: usize = start;
 
-            while (end < row_end and self.isDiff(back_buffer, row, end - row_start)) {
+            while (end < width and self.isDiff(back_buffer, row, end)) {
                 if (back_buffer.cells[end].width == .wide_start or self.cells[end].width == .wide_start) {
                     assert(end < row_end - 1);
                     end += 2;
@@ -197,19 +206,16 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
                     end += 1;
                 }
             }
-            if (start >= row_end) break;
-            try writer.print("\x1b[{d};{d}H", .{ row + 1, start - row_start + 1 });
-            if (current_style != self.cells[start].style) {
-                try Style.write(self.cells[start].style, current_style, style_sheet, writer);
-                current_style = self.cells[start].style;
-            }
-            for (self.cells[start..end]) |cell| {
-                switch (cell.width) {
-                    .wide_end => continue,
-                    else => try self.renderCell(cell, writer),
+            try writer.print("\x1b[{d};{d}H", .{ row + 1, start + 1 });
+            for (self.cells[row_start..][start..end]) |cell| {
+                if (cell.width == .wide_end) continue;
+                if (current_style != cell.style) {
+                    try Style.write(cell.style, current_style, style_sheet, writer);
+                    current_style = cell.style;
                 }
+                try self.renderCell(cell, writer);
             }
-            col = end - row_start;
+            col = end;
         }
     }
 }

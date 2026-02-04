@@ -97,9 +97,15 @@ pub const GraphemeBuffer = struct {
     }
 
     pub fn get(self: *const Self, id: GraphemeIndex) ?[]const u8 {
-        if (id + 4 > self.end_index) return null;
+        if (id + 4 > self.end_index) {
+            @branchHint(.unlikely);
+            return null;
+        }
         const length: u32 = @bitCast(self.buffer.reserved_pages[id..][0..4].*);
-        if (id + length + 4 > self.end_index) return null;
+        if (id + length + 4 > self.end_index) {
+            @branchHint(.unlikely);
+            return null;
+        }
         return self.buffer.reserved_pages[id + 4 ..][0..length];
     }
 

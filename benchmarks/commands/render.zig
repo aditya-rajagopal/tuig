@@ -80,7 +80,7 @@ pub fn execute(self: Render, ctx: common.CommandContext, mode: types.BenchMode) 
     var terminal_active = false;
     var cols = self.cols;
     var rows = self.rows;
-    const terminal_write_buffer: []align(std.heap.page_size_min) u8 = ctx.allocator.alignedAlloc(u8, common.buffer_alignment, 4 * 4096) catch unreachable;
+    const terminal_write_buffer: []align(std.heap.page_size_min) u8 = ctx.allocator.alignedAlloc(u8, common.buffer_alignment, 8 * 4096) catch unreachable;
     if (e2e_active) {
         const term_config: terminal_mod.TerminalConfig = .{ .raw = true, .alt_screen = true, .cursor_visable = false };
         try terminal.init(term_config, terminal_write_buffer);
@@ -316,7 +316,7 @@ fn runEmitBenchmark(
     var front = try Buffer.init(allocator, config.cols, config.rows);
     var back = try Buffer.init(allocator, config.cols, config.rows);
 
-    var writer_buf: [4096]u8 align(std.atomic.cache_line) = undefined;
+    var writer_buf: [16384]u8 align(std.atomic.cache_line) = undefined;
     var sink = std.Io.Writer.Discarding.init(&writer_buf);
     var output_writer: *std.Io.Writer = &sink.writer;
     var output_count: *u64 = &sink.count;
@@ -366,7 +366,7 @@ fn runEmitBenchmark(
             .diff_redraw => front.fb.diffRedraw(&back.fb, &assets.style_sheet, output_writer) catch {},
             else => front.fb.fullRedraw(&assets.style_sheet, output_writer) catch {},
         }
-        try output_writer.writeAll("\x1bP=2s\x1b\\");
+        try output_writer.writeAll("\x1b[m\x1bP=2s\x1b\\");
         output_writer.flush() catch {};
         const delta_ns = frame_timer.read();
         if (pmc_samples.active) {

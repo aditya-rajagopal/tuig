@@ -13,6 +13,8 @@ const types = @import("../types.zig");
 
 const Inspect = @This();
 
+mode: BenchMode = .full_redraw,
+
 pub const help =
     \\Usage:
     \\  zig build benchmark -- inspect
@@ -21,9 +23,9 @@ pub const help =
     \\  -h, --help
 ;
 
-pub fn execute(_: Inspect, _: common.CommandContext) !void {
+pub fn execute(self: Inspect, _: common.CommandContext) !void {
     const config = InspectConfig{
-        .bench_mode = .full_redraw,
+        .bench_mode = self.mode,
         .dataset_name = bench_catalog.dataset_typical_panel_swap.name,
         .text_mix = .common,
         .style_mix = .flat,

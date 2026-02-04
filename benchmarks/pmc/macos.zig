@@ -174,12 +174,13 @@ pub const Pmc = struct {
             return false;
         }
 
+        self.active = true;
+
         self.started = self.sample() catch {
             log.warn("PMC disabled: failed to read counters", .{});
             return false;
         };
 
-        self.active = true;
         return true;
     }
 
@@ -210,7 +211,7 @@ pub const Pmc = struct {
         if (fns.kperf.kpc_get_thread_counters(0, self.counter_count, &counters_end[0]) != 0) {
             log.warn("PMC disabled: failed to read counters", .{});
             try self.stopCounting(fns.kperf);
-            return .empty;
+            return error.Failed;
         }
 
         var result: Result = .empty;
