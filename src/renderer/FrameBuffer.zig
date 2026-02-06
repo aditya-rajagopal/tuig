@@ -6,6 +6,8 @@ const assert = stdx.inlineAssert;
 
 const t = @import("types.zig");
 
+const seq = @import("terminal").sequences;
+
 const Cell = @import("root.zig").Cell;
 const Style = @import("root.zig").Style;
 const CellSize = @import("root.zig").CellSize;
@@ -129,7 +131,7 @@ pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, wri
     assert(self.width * self.height == self.cells.len);
     var current_style: Style.Id = .default;
     for (0..self.height) |row| {
-        try writer.print("\x1b[{d};{d}H", .{ row + 1, 1 });
+        try seq.cursor.to(writer, @intCast(row + 1), 1);
         for (self.cells[row * self.width ..][0..self.width]) |cell| {
             if (cell.width == .wide_end) continue;
             if (cell.style != current_style) {
@@ -206,7 +208,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
                     end += 1;
                 }
             }
-            try writer.print("\x1b[{d};{d}H", .{ row + 1, start + 1 });
+            try seq.cursor.to(writer, @intCast(row + 1), @intCast(start + 1));
             for (self.cells[row_start..][start..end]) |cell| {
                 if (cell.width == .wide_end) continue;
                 if (current_style != cell.style) {

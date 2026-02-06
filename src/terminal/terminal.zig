@@ -3,15 +3,9 @@ const assert = std.debug.assert;
 
 const e = @import("event.zig");
 const Event = e.Event;
+const seq = @import("sequences.zig");
 
-pub const KittyConfig = packed struct(u8) {
-    disambiguate_escape_codes: bool = false,
-    report_event_types: bool = false,
-    report_alternate_keys: bool = false,
-    report_all_keys_as_escape_codes: bool = false,
-    report_associated_text: bool = false,
-    _: u3 = 0,
-};
+pub const KittyConfig = seq.kitty.Flags;
 
 pub const MouseOptions = struct {
     /// Enable SGR(Select Graphic Rendition) mouse tracking mode.
@@ -27,38 +21,7 @@ pub const MouseOptions = struct {
         .level = .all_motion,
     };
 
-    pub const Level = enum {
-        /// Terminal reports mouse coordinates when
-        /// - a mouse button is pressed or released
-        /// - the mouse scrolls up or down
-        presses_only,
-        /// Terminal reports mouse coordinates when
-        /// - a mouse button is pressed or released
-        /// - the mouse scrolls up or down
-        /// - when the mouse moves to a new cell position **AND** a mouse button is held down
-        cell_motion,
-        /// Terminal reports mouse coordinates
-        /// - when a mouse button is pressed or released
-        /// - when the mouse moves to a new cell position
-        /// - when the mouse scrolls up or down
-        all_motion,
-
-        pub fn enableString(self: Level) []const u8 {
-            return switch (self) {
-                .presses_only => "\x1b[?1000h",
-                .cell_motion => "\x1b[?1002h",
-                .all_motion => "\x1b[?1003h",
-            };
-        }
-
-        pub fn disableString(self: Level) []const u8 {
-            return switch (self) {
-                .presses_only => "\x1b[?1000l",
-                .cell_motion => "\x1b[?1002l",
-                .all_motion => "\x1b[?1003l",
-            };
-        }
-    };
+    pub const Level = seq.mouse.TrackingLevel;
 };
 
 pub const TerminalConfig = struct {
@@ -156,32 +119,13 @@ pub const Terminal = struct {
         self.writer.interface.flush() catch return error.WriteFailed;
     }
 
-    pub fn clearScreen(self: *Terminal) error{WriteFailed}!void {
-        self.write("\x1b[2J\x1b[H") catch return error.WriteFailed;
-        self.flush() catch return error.WriteFailed;
-    }
-
-    pub fn setCursorPosition(self: *Terminal, x: u16, y: u16) error{WriteFailed}!void {
-        try self.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
-        // try self.flush();
-    }
-
-    pub fn saveCurrentCursorPosition(self: *Terminal) error{WriteFailed}!void {
-        try self.write("\x1b[s");
-        try self.flush();
-    }
-
-    pub fn restoreCursorPosition(self: *Terminal) error{WriteFailed}!void {
-        try self.write("\x1b[u");
-        try self.flush();
-    }
-
     pub fn setCursorVisible(self: *Terminal, visible: bool) error{WriteFailed}!void {
+        const writer = self.getWriter();
         if (visible) {
-            try self.write("\x1b[?25h");
+            seq.cursor.visible(writer) catch return error.WriteFailed;
             self.config.cursor_visible = true;
         } else {
-            try self.write("\x1b[?25l");
+            seq.cursor.hidden(writer) catch return error.WriteFailed;
             self.config.cursor_visible = false;
         }
         try self.flush();
@@ -255,25 +199,26 @@ pub const Terminal = struct {
 
     pub fn setAlternateScreen(self: *Terminal) error{WriteFailed}!void {
         if (self.config.alt_screen) return;
-        try self.write("\x1b[?1049h");
-        try self.write("\x1b[2J");
-        try self.write("\x1b[H");
+        const writer = self.getWriter();
+        seq.csiPrivateSet(writer, .alternate_screen) catch return error.WriteFailed;
+        writer.writeAll(seq.screen.clear_and_home) catch return error.WriteFailed;
         try self.flush();
         self.config.alt_screen = true;
     }
 
     pub fn unsetAlternateScreen(self: *Terminal) void {
         if (!self.config.alt_screen) return;
-        self.write("\x1b[?1049l") catch {};
+        seq.csiPrivateReset(self.getWriter(), .alternate_screen) catch {};
         self.flush() catch {};
         self.config.alt_screen = false;
     }
 
     pub fn enableMouse(self: *Terminal, options: MouseOptions) error{WriteFailed}!void {
-        try self.write(options.level.enableString());
-        errdefer self.write(options.level.disableString()) catch {};
+        const writer = self.getWriter();
+        options.level.enable(writer) catch return error.WriteFailed;
+        errdefer options.level.disable(writer) catch {};
         if (options.sgr) {
-            try self.write("\x1b[?1006h");
+            seq.mouse.enableSgr(writer) catch return error.WriteFailed;
         }
         try self.flush();
         self.config.mouse = options;
@@ -281,9 +226,10 @@ pub const Terminal = struct {
 
     pub fn disableMouse(self: *Terminal) void {
         if (self.config.mouse) |options| {
-            self.write(options.level.disableString()) catch {};
+            const writer = self.getWriter();
+            options.level.disable(writer) catch {};
             if (options.sgr) {
-                self.write("\x1b[?1006l") catch {};
+                seq.mouse.disableSgr(writer) catch {};
             }
             self.flush() catch {};
             self.config.mouse = null;
@@ -292,31 +238,17 @@ pub const Terminal = struct {
 
     pub fn pushKittyKeyboardFlags(self: *Terminal, config: KittyConfig) error{WriteFailed}!void {
         if (self.config.kitty_keyboard_flags) |_| return;
-        try self.print("\x1b[>{d}u", .{@as(u8, @bitCast(config))});
+        seq.kitty.pushKeyboardFlags(self.getWriter(), config) catch return error.WriteFailed;
         try self.flush();
         self.config.kitty_keyboard_flags = config;
     }
 
     pub fn popKittyKeyboardFlags(self: *Terminal) error{WriteFailed}!void {
         if (self.config.kitty_keyboard_flags) |_| {
-            try self.write("\x1b[<u");
+            seq.kitty.popKeyboardFlags(self.getWriter()) catch return error.WriteFailed;
             try self.flush();
             self.config.kitty_keyboard_flags = null;
         }
-    }
-
-    pub fn moveCursorLines(self: *Terminal, dx: i16, dy: i16) error{WriteFailed}!void {
-        if (dx == 0 and dy == 0) return;
-        if (dx > 0) try self.print("\x1b[{d}C", .{dx}) else if (dx < 0) try self.print("\x1b[{d}D", .{-dx});
-        if (dy > 0) try self.print("\x1b[{d}B", .{dy}) else if (dy < 0) try self.print("\x1b[{d}A", .{-dy});
-    }
-
-    pub fn bsu(self: *Terminal) error{WriteFailed}!void {
-        try self.write("\x1bP=1s\x1b\\");
-    }
-
-    pub fn esu(self: *Terminal) error{WriteFailed}!void {
-        try self.write("\x1bP=2s\x1b\\");
     }
 
     // @TODO This should drain the event queue in multithreaded mode when that is implemented
@@ -425,29 +357,3 @@ pub const Terminal = struct {
     // }
 };
 
-fn queryMode(terminal: *Terminal) void {
-    terminal.write("\x1b[?1016$p") catch {};
-    terminal.flush() catch {};
-
-    var buf: [32]u8 = undefined;
-    var fds = [_]std.posix.pollfd{
-        .{
-            .fd = terminal.stdin,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        },
-    };
-    const poll_result = std.posix.poll(&fds, 100) catch return;
-
-    if (poll_result == 0) return;
-
-    if (fds[0].revents & std.posix.POLL.IN == 0) return;
-
-    const n = std.posix.read(terminal.fd, &buf) catch return;
-    terminal.write("Respose: ") catch {};
-    for (buf[0..n]) |c| {
-        if (c == '\x1b') terminal.write("\\x1b") catch {} else terminal.print("{c}", .{c}) catch {};
-    }
-    terminal.write("\r\n") catch {};
-    terminal.flush() catch {};
-}

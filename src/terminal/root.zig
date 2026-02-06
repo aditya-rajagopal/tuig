@@ -9,6 +9,8 @@ pub const PhysicalKey = event.KeyEvent.PhysicalKey;
 pub const PhysicalKeyState = std.EnumSet(KeyEvent.PhysicalKey);
 pub const parseEvent = event.parseEvent;
 
+pub const sequences = @import("sequences.zig");
+
 const terminal = @import("terminal.zig");
 pub const Terminal = terminal.Terminal;
 pub const TerminalConfig = terminal.TerminalConfig;

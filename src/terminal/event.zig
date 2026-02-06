@@ -92,17 +92,14 @@ const ScanResult = union(enum) {
 };
 
 inline fn isCSIParameterByte(byte: u8) bool {
-    // ECMA-48 parameter bytes: 0x30..0x3F
     return byte >= 0x30 and byte <= 0x3F;
 }
 
 inline fn isCSIIntermediateByte(byte: u8) bool {
-    // ECMA-48 intermediate bytes: 0x20..0x2F
     return byte >= 0x20 and byte <= 0x2F;
 }
 
 inline fn isCSIFinalByte(byte: u8) bool {
-    // ECMA-48 final byte: 0x40..0x7E (0x7F excluded)
     return byte >= 0x40 and byte <= 0x7E;
 }
 

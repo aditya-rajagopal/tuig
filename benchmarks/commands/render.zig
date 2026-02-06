@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const terminal_mod = @import("terminal");
+const seq = terminal_mod.sequences;
+
 const common = @import("../common.zig");
 const csv_mod = @import("../csv.zig");
 const reporting = @import("../reporting.zig");
@@ -8,7 +11,6 @@ const dataset_setup = @import("../dataset_setup.zig");
 const stats = @import("../stats.zig");
 const types = @import("../types.zig");
 const pmc_mod = @import("../pmc/root.zig");
-const terminal_mod = @import("terminal");
 const style_mix_mod = @import("../style_mix.zig");
 const text_mix_mod = @import("../text_mix.zig");
 
@@ -361,12 +363,12 @@ fn runEmitBenchmark(
             io.sleep(.{ .nanoseconds = 50 * 1000 }, .real) catch {};
         }
         frame_timer.reset();
-        try output_writer.writeAll("\x1bP=1s\x1b\\");
+        try output_writer.writeAll(seq.sync_update.begin);
         switch (config.mode) {
             .diff_redraw => front.fb.diffRedraw(&back.fb, &assets.style_sheet, output_writer) catch {},
             else => front.fb.fullRedraw(&assets.style_sheet, output_writer) catch {},
         }
-        try output_writer.writeAll("\x1b[m\x1bP=2s\x1b\\");
+        try output_writer.writeAll(seq.sync_update.end ++ seq.sgr.reset_all);
         output_writer.flush() catch {};
         const delta_ns = frame_timer.read();
         if (pmc_samples.active) {

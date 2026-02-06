@@ -3,6 +3,7 @@ const std = @import("std");
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 const FixedGrowingBufferAllocator = stdx.FixedGrowingBufferAllocator;
+const seq = @import("terminal").sequences;
 
 const t = @import("types.zig");
 const GraphemeIndex = t.GraphemeBuffer.GraphemeIndex;
@@ -164,40 +165,40 @@ pub const Style = struct {
 
         if (!current_style.fg.eql(new_style.fg)) {
             switch (new_style.fg) {
-                .none => try writer.writeAll(ColorFormat.foreground_reset),
+                .none => try writer.writeAll(seq.sgr.foreground_color_reset),
                 .ansi => |ansi_index| {
                     const index = @intFromEnum(ansi_index);
                     switch (index) {
-                        0...7 => try writer.print(ColorFormat.foreground_standard, .{index}),
-                        8...15 => try writer.print(ColorFormat.foreground_bright_standard, .{index - 8}),
-                        else => try writer.print(ColorFormat.foreground_indexed, .{index}),
+                        0...7 => try seq.sgr.foregroundStandard(writer, @intCast(index)),
+                        8...15 => try seq.sgr.foregroundBrightStandard(writer, @intCast(index - 8)),
+                        else => try seq.sgr.foregroundIndexed(writer, @intCast(index)),
                     }
                 },
-                .rgb => |rgb| try writer.print(ColorFormat.foreground_rgb, .{ rgb.r, rgb.g, rgb.b }),
+                .rgb => |rgb| try seq.sgr.foregroundRgb(writer, rgb.r, rgb.g, rgb.b),
             }
         }
 
         if (!current_style.bg.eql(new_style.bg)) {
             switch (new_style.bg) {
-                .none => try writer.writeAll(ColorFormat.background_reset),
+                .none => try writer.writeAll(seq.sgr.background_color_reset),
                 .ansi => |ansi_index| {
                     const index = @intFromEnum(ansi_index);
                     switch (index) {
-                        0...7 => try writer.print(ColorFormat.background_standard, .{index}),
-                        8...15 => try writer.print(ColorFormat.background_bright_standard, .{index - 8}),
-                        else => try writer.print(ColorFormat.background_indexed, .{index}),
+                        0...7 => try seq.sgr.backgroundStandard(writer, @intCast(index)),
+                        8...15 => try seq.sgr.backgroundBrightStandard(writer, @intCast(index - 8)),
+                        else => try seq.sgr.backgroundIndexed(writer, @intCast(index)),
                     }
                 },
-                .rgb => |rgb| try writer.print(ColorFormat.background_rgb, .{ rgb.r, rgb.g, rgb.b }),
+                .rgb => |rgb| try seq.sgr.backgroundRgb(writer, rgb.r, rgb.g, rgb.b),
             }
         }
 
         if (!current_style.underline.eql(new_style.underline)) {
             switch (new_style.underline) {
-                .none => try writer.writeAll(ColorFormat.underline_color_reset),
+                .none => try writer.writeAll(seq.sgr.underline_color_reset),
                 // @NOTE there is no equivalent for the 4bit color index standard as it was introduced much later
-                .ansi => |ansi_index| try writer.print(ColorFormat.underline_color_indexed, .{@intFromEnum(ansi_index)}),
-                .rgb => |rgb| try writer.print(ColorFormat.underline_color_rgb, .{ rgb.r, rgb.g, rgb.b }),
+                .ansi => |ansi_index| try seq.sgr.underlineColorIndexed(writer, @intFromEnum(ansi_index)),
+                .rgb => |rgb| try seq.sgr.underlineColorRgb(writer, rgb.r, rgb.g, rgb.b),
             }
         }
 
@@ -208,43 +209,43 @@ pub const Style = struct {
 
         if (flags_old.bold != flags_new.bold or flags_old.dim != flags_new.dim) {
             if (!flags_new.bold and !flags_new.dim) {
-                try writer.writeAll(ColorFormat.bold_dim_disable);
+                try writer.writeAll(seq.sgr.bold_dim_disable);
             } else {
                 const turn_off = (flags_old.bold and !flags_new.bold) or (flags_old.dim and !flags_new.dim);
-                if (turn_off) try writer.writeAll(ColorFormat.bold_dim_disable);
-                if (flags_new.bold) try writer.writeAll(ColorFormat.bold_enable);
-                if (flags_new.dim) try writer.writeAll(ColorFormat.dim_enable);
+                if (turn_off) try writer.writeAll(seq.sgr.bold_dim_disable);
+                if (flags_new.bold) try writer.writeAll(seq.sgr.bold_enable);
+                if (flags_new.dim) try writer.writeAll(seq.sgr.dim_enable);
             }
         }
 
         if (flags_old.italic != flags_new.italic) {
-            try writer.writeAll(if (flags_new.italic) ColorFormat.italic_enable else ColorFormat.italic_disable);
+            try writer.writeAll(if (flags_new.italic) seq.sgr.italic_enable else seq.sgr.italic_disable);
         }
 
         if (flags_old.blink != flags_new.blink) {
-            try writer.writeAll(if (flags_new.blink) ColorFormat.blink_enable else ColorFormat.blink_disable);
+            try writer.writeAll(if (flags_new.blink) seq.sgr.blink_enable else seq.sgr.blink_disable);
         }
 
         if (flags_old.reverse != flags_new.reverse) {
-            try writer.writeAll(if (flags_new.reverse) ColorFormat.reverse_enable else ColorFormat.reverse_disable);
+            try writer.writeAll(if (flags_new.reverse) seq.sgr.reverse_enable else seq.sgr.reverse_disable);
         }
 
         if (flags_old.invisible != flags_new.invisible) {
-            try writer.writeAll(if (flags_new.invisible) ColorFormat.invisible_enable else ColorFormat.invisible_disable);
+            try writer.writeAll(if (flags_new.invisible) seq.sgr.invisible_enable else seq.sgr.invisible_disable);
         }
 
         if (flags_old.strikethrough != flags_new.strikethrough) {
-            try writer.writeAll(if (flags_new.strikethrough) ColorFormat.strikethrough_enable else ColorFormat.strikethrough_disable);
+            try writer.writeAll(if (flags_new.strikethrough) seq.sgr.strikethrough_enable else seq.sgr.strikethrough_disable);
         }
 
         if (flags_old.underline != flags_new.underline) {
             try writer.writeAll(switch (flags_new.underline) {
-                .none => ColorFormat.underline_style_reset,
-                .single => ColorFormat.underline_style_single,
-                .double => ColorFormat.underline_style_double,
-                .curly => ColorFormat.underline_style_curly,
-                .dotted => ColorFormat.underline_style_dotted,
-                .dashed => ColorFormat.underline_style_dashed,
+                .none => seq.sgr.underline_style_reset,
+                .single => seq.sgr.underline_style_single,
+                .double => seq.sgr.underline_style_double,
+                .curly => seq.sgr.underline_style_curly,
+                .dotted => seq.sgr.underline_style_dotted,
+                .dashed => seq.sgr.underline_style_dashed,
             });
         }
     }
@@ -375,47 +376,3 @@ pub const Style = struct {
     };
 };
 
-pub const ColorFormat = struct {
-    pub const reset_all = "\x1b[m";
-
-    pub const foreground_reset = "\x1b[39m";
-    pub const foreground_standard = "\x1b[3{d}m";
-    pub const foreground_bright_standard = "\x1b[9{d}m";
-    pub const foreground_indexed = "\x1b[38:5:{d}m";
-    pub const foreground_rgb = "\x1b[38:2:{d}:{d}:{d}m";
-
-    pub const background_reset = "\x1b[49m";
-    pub const background_standard = "\x1b[4{d}m";
-    pub const background_bright_standard = "\x1b[10{d}m";
-    pub const background_indexed = "\x1b[48:5:{d}m";
-    pub const background_rgb = "\x1b[48:2:{d}:{d}:{d}m";
-
-    pub const underline_color_reset = "\x1b[59m";
-    pub const underline_color_indexed = "\x1b[58:5:{d}m";
-    pub const underline_color_rgb = "\x1b[58:2:{d}:{d}:{d}m";
-    pub const underline_style_reset = "\x1b[24m";
-    pub const underline_style_single = "\x1b[4m";
-    pub const underline_style_double = "\x1b[4:2m";
-    pub const underline_style_curly = "\x1b[4:3m";
-    pub const underline_style_dotted = "\x1b[4:4m";
-    pub const underline_style_dashed = "\x1b[4:5m";
-
-    pub const bold_enable = "\x1b[1m";
-    pub const dim_enable = "\x1b[2m";
-    pub const bold_dim_disable = "\x1b[22m";
-
-    pub const italic_enable = "\x1b[3m";
-    pub const italic_disable = "\x1b[23m";
-
-    pub const blink_enable = "\x1b[5m";
-    pub const blink_disable = "\x1b[25m";
-
-    pub const reverse_enable = "\x1b[7m";
-    pub const reverse_disable = "\x1b[27m";
-
-    pub const invisible_enable = "\x1b[8m";
-    pub const invisible_disable = "\x1b[28m";
-
-    pub const strikethrough_enable = "\x1b[9m";
-    pub const strikethrough_disable = "\x1b[29m";
-};

@@ -1,4 +1,13 @@
 # 0.1.0
+- (2026-02-06) Centralized terminal sequences
+- (2026-02-06) Made CSI escape parsing ECMA-48 compliant
+- (2026-02-05) Fixed multiple issues across terminal, renderer, and unicode internals; aligned unicode export/generation types.
+- (2026-01-31) Added renderer style system
+- (2026-01-30) Improved FrameBuffer diff performance by skipping unchanged rows.
+- (2026-01-29) Corrected physical key-code handling and improved key event processing.
+- (2026-01-29) Made stdx utilities to remove external dependency.
+- (2026-01-23) Added full grapheme rendering support in Cell and FrameBuffer
+- (2026-01-22) Added UTF-8 text rendering to Scissor
 - (2026-01-21) Added tests for grapheme iterator
 - (2026-01-21) Changed property table to be 2-stage lookup table. For the benchmark 2stage is about 7% faster than 3stage.
 - (2026-01-21) Streamlined grapheme iterator and also added early exit for control characters

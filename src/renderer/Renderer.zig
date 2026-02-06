@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 const term = @import("terminal");
+const seq = term.sequences;
 const Terminal = term.Terminal;
 const Event = term.Event;
 const KeyEvent = term.KeyEvent;
@@ -102,11 +103,13 @@ pub fn init(self: *Renderer, terminal: *Terminal, config: Config) error{ OutOfMe
     self.memory_pool = try MemoryPool.init();
     self.arena = MemoryPool.ArenaAllocator.init(&self.memory_pool);
 
-    terminal.clearScreen() catch {};
+    terminal.write(seq.screen.clear_and_home) catch {};
+    terminal.flush() catch {};
 }
 
 pub fn deinit(self: *Renderer) void {
-    self.terminal.clearScreen() catch {};
+    self.terminal.write(seq.screen.clear_and_home) catch {};
+    self.terminal.flush() catch {};
     self.cell_buffers[0].deinit();
     self.cell_buffers[1].deinit();
     self.buffers[0].deinit();
@@ -239,7 +242,8 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
                 self.buffers[1].width = resize.width;
                 self.buffers[1].height = resize.height;
                 self.redraw = true;
-                self.terminal.clearScreen() catch {};
+                self.terminal.write(seq.screen.clear_and_home) catch {};
+                self.terminal.flush() catch {};
             },
             else => {},
         }
@@ -259,15 +263,14 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
 }
 
 pub fn endFrame(self: *Renderer, force_redraw: bool, style_sheet: *const Style.Sheet) void {
-    self.terminal.bsu() catch {};
-    self.terminal.write(c.ColorFormat.reset_all) catch {};
+    self.terminal.write(seq.sync_update.begin) catch {};
     if (self.redraw or force_redraw) {
         self.render_buffer.fullRedraw(style_sheet, self.terminal.getWriter()) catch {};
         self.redraw = false;
     } else {
         self.render_buffer.diffRedraw(self.back_buffer, style_sheet, self.terminal.getWriter()) catch {};
     }
-    self.terminal.esu() catch {};
+    self.terminal.write(seq.sync_update.end ++ seq.sgr.reset_all) catch {};
     self.terminal.flush() catch {};
     self.swapBuffers();
     self.arena.reset();
