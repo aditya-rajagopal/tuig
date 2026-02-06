@@ -8,7 +8,7 @@ const std = @import("std");
 
 const t = @import("types.zig");
 pub const Property = t.Property;
-pub const GraphemeBoundryClass = t.GraphemeBoundryClass;
+pub const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
 
 pub inline fn getProperty(cp: u21) Property {
     if (cp > t.max_codepoint) unreachable;

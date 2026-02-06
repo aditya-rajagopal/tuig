@@ -8,10 +8,10 @@ const t = @import("types.zig");
 const GraphemeBreakTestResult = t.GraphemeBreakTestResult;
 const GraphemeBreakCombination = t.GraphemeBreakCombination;
 const GraphemeBreakState = t.GraphemeBreakState;
-const GraphemeBoundryClass = t.GraphemeBoundryClass;
+const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
 const getProperty = @import("properties.zig").getProperty;
 
-pub inline fn graphemeBreakClass(prev: GraphemeBoundryClass, next: GraphemeBoundryClass, state: *GraphemeBreakState) bool {
+pub inline fn graphemeBreakClass(prev: GraphemeBoundaryClass, next: GraphemeBoundaryClass, state: *GraphemeBreakState) bool {
     const result = break_table[
         (GraphemeBreakCombination{
             .state = state.*,
@@ -2927,4 +2927,3 @@ const break_table: [1445]GraphemeBreakTestResult align(std.atomic.cache_line) = 
     // gbc1: InCB_consonant, gbc2: InCB_consonant, state: InCB_linker
     .{ .is_break = true, .state = .InCB_linker },
 };
-

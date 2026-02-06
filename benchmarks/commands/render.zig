@@ -82,7 +82,7 @@ pub fn execute(self: Render, ctx: common.CommandContext, mode: types.BenchMode) 
     var rows = self.rows;
     const terminal_write_buffer: []align(std.heap.page_size_min) u8 = ctx.allocator.alignedAlloc(u8, common.buffer_alignment, 8 * 4096) catch unreachable;
     if (e2e_active) {
-        const term_config: terminal_mod.TerminalConfig = .{ .raw = true, .alt_screen = true, .cursor_visable = false };
+        const term_config: terminal_mod.TerminalConfig = .{ .raw = true, .alt_screen = true, .cursor_visible = false };
         try terminal.init(term_config, terminal_write_buffer);
         terminal_active = true;
         cols = terminal.size.width;

@@ -39,7 +39,7 @@ pub fn execute(self: Inspect, _: common.CommandContext) !void {
 
     var write_buffer: [4096]u8 align(std.atomic.cache_line) = undefined;
     var term_config: terminal_mod.TerminalConfig = .tui_default;
-    term_config.cursor_visable = false;
+    term_config.cursor_visible = false;
     var terminal: terminal_mod.Terminal = undefined;
     try terminal.init(term_config, &write_buffer);
     defer terminal.deinit();

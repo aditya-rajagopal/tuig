@@ -8,7 +8,7 @@ const UnicodeInfo = u.UnicodeInfo;
 const Data = u.Data;
 const parser = @import("parser.zig");
 const export_types = @import("export/types.zig");
-const GraphemeBoundryClass = export_types.GraphemeBoundryClass;
+const GraphemeBoundaryClass = export_types.GraphemeBoundaryClass;
 const GraphemeBreakState = export_types.GraphemeBreakState;
 const GraphemeBreakTestResult = export_types.GraphemeBreakTestResult;
 const GraphemeBreakCombination = export_types.GraphemeBreakCombination;
@@ -65,7 +65,7 @@ pub fn generateGraphemeBreakLookupTable(
     const writer = &grapheme_file_writer.interface;
     var start = std.time.Timer.start() catch unreachable;
 
-    const classes = comptime std.meta.fields(GraphemeBoundryClass);
+    const classes = comptime std.meta.fields(GraphemeBoundaryClass);
     const states = comptime std.meta.fields(GraphemeBreakState);
     const total_states = states.len * classes.len * classes.len;
 
@@ -80,10 +80,10 @@ pub fn generateGraphemeBreakLookupTable(
         \\const GraphemeBreakTestResult = t.GraphemeBreakTestResult;
         \\const GraphemeBreakCombination = t.GraphemeBreakCombination;
         \\const GraphemeBreakState = t.GraphemeBreakState;
-        \\const GraphemeBoundryClass = t.GraphemeBoundryClass;
+        \\const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
         \\const getProperty = @import("properties.zig").getProperty;
         \\
-        \\pub inline fn graphemeBreakClass(prev: GraphemeBoundryClass, next: GraphemeBoundryClass, state: *GraphemeBreakState) bool {{
+        \\pub inline fn graphemeBreakClass(prev: GraphemeBoundaryClass, next: GraphemeBoundaryClass, state: *GraphemeBreakState) bool {{
         \\    const result = break_table[
         \\        (GraphemeBreakCombination{{
         \\            .state = state.*,
@@ -120,8 +120,8 @@ pub fn generateGraphemeBreakLookupTable(
                 var state: GraphemeBreakState = @field(GraphemeBreakState, initial_state.name);
                 const combination: GraphemeBreakCombination = .{
                     .state = state,
-                    .gbc1 = @field(GraphemeBoundryClass, gbc1.name),
-                    .gbc2 = @field(GraphemeBoundryClass, gbc2.name),
+                    .gbc1 = @field(GraphemeBoundaryClass, gbc1.name),
+                    .gbc2 = @field(GraphemeBoundaryClass, gbc2.name),
                 };
                 const result = isGraphemeBreak(combination.gbc1, combination.gbc2, &state);
                 assert(i == combination.asUsize());
@@ -144,7 +144,7 @@ pub fn generateGraphemeBreakLookupTable(
 // GB1 and GB2 are to be handled by the iterator
 // GB3, GB4, and GB5 are to be handled by the caller. They must filter out the control characters.
 // https://www.unicode.org/reports/tr29/
-fn isGraphemeBreak(gbc1: GraphemeBoundryClass, gbc2: GraphemeBoundryClass, state: *GraphemeBreakState) bool {
+fn isGraphemeBreak(gbc1: GraphemeBoundaryClass, gbc2: GraphemeBoundaryClass, state: *GraphemeBreakState) bool {
     const current_state = state.*;
     if (current_state == .regional_indicator) {
         // NOTE(adi): GB12, GB13 if neither of the current or previous codepoints are RI then reset teh state

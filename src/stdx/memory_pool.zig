@@ -110,7 +110,7 @@ pub fn BufferPoolExtra(comptime options: Options) type {
 
         /// Creates a new item and adds it to the memory pool.
         /// `allocator` may be `undefined` if pool is not `growable`.
-        pub fn aquireChunk(self: *Pool) error{OutOfMemory}!*align(alignment_bytes) MemoryBlock {
+        pub fn acquireChunk(self: *Pool) error{OutOfMemory}!*align(alignment_bytes) MemoryBlock {
             const block: *align(alignment_bytes) MemoryBlock = if (self.free_list.popFirst()) |node|
                 @ptrCast(@alignCast(node))
             else
@@ -329,7 +329,7 @@ pub fn BufferPoolExtra(comptime options: Options) type {
             }
 
             fn createNode(self: *Self) ?*BufferNode {
-                const chunk = self.pool.aquireChunk() catch return null;
+                const chunk = self.pool.acquireChunk() catch return null;
                 const node: BufferNodePtr = @ptrCast(chunk);
                 self.buffer_list.prepend(&node.node);
                 node.end_index = 0;
@@ -638,17 +638,17 @@ test "pool out of memory" {
     defer pool.deinit();
 
     // Acquire 2 blocks successfully
-    const block1 = try pool.aquireChunk();
+    const block1 = try pool.acquireChunk();
     defer pool.returnChunk(block1);
     try std.testing.expectEqual(@as(usize, 1), pool.metrics.acquires_current);
 
-    const block2 = try pool.aquireChunk();
+    const block2 = try pool.acquireChunk();
     defer pool.returnChunk(block2);
     try std.testing.expectEqual(@as(usize, 2), pool.metrics.acquires_current);
     try std.testing.expectEqual(@as(usize, 2), pool.metrics.acquires_total);
 
     // 3rd acquire should return OutOfMemory
-    const result = pool.aquireChunk();
+    const result = pool.acquireChunk();
     try std.testing.expectError(error.OutOfMemory, result);
 
     // Metrics should still show 2 acquires

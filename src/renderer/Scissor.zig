@@ -32,8 +32,13 @@ pub fn initChild(self: Scissor, x_offset: i17, y_offset: i17, width: u16, height
 }
 
 pub fn inner(self: Scissor) Scissor {
-    assert(self.width_global > 2);
-    assert(self.height_global > 2);
+    if (self.width_global < 2 or self.height_global < 2) return Scissor{
+        .x_global = self.x_global,
+        .y_global = self.y_global,
+        .width_global = 0,
+        .height_global = 0,
+        .buffer = self.buffer,
+    };
     return Scissor{
         .x_global = self.x_global + 1,
         .y_global = self.y_global + 1,
@@ -85,7 +90,7 @@ pub fn fillRow(self: Scissor, row: u16, cell: Cell) void {
 
     const start: usize = y * self.buffer.width + x_start;
     const end: usize = y * self.buffer.width + x_end;
-    @memset(self.buffer.cells.reserved_pages[start..end], cell);
+    @memset(self.buffer.cells[start..end], cell);
 }
 
 pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
@@ -101,7 +106,7 @@ pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
     const x: usize = @intCast(x_int);
 
     for (y_start..y_end) |row| {
-        @call(.always_inline, FrameBuffer.set, .{ self.buffer, @as(u16, @intCast(x)), @as(u16, @intCast(row)), cell.codepoint });
+        @call(.always_inline, FrameBuffer.set, .{ self.buffer, @as(u16, @intCast(x)), @as(u16, @intCast(row)), cell });
     }
 }
 
@@ -207,7 +212,7 @@ pub fn print(
     var cursor_x: u16 = x;
     var cursor_y: u16 = y;
 
-    var iter = GraphemeIterator.init(text) catch return result; // Empty input, return zeros
+    var iter = GraphemeIterator.init(text); // Empty input, return zeros
 
     while (iter.next(codepoint_buffer)) |grapheme_result| : (cursor_x += grapheme_result.width) {
         result.bytes_consumed += grapheme_result.bytes.len;

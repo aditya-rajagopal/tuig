@@ -21,18 +21,18 @@ pub const GraphemeBreakTestResult = packed struct {
 
 pub const GraphemeBreakCombination = packed struct(u13) {
     state: GraphemeBreakState,
-    gbc1: GraphemeBoundryClass,
-    gbc2: GraphemeBoundryClass,
+    gbc1: GraphemeBoundaryClass,
+    gbc2: GraphemeBoundaryClass,
 
     pub fn asUsize(self: @This()) usize {
-        const classes = std.meta.fields(GraphemeBoundryClass).len;
+        const classes = std.meta.fields(GraphemeBoundaryClass).len;
         return @intFromEnum(self.state) * classes * classes + @intFromEnum(self.gbc1) * classes + @intFromEnum(self.gbc2);
     }
 };
 
 pub const Property = packed struct(u8) {
     width: u2 = 0,
-    grapheme_boundary_class: GraphemeBoundryClass = .invalid,
+    grapheme_boundary_class: GraphemeBoundaryClass = .invalid,
     is_emoji_vs: bool = false,
 
     pub const invalid = Property{ .width = 1, .grapheme_boundary_class = .invalid, .is_emoji_vs = false };
@@ -46,7 +46,7 @@ pub const Property = packed struct(u8) {
 
 // Reference: LICENSE(MIT)
 // https://github.com/jacobsandlund/uucode/blob/ad6f8813b9163bfc93626ebbc0f1023e11c51de7/src/x/types_x/grapheme.zig
-pub const GraphemeBoundryClass = enum(u5) {
+pub const GraphemeBoundaryClass = enum(u5) {
     // We will not need these as we can premeturely discard them
     // CR,
     // LF,
@@ -70,7 +70,7 @@ pub const GraphemeBoundryClass = enum(u5) {
     InCB_consonant,
 
     /// Check if the break class is a valid class to continue an extended pictograph
-    pub fn isValidExtendedPictographic(self: GraphemeBoundryClass) bool {
+    pub fn isValidExtendedPictographic(self: GraphemeBoundaryClass) bool {
         return switch (self) {
             .zwj,
             .extended_pictographic,
@@ -84,7 +84,7 @@ pub const GraphemeBoundryClass = enum(u5) {
         };
     }
 
-    pub fn isValidIndic(self: GraphemeBoundryClass) bool {
+    pub fn isValidIndic(self: GraphemeBoundaryClass) bool {
         return switch (self) {
             .zwj, // This is the same as indic_conjunct_break_extend
             .InCB_extend,
@@ -96,7 +96,7 @@ pub const GraphemeBoundryClass = enum(u5) {
     }
 
     /// Check if this class can extend an indic sequence
-    pub fn isIndicExtend(self: GraphemeBoundryClass) bool {
+    pub fn isIndicExtend(self: GraphemeBoundaryClass) bool {
         return switch (self) {
             .zwj,
             .InCB_extend,
@@ -105,14 +105,14 @@ pub const GraphemeBoundryClass = enum(u5) {
         };
     }
 
-    pub fn isExtendedPictographic(self: GraphemeBoundryClass) bool {
+    pub fn isExtendedPictographic(self: GraphemeBoundaryClass) bool {
         return switch (self) {
             .extended_pictographic, .emoji_modifier_base => return true,
             else => return false,
         };
     }
 
-    pub fn isExtention(self: GraphemeBoundryClass) bool {
+    pub fn isExtention(self: GraphemeBoundaryClass) bool {
         return switch (self) {
             .zwnj, .InCB_extend, .InCB_linker => return true,
             else => return false,

@@ -10,7 +10,7 @@ const parser = @import("parser.zig");
 
 const export_types = @import("export/types.zig");
 const Property = export_types.Property;
-const GraphemeBoundryClass = export_types.GraphemeBoundryClass;
+const GraphemeBoundaryClass = export_types.GraphemeBoundaryClass;
 const max_codepoint = export_types.max_codepoint;
 const zero_width_joiner = export_types.zero_width_joiner;
 const zero_width_non_joiner = export_types.zero_width_non_joiner;
@@ -89,7 +89,7 @@ pub fn generatePropertyLookupTable2Stage(
         \\
         \\const t = @import("types.zig");
         \\pub const Property = t.Property;
-        \\pub const GraphemeBoundryClass = t.GraphemeBoundryClass;
+        \\pub const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
         \\
         \\pub inline fn getProperty(cp: u21) Property {
         \\    if (cp > t.max_codepoint) unreachable;
@@ -213,7 +213,7 @@ pub fn generatePropertyLookupTable3Stage(
         \\
         \\const t = @import("types.zig");
         \\pub const Property = t.Property;
-        \\pub const GraphemeBoundryClass = t.GraphemeBoundryClass;
+        \\pub const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
         \\
         \\pub inline fn getProperty(cp: u21) Property {
         \\    if (cp > t.max_codepoint) unreachable;
@@ -316,12 +316,12 @@ fn getWidth(
     }
 }
 
-pub fn getGraphemeBoundryClas(
+pub fn getGraphemeBoundaryClas(
     cp: u21,
     emoji: t.Emoji,
     props: t.DerivedCoreProperties,
     grapheme_break: t.GraphemeBreakProperty,
-) GraphemeBoundryClass {
+) GraphemeBoundaryClass {
     if (emoji.Emoji_Modifier) {
         assert(grapheme_break == .Extend);
         assert(!emoji.Extended_Pictographic and emoji.Emoji_Component);
@@ -384,7 +384,7 @@ pub fn getProperty(
     assert(cp <= max_codepoint);
     return .{
         .width = getWidth(cp, data),
-        .grapheme_boundary_class = getGraphemeBoundryClas(cp, data.emoji, data.derived_core_properties, data.grapheme_break),
+        .grapheme_boundary_class = getGraphemeBoundaryClas(cp, data.emoji, data.derived_core_properties, data.grapheme_break),
         .is_emoji_vs = data.emoji_vs,
     };
 }

@@ -119,9 +119,9 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
         .frame_arena = &self.arena,
         .events = events,
     };
-    var key_pressed = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
-    var key_released = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
-    var key_repeat = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, 8));
+    var key_pressed = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, events.len));
+    var key_released = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, events.len));
+    var key_repeat = std.ArrayList(KeyEvent).initBuffer(try self.arena.pushArray(KeyEvent, events.len));
 
     for (events) |event| {
         switch (event) {
@@ -135,16 +135,22 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
                 try key_released.appendBounded(key);
             },
             .mouse_scroll_up => |info| {
+                assert(info.x >= 1);
+                assert(info.y >= 1);
                 self.mouse_x = info.x - 1;
                 self.mouse_y = info.y - 1;
                 ctx.mouse_scroll += 1;
             },
             .mouse_scroll_down => |info| {
+                assert(info.x >= 1);
+                assert(info.y >= 1);
                 self.mouse_x = info.x - 1;
                 self.mouse_y = info.y - 1;
                 ctx.mouse_scroll -= 1;
             },
             .mouse_move => |info| {
+                assert(info.x >= 1);
+                assert(info.y >= 1);
                 self.mouse_x = info.x - 1;
                 self.mouse_y = info.y - 1;
             },
@@ -159,6 +165,8 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
             .mouse_middle_released,
             .mouse_released,
             => |info| {
+                assert(info.x >= 1);
+                assert(info.y >= 1);
                 self.mouse_x = info.x - 1;
                 self.mouse_y = info.y - 1;
                 switch (event) {
@@ -242,9 +250,9 @@ pub fn beginFrame(self: *Renderer, events: []const Event) error{OutOfMemory}!Con
     ctx.key_pressed = key_pressed.items;
     ctx.key_released = key_released.items;
     ctx.key_repeat = key_repeat.items;
-    ctx.mouse_down.left = self.current_mouse_down.left and self.previous_mouse_down.left;
-    ctx.mouse_down.right = self.current_mouse_down.right and self.previous_mouse_down.right;
-    ctx.mouse_down.middle = self.current_mouse_down.middle and self.previous_mouse_down.middle;
+    ctx.mouse_down.left = ctx.mouse_down.left or self.current_mouse_down.left and self.previous_mouse_down.left;
+    ctx.mouse_down.right = ctx.mouse_down.right or self.current_mouse_down.right and self.previous_mouse_down.right;
+    ctx.mouse_down.middle = ctx.mouse_down.middle or self.current_mouse_down.middle and self.previous_mouse_down.middle;
 
     ctx.scissor = self.render_buffer.scissor();
     return ctx;

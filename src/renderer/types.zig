@@ -85,13 +85,13 @@ pub const GraphemeBuffer = struct {
     pub fn put(self: *Self, bytes: []const u8) error{OutOfMemory}!GraphemeIndex {
         assert(bytes.len <= std.math.maxInt(u32));
         // TODO: Should this be aligned to 4 bytes?
-        defer self.end_index += bytes.len + 4;
-        const start = self.end_index + 4;
         const end = self.end_index + bytes.len + 4;
         if (end > self.buffer.reserved_pages.len) {
             self.buffer.ensureTotalCapacity(end) catch return error.OutOfMemory;
         }
+        defer self.end_index += bytes.len + 4;
         const length = @as(u32, @intCast(bytes.len));
+        const start = self.end_index + 4;
         @memcpy(self.buffer.reserved_pages[self.end_index..start], std.mem.asBytes(&length)[0..4]);
         @memcpy(self.buffer.reserved_pages[start..end], bytes[0..length]);
         return @intCast(self.end_index);

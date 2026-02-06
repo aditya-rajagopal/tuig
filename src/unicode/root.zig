@@ -8,7 +8,7 @@ pub const GraphemeBreakState = types.GraphemeBreakState;
 pub const GraphemeBreakTestResult = types.GraphemeBreakTestResult;
 pub const GraphemeBreakCombination = types.GraphemeBreakCombination;
 pub const Property = types.Property;
-pub const GraphemeBoundryClass = types.GraphemeBoundryClass;
+pub const GraphemeBoundaryClass = types.GraphemeBoundaryClass;
 
 pub const getProperty = @import("properties.zig").getProperty;
 pub const graphemeBreak = @import("grapheme_break.zig").graphemeBreak;

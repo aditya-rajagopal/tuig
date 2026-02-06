@@ -66,14 +66,14 @@ pub const TerminalConfig = struct {
     alt_screen: bool = false,
     mouse: ?MouseOptions = null,
     kitty_keyboard_flags: ?KittyConfig = null,
-    cursor_visable: bool = true,
+    cursor_visible: bool = true,
 
     pub const tui_default = TerminalConfig{
         .raw = true,
         .alt_screen = true,
         .mouse = .default,
         .kitty_keyboard_flags = .{ .disambiguate_escape_codes = true, .report_all_keys_as_escape_codes = true, .report_event_types = true },
-        .cursor_visable = true,
+        .cursor_visible = true,
     };
     pub const raw_terminal = TerminalConfig{ .raw = true };
     pub const default_terminal = TerminalConfig{};
@@ -85,6 +85,7 @@ pub const Terminal = struct {
     original_state: std.posix.termios,
     writer: std.Io.File.Writer,
     size: Size,
+    // @TODO GILA(dependent_thorn_fh0) Make this a resizable buffer
     event_queue: [32]Event = undefined,
     config: TerminalConfig,
 
@@ -100,6 +101,7 @@ pub const Terminal = struct {
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();
         const file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch return error.Failed;
+        errdefer file.close(io);
         terminal.fd = file.handle; //std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch return error.Failed;
         terminal.stdin = std.Io.File.stdin().handle;
         terminal.original_state = std.posix.tcgetattr(terminal.fd) catch return error.Failed;
@@ -109,17 +111,21 @@ pub const Terminal = struct {
 
         terminal.config.raw = false;
         if (config.raw) terminal.makeRaw() catch return error.Failed;
+        errdefer terminal.unmakeRaw();
 
         terminal.config.alt_screen = false;
         if (config.alt_screen) terminal.setAlternateScreen() catch return error.Failed;
+        errdefer terminal.unsetAlternateScreen();
 
         terminal.config.mouse = null;
         if (config.mouse) |mouse_config| terminal.enableMouse(mouse_config) catch return error.Failed;
+        errdefer terminal.disableMouse();
 
         terminal.config.kitty_keyboard_flags = null;
         if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.Failed;
+        errdefer terminal.popKittyKeyboardFlags() catch {};
 
-        terminal.setCursorVisible(config.cursor_visable) catch return error.Failed;
+        terminal.setCursorVisible(config.cursor_visible) catch return error.Failed;
 
         global_tty = terminal;
     }
@@ -130,7 +136,8 @@ pub const Terminal = struct {
         if (self.config.mouse) |_| self.disableMouse();
         if (self.config.alt_screen) self.unsetAlternateScreen();
         if (self.config.raw) self.unmakeRaw();
-        if (!self.config.cursor_visable) self.setCursorVisible(true) catch {};
+        if (!self.config.cursor_visible) self.setCursorVisible(true) catch {};
+        global_tty = null;
 
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();
@@ -172,10 +179,10 @@ pub const Terminal = struct {
     pub fn setCursorVisible(self: *Terminal, visible: bool) error{WriteFailed}!void {
         if (visible) {
             try self.write("\x1b[?25h");
-            self.config.cursor_visable = true;
+            self.config.cursor_visible = true;
         } else {
             try self.write("\x1b[?25l");
-            self.config.cursor_visable = false;
+            self.config.cursor_visible = false;
         }
         try self.flush();
     }
@@ -193,21 +200,21 @@ pub const Terminal = struct {
         return .{ .width = size.col, .height = size.row };
     }
 
-    // @TODO make this only submit the query and get the response back from the event queue
-    pub fn getCursorPosition(self: *const Terminal) struct { x: u16, y: u16 } {
-        var buf: [32]u8 = undefined;
-        const n = std.posix.write(self.fd, "\x1b[6n") catch return .{ .x = 0, .y = 0 };
-        if (n != 4) return .{ .x = 0, .y = 0 };
-        const n2 = std.posix.read(self.fd, &buf) catch return .{ .x = 0, .y = 0 };
-        if (n2 < 6) return .{ .x = 0, .y = 0 };
-        assert(buf[0] == '\x1b');
-        assert(buf[1] == '[');
-        const seperator = std.mem.findScalar(u8, buf[0..n2], ';') orelse return .{ .x = 0, .y = 0 };
-        return .{
-            .x = std.fmt.parseInt(u16, buf[2..seperator], 10) catch return .{ .x = 0, .y = 0 },
-            .y = std.fmt.parseInt(u16, buf[seperator + 1 .. n2 - 1], 10) catch return .{ .x = 0, .y = 0 },
-        };
-    }
+    // @TODO GILA(enchanted_ogre_80w) make this only submit the query and get the response back from the event queue
+    // pub fn getCursorPosition(self: *const Terminal) struct { x: u16, y: u16 } {
+    //     var buf: [32]u8 = undefined;
+    //     const n = std.posix.write(self.fd, "\x1b[6n") catch return .{ .x = 0, .y = 0 };
+    //     if (n != 4) return .{ .x = 0, .y = 0 };
+    //     const n2 = std.posix.read(self.fd, &buf) catch return .{ .x = 0, .y = 0 };
+    //     if (n2 < 6) return .{ .x = 0, .y = 0 };
+    //     assert(buf[0] == '\x1b');
+    //     assert(buf[1] == '[');
+    //     const seperator = std.mem.findScalar(u8, buf[0..n2], ';') orelse return .{ .x = 0, .y = 0 };
+    //     return .{
+    //         .x = (std.fmt.parseInt(u16, buf[seperator + 1 .. n2 - 1], 10) catch return .{ .x = 0, .y = 0 }) - 1,
+    //         .y = (std.fmt.parseInt(u16, buf[2..seperator], 10) catch return .{ .x = 0, .y = 0 }) - 1,
+    //     };
+    // }
 
     pub fn makeRaw(self: *Terminal) error{Failed}!void {
         if (self.config.raw) return;
@@ -274,11 +281,11 @@ pub const Terminal = struct {
 
     pub fn disableMouse(self: *Terminal) void {
         if (self.config.mouse) |options| {
-            self.write(options.level.disableString()) catch unreachable;
+            self.write(options.level.disableString()) catch {};
             if (options.sgr) {
-                self.write("\x1b[?1006l") catch unreachable;
+                self.write("\x1b[?1006l") catch {};
             }
-            self.flush() catch unreachable;
+            self.flush() catch {};
             self.config.mouse = null;
         }
     }
@@ -294,13 +301,14 @@ pub const Terminal = struct {
         if (self.config.kitty_keyboard_flags) |_| {
             try self.write("\x1b[<u");
             try self.flush();
+            self.config.kitty_keyboard_flags = null;
         }
     }
 
     pub fn moveCursorLines(self: *Terminal, dx: i16, dy: i16) error{WriteFailed}!void {
         if (dx == 0 and dy == 0) return;
-        if (dx > 0) try self.print("\x1b[{d}C", .{dx}) else try self.print("\x1b[{d}D", .{-dx});
-        if (dy > 0) try self.print("\x1b[{d}B", .{dy}) else try self.print("\x1b[{d}A", .{-dy});
+        if (dx > 0) try self.print("\x1b[{d}C", .{dx}) else if (dx < 0) try self.print("\x1b[{d}D", .{-dx});
+        if (dy > 0) try self.print("\x1b[{d}B", .{dy}) else if (dy < 0) try self.print("\x1b[{d}A", .{-dy});
     }
 
     pub fn bsu(self: *Terminal) error{WriteFailed}!void {
@@ -325,6 +333,7 @@ pub const Terminal = struct {
             self.size = size;
         }
 
+        // @TODO Should we try to look for closed pipes?
         var fds = [_]std.posix.pollfd{
             .{
                 // FIXME: In macos you cant poll dev/tty. It needs select
@@ -334,6 +343,9 @@ pub const Terminal = struct {
             },
         };
 
+        // @TODO GILA(frosty_gale_9rz) This buffer is fixed which means if we get a large stdin we will block. We could use a ring buffer
+        //       or we could keep shifting the buffer discarding old data. But for now if write_head == buf.len we will break
+        //       and discard the data we read so far and next time we will start readign from incomplete data.
         var buf: [1024]u8 = undefined;
         var write_head: usize = 0;
         reading_stdin: while (true) {
@@ -347,12 +359,13 @@ pub const Terminal = struct {
                 break :reading_stdin;
             }
 
+            // @TODO GILA(frosty_gale_9rz) we need to check here if write_head == buf.len
             const n = std.posix.read(self.fd, buf[write_head..]) catch return error.PollFailed;
             if (n == 0) {
                 break :reading_stdin;
             }
 
-            var data: []const u8 = buf[0..n];
+            var data: []const u8 = buf[0 .. write_head + n];
             while (data.len > 0) {
                 var consumed_bytes: usize = 0;
                 const event = e.parseEvent(data, &consumed_bytes);
@@ -363,40 +376,42 @@ pub const Terminal = struct {
                     write_head = data.len;
                     continue :reading_stdin;
                 }
-                write_head = 0;
                 data = data[consumed_bytes..];
 
+                // @TODO GILA(dependent_thorn_fh0)  This basically stops if event queue is full. Try somethign else
                 if (event != .none) events.appendBounded(event) catch break :reading_stdin;
 
-                if (data.len == 0 and n != buf.len) break :reading_stdin;
+                if (data.len == 0 and n != (buf.len - write_head)) break :reading_stdin;
             }
+            write_head = 0;
         }
 
         return events.items;
     }
 
-    pub fn kittyKeyboardAvailable(self: *Terminal, timeout_ms: i32) bool {
-        self.write("\x1b[?u") catch {};
-        self.write("\x1b[c") catch {};
-        self.flush() catch {};
-
-        var fds = [_]std.posix.pollfd{
-            .{
-                .fd = self.stdin,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            },
-        };
-
-        const poll_result = std.posix.poll(&fds, timeout_ms) catch return false;
-        if (poll_result == 0) return false;
-        var buf: [32]u8 = undefined;
-        const n = std.posix.read(self.stdin, &buf) catch return false;
-        if (n != 5) return false;
-        if (!std.mem.eql(u8, buf[0..3], "\x1b[?")) return false;
-        if (buf[4] != 'u') return false;
-        return true;
-    }
+    // @TODO move this to capability detection
+    // pub fn kittyKeyboardAvailable(self: *Terminal, timeout_ms: i32) bool {
+    //     self.write("\x1b[?u") catch {};
+    //     self.write("\x1b[c") catch {};
+    //     self.flush() catch {};
+    //
+    //     var fds = [_]std.posix.pollfd{
+    //         .{
+    //             .fd = self.stdin,
+    //             .events = std.posix.POLL.IN,
+    //             .revents = 0,
+    //         },
+    //     };
+    //
+    //     const poll_result = std.posix.poll(&fds, timeout_ms) catch return false;
+    //     if (poll_result == 0) return false;
+    //     var buf: [32]u8 = undefined;
+    //     const n = std.posix.read(self.stdin, &buf) catch return false;
+    //     if (n != 5) return false;
+    //     if (!std.mem.eql(u8, buf[0..3], "\x1b[?")) return false;
+    //     if (buf[4] != 'u') return false;
+    //     return true;
+    // }
 };
 
 fn queryMode(terminal: *Terminal) void {

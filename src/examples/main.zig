@@ -23,7 +23,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, ret_addr: ?usize) nor
 pub fn main(_: std.process.Init.Minimal) void {
     var write_buffer: [4096]u8 align(4096) = undefined;
     var config: TerminalConfig = .tui_default;
-    config.cursor_visable = false;
+    config.cursor_visible = false;
     var terminal: Terminal = undefined;
     terminal.init(config, &write_buffer) catch |err| {
         log.err("Failed to initialize terminal: {s}", .{@errorName(err)});
@@ -57,7 +57,7 @@ pub fn main(_: std.process.Init.Minimal) void {
             log.err("Failed to begin frame", .{});
             return;
         };
-        defer renderer.endFrame(true, &style_sheet);
+        defer renderer.endFrame(false, &style_sheet);
 
         quit = app.updateAndRender(&ctx);
     }

@@ -159,8 +159,8 @@ pub const Style = struct {
     };
 
     pub fn write(new: Id, current: Id, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
-        const current_style: Style = style_sheet.aquire(current);
-        const new_style: Style = style_sheet.aquire(new);
+        const current_style: Style = style_sheet.acquire(current);
+        const new_style: Style = style_sheet.acquire(new);
 
         if (!current_style.fg.eql(new_style.fg)) {
             switch (new_style.fg) {
@@ -204,7 +204,7 @@ pub const Style = struct {
         const flags_old = current_style.flags;
         const flags_new = new_style.flags;
 
-        // @TODO Can we reduce the output size by chaining these x1b[1;2;4m instead of individual writes
+        // @TODO GILA(mixed_horn_efq) Can we reduce the output size by chaining these x1b[1;2;4m instead of individual writes
 
         if (flags_old.bold != flags_new.bold or flags_old.dim != flags_new.dim) {
             if (!flags_new.bold and !flags_new.dim) {
@@ -354,8 +354,8 @@ pub const Style = struct {
             return @enumFromInt(@as(u24, @bitCast(data)));
         }
 
-        pub fn replace(self: *Sheet, id: Id, style: Style) error{OutOfBounds}!void {
-            const data: InnerData = @bitCast(@intFromEnum(id));
+        pub fn replace(self: *Sheet, id: Id, style: Style) error{OutOfBounds}!Id {
+            var data: InnerData = @bitCast(@intFromEnum(id));
             if (data.position >= self.styles.items.len) return error.OutOfBounds;
             if (data.position < 2) return error.OutOfBounds;
             self.styles.items[data.position] = style;
@@ -364,10 +364,13 @@ pub const Style = struct {
             return @enumFromInt(@as(u24, @bitCast(data)));
         }
 
-        inline fn aquire(self: *const Sheet, index: Id) Style {
+        inline fn acquire(self: *const Sheet, index: Id) Style {
             const inner_data: InnerData = @bitCast(@intFromEnum(index));
-            if (inner_data.position >= self.styles.items.len) return self.styles.items[1];
-            return self.styles.items[inner_data.position];
+            if (inner_data.position < self.styles.items.len and inner_data.generation == self.generation.items[inner_data.position]) {
+                return self.styles.items[inner_data.position];
+            } else {
+                return self.styles.items[1];
+            }
         }
     };
 };

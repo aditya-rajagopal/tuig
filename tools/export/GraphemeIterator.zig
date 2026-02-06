@@ -4,7 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const t = @import("types.zig");
-const GraphemeBoundryClass = t.GraphemeBoundryClass;
+const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
 const Property = t.Property;
 
 const graphemeBreak = @import("grapheme_break.zig").graphemeBreak;
@@ -26,12 +26,12 @@ const Codepoint = packed struct(u32) {
 
 pub const empty: GraphemeIterator = .{ .text = &.{}, .i = 0, .cursor = .{} };
 
-pub fn init(text: []const u8) error{EmptyString}!GraphemeIterator {
+pub fn init(text: []const u8) GraphemeIterator {
     var iter: GraphemeIterator = .empty;
     iter.text = text;
     iter.i = 0;
     iter.cursor = .{};
-    iter.cursor.codepoint, iter.cursor.bytes = nextCodepoint(text, 0) orelse return error.EmptyString;
+    iter.cursor.codepoint, iter.cursor.bytes = nextCodepoint(text, 0) orelse return .empty;
     iter.cursor.prop = getProperty(iter.cursor.codepoint);
     // NOTE(adi): The first codepoint should always be a break
     return iter;
@@ -160,6 +160,7 @@ pub fn next(self: *GraphemeIterator, codepoint_buffer: []u21) ?Result {
         }
 
         prev = self.cursor;
+        // TODO(adi) GILA(muffled_haku_1vg) change to error
         assert(i < codepoint_buffer.len);
         codepoint_buffer[i] = self.cursor.codepoint;
         i += 1;

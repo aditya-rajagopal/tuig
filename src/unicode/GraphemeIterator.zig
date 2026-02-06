@@ -4,7 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const t = @import("types.zig");
-const GraphemeBoundryClass = t.GraphemeBoundryClass;
+const GraphemeBoundaryClass = t.GraphemeBoundaryClass;
 const Property = t.Property;
 
 const graphemeBreak = @import("grapheme_break.zig").graphemeBreak;
@@ -26,12 +26,12 @@ const Codepoint = packed struct(u32) {
 
 pub const empty: GraphemeIterator = .{ .text = &.{}, .i = 0, .cursor = .{} };
 
-pub fn init(text: []const u8) error{EmptyString}!GraphemeIterator {
+pub fn init(text: []const u8) GraphemeIterator {
     var iter: GraphemeIterator = .empty;
     iter.text = text;
     iter.i = 0;
     iter.cursor = .{};
-    iter.cursor.codepoint, iter.cursor.bytes = nextCodepoint(text, 0) orelse return error.EmptyString;
+    iter.cursor.codepoint, iter.cursor.bytes = nextCodepoint(text, 0) orelse return .empty;
     iter.cursor.prop = getProperty(iter.cursor.codepoint);
     // NOTE(adi): The first codepoint should always be a break
     return iter;
@@ -194,7 +194,7 @@ fn testGraphemeIterator(comptime test_cases: []const TestCase) error{TestExpecte
 
     inline for (test_cases) |test_case| {
         var error_this_test: bool = false;
-        var iter = GraphemeIterator.init(test_case.input) catch return error.TestExpectedEqual;
+        var iter = GraphemeIterator.init(test_case.input);
         var codepoint_buffer: [test_case.expected_codepoint_count]u21 = undefined;
         const result = iter.next(&codepoint_buffer) orelse return error.TestExpectedEqual;
 
@@ -291,7 +291,7 @@ test "GraphemeIterator multiple iterations" {
     const text: []const u8 = "Hello世界";
     const expected_sequence = [_][]const u8{ "H", "e", "l", "l", "o", "世", "界" };
     const expected_codepoints = [_][]const u21{ &.{'H'}, &.{'e'}, &.{'l'}, &.{'l'}, &.{'o'}, &.{0x4E16}, &.{0x754C} };
-    var iter = try GraphemeIterator.init(text);
+    var iter = GraphemeIterator.init(text);
     var iterations: usize = 0;
     var codepoint_buffer: [text.len]u21 = undefined;
 
@@ -617,7 +617,7 @@ test "GraphemeIterator skin tone combinations" {
 test "GraphemeIterator regional indicator edge cases" {
     // Test iteration to verify pairs break correctly
     const text = "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xAC\xF0\x9F\x87\xA7"; // 🇺🇸🇬🇧
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
     var count: usize = 0;
 
@@ -635,7 +635,7 @@ test "GraphemeIterator odd regional indicators" {
     // 3 regional indicators: first two form a flag, third is standalone
     // 🇺🇸 + 🇦 (lone A) - but actually RI + RI + RI should be: pair + single
     const text = "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xA6"; // US flag + lone RI
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
 
     // First: US flag (2 RIs)
@@ -690,7 +690,7 @@ test "GraphemeIterator ZWNJ extends graphemes" {
     // Zero-width non-joiner (U+200C) is in the Extend class per UAX #29
     // a + ZWNJ combines into one grapheme, then b is separate
     const text = "a\xE2\x80\x8Cb"; // a + ZWNJ + b
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
 
     // First grapheme: 'a' + ZWNJ (2 codepoints)
@@ -808,7 +808,7 @@ test "GraphemeIterator control characters" {
 test "GraphemeIterator soft hyphen" {
     // Soft hyphen (U+00AD)
     const text = "\xC2\xAD";
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
 
     const result = (iter.next(&codepoint_buffer)).?;
@@ -952,7 +952,7 @@ test "GraphemeIterator profession with skin tone" {
 test "GraphemeIterator skin tone on non-modifier-base" {
     // A + 🏻 (light skin tone) should be 2 separate graphemes
     const text = "A\xF0\x9F\x8F\xBB";
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
 
     // First grapheme: 'A'
@@ -979,16 +979,11 @@ test "GraphemeIterator multi-person mixed skin tones" {
     try testGraphemeIterator(&test_cases);
 }
 
-test "GraphemeIterator empty string" {
-    const result = GraphemeIterator.init("");
-    try std.testing.expectError(error.EmptyString, result);
-}
-
 test "GraphemeIterator prepend characters" {
     // U+0600 (Arabic Number Sign) is a prepend character
     // prepend + base should form one grapheme
     const text = "\xD8\x80a"; // U+0600 + 'a'
-    var iter = GraphemeIterator.init(text) catch unreachable;
+    var iter = GraphemeIterator.init(text);
     var codepoint_buffer: [4]u21 = undefined;
 
     const first = (iter.next(&codepoint_buffer)).?;

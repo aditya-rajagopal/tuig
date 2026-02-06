@@ -71,8 +71,11 @@ pub fn updateAndRender(self: *Widgets, ctx: *const Context) bool {
 
 fn drawScreen(self: *Widgets, ctx: *const Context, scr: Scissor) void {
     scr.fill(.{ .style = self.screen_background_style });
-    const sidebar = scr.initChild(0, 0, 30, scr.height_global);
-    const content = scr.initChild(30, 0, scr.width_global - 30, scr.height_global);
+
+    const sidebar = scr.initChild(0, 0, 24, scr.height_global);
+    const vbar = scr.initChild(24, 0, 1, scr.height_global);
+    vbar.fill(.{ .data = .{ .codepoint = '│' }, .style = self.screen_background_style });
+    const content = scr.initChild(25, 0, scr.width_global - 30, scr.height_global);
     _ = sidebar.printAssumeNoGrapheme("Sidebar", 0, 0, .default);
     self.drawMovingBox(ctx, content);
 }

@@ -141,18 +141,18 @@ pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, wri
     }
 }
 
-pub inline fn isDiff(self: *const FrameBuffer, back_bufer: *const FrameBuffer, row: usize, col: usize) bool {
-    assert(self.width == back_bufer.width);
-    assert(self.height == back_bufer.height);
-    const old_cell = back_bufer.cells[row * self.width + col];
+pub inline fn isDiff(self: *const FrameBuffer, back_buffer: *const FrameBuffer, row: usize, col: usize) bool {
+    assert(self.width == back_buffer.width);
+    assert(self.height == back_buffer.height);
+    const old_cell = back_buffer.cells[row * self.width + col];
     const new_cell = self.cells[row * self.width + col];
     if (!new_cell.eql(old_cell)) {
         return true;
     } else if (old_cell.tag == .grapheme) {
         const old_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(old_cell)));
         const new_id: t.GraphemeBuffer.GraphemeIndex = @truncate(@as(CellSize, @bitCast(new_cell)));
-        const old_grapheme = back_bufer.grapheme_buffer.get(old_id) orelse return true;
-        const new_grapheme = self.grapheme_buffer.get(new_id) orelse return false;
+        const old_grapheme = back_buffer.grapheme_buffer.get(old_id) orelse return true;
+        const new_grapheme = self.grapheme_buffer.get(new_id) orelse return true;
         return !std.mem.eql(u8, old_grapheme, new_grapheme);
     } else {
         return false;
@@ -187,7 +187,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
         while (col < width) {
             var start: usize = col;
             while (start < width and !self.isDiff(back_buffer, row, start)) {
-                if (back_buffer.cells[start].width == .wide_start) {
+                if (back_buffer.cells[row_start + start].width == .wide_start) {
                     assert(start < row_end - 1);
                     start += 2;
                 } else {
@@ -199,7 +199,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
             var end: usize = start;
 
             while (end < width and self.isDiff(back_buffer, row, end)) {
-                if (back_buffer.cells[end].width == .wide_start or self.cells[end].width == .wide_start) {
+                if (back_buffer.cells[row_start + end].width == .wide_start or self.cells[row_start + end].width == .wide_start) {
                     assert(end < row_end - 1);
                     end += 2;
                 } else {

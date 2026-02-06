@@ -8,6 +8,8 @@ pub fn parseEvent(data: []const u8, consumed_bytes: *usize) Event {
     assert(data.len > 0);
     consumed_bytes.* = 0;
 
+    // @TODO GILA(anguished_claw_dzt) If \x1b is a lone byte we cant tell if it is an incomplete sequence or a part of
+    // a continuation
     if (data[0] == '\x1b' and data.len > 1) switch (data[1]) {
         0x4f => return parseSs3(data, consumed_bytes),
         0x5b => return parseCsi(data, consumed_bytes),
@@ -54,7 +56,7 @@ fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
     assert(data[1] == 'O');
 
     const event: Event = switch (data[2]) {
-        // TODO deal with multiple escape sequences
+        // TODO GILA(angelic_kamodo_zx1) deal with multiple escape sequences
         0x1b => {
             consumed_bytes.* = 2;
             return .none;
@@ -129,7 +131,9 @@ fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
             const modifier, const event_type = if (cutScalar(u8, right, ':')) |result| result else .{ right, &.{} };
             const mod_value = parseValue(u8, modifier, 1) orelse return .none;
             key_event.mods = @bitCast(mod_value -| 1);
-            const key_state: KeyEventType = @enumFromInt(parseValue(u8, event_type, 1) orelse return .none);
+
+            const event = parseValue(u8, event_type, 1) orelse return .none;
+            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
             return switch (key_state) {
                 .pressed => .{ .key_pressed = key_event },
                 .repeat => .{ .key_repeat = key_event },
@@ -179,7 +183,8 @@ fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
             const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
             const modifier = parseValue(u8, modifier_string, 1) orelse return .none;
             key_event.mods = @bitCast(modifier -| 1);
-            const key_state: KeyEventType = @enumFromInt(parseValue(u8, event_type, 1) orelse return .none);
+            const event = parseValue(u8, event_type, 1) orelse return .none;
+            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
 
             // @TODO GILA(fluffy_tail_yw4)
             _ = text_as_codepoint;
@@ -219,7 +224,8 @@ fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
             const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
             const modifier = parseValue(u8, modifier_string, 1) orelse return .none;
             key_event.mods = @bitCast(modifier -| 1);
-            const key_state: KeyEventType = @enumFromInt(parseValue(u8, event_type, 1) orelse return .none);
+            const event = parseValue(u8, event_type, 1) orelse return .none;
+            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
 
             // @TODO GILA(fluffy_tail_yw4)
             _ = text_as_codepoint;
@@ -247,20 +253,24 @@ fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
             consumed_bytes.* = 0;
             return .none;
         }
+        consumed_bytes.* = 6;
+        if (data[3] < 32 or data[4] < 32 or data[5] < 32) return .none;
         const number: u16 = data[3] - 32;
         const x: u16 = data[4] - 32;
         const y: u16 = data[5] - 32;
-        consumed_bytes.* = 6;
+        // Ignore SGR events with coordinates (0,0) this is malformed
+        if (x == 0 or y == 0) return .none;
         break :blk .{ number, x, y };
     } else if (csi.len >= 4 and csi[2] == '<') blk: {
         // @NOTE SGR on
         sgr = true;
+        consumed_bytes.* = csi.len;
         const mouse_event_type, const coordinates = cutScalar(u8, csi[3..m], ';') orelse return .none;
         const string_x, const string_y = cutScalar(u8, coordinates, ';') orelse return .none;
-        const x = parseValue(u16, string_x, 1) orelse return .none;
-        const y = parseValue(u16, string_y, 1) orelse return .none;
+        const x = parseValue(u16, string_x, null) orelse return .none;
+        const y = parseValue(u16, string_y, null) orelse return .none;
         const number = parseValue(u16, mouse_event_type, null) orelse return .none;
-        consumed_bytes.* = csi.len;
+        if (x == 0 or y == 0) return .none;
         break :blk .{ number, x, y };
     } else return .none;
 
@@ -576,7 +586,7 @@ pub const KeyEvent = struct {
     };
 
     pub const Code = enum(u21) {
-        unkown = std.math.maxInt(u21),
+        unknown = std.math.maxInt(u21),
         tab = 0x09,
         enter = 0x0d,
         backspace = 0x7f,
@@ -802,7 +812,7 @@ pub const KeyEvent = struct {
                 .@"}" => .{ .physical_key = .@"]", .shift = true },
                 .@"|" => .{ .physical_key = .@"\\", .shift = true },
                 .@":" => .{ .physical_key = .@";", .shift = true },
-                .@"'" => .{ .physical_key = .@"'", .shift = true },
+                .@"\"" => .{ .physical_key = .@"'", .shift = true },
                 .@"<" => .{ .physical_key = .@",", .shift = true },
                 .@">" => .{ .physical_key = .@".", .shift = true },
                 .@"?" => .{ .physical_key = .@"/", .shift = true },
@@ -924,8 +934,8 @@ pub const KeyEvent = struct {
                 .left_super => .{ .physical_key = .left_super, .shift = false },
                 .right_super => .{ .physical_key = .right_super, .shift = false },
 
-                .@"!" => .{ .physical_key = .@"1", .shift = false },
-                .@"\"" => .{ .physical_key = .@"'", .shift = false },
+                .@"!" => .{ .physical_key = .@"1", .shift = true },
+                .@"'" => .{ .physical_key = .@"'", .shift = false },
                 .@"," => .{ .physical_key = .@",", .shift = false },
                 .@"-" => .{ .physical_key = .@"-", .shift = false },
                 .@"." => .{ .physical_key = .@".", .shift = false },
@@ -1110,10 +1120,8 @@ test "keyboard events" {
         .{ .sequence = "\x1b[97;1:1u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
         .{ .sequence = "\x1b[97;1:2u", .expected = .{ .key_repeat = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
         .{ .sequence = "\x1b[97;1:3u", .expected = .{ .key_released = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        // @TODO Fix this test
         .{ .sequence = "\x1b[97:65;1u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
         .{ .sequence = "\x1b[97;1;65u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        // @TODO Fix this test
         .{ .sequence = "\x1b[97:65:97;1:1;65:66u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
         .{ .sequence = "\x1b[97;65u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .caps_lock = true } } } },
         .{ .sequence = "\x1b[97;129u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .num_lock = true } } } },
