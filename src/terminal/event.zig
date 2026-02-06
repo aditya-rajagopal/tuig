@@ -4,15 +4,18 @@ const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 const cutScalar = stdx.cutScalar;
 
+pub const csi_len_max_default: usize = 128;
+
 pub fn parseEvent(data: []const u8, consumed_bytes: *usize) Event {
     assert(data.len > 0);
     consumed_bytes.* = 0;
 
     // @TODO GILA(anguished_claw_dzt) If \x1b is a lone byte we cant tell if it is an incomplete sequence or a part of
     // a continuation
+    // @TODO GILA(gleeful_beam_g5f) If we get \x1b[ we cant tell if it is incomplete or alt + [
     if (data[0] == '\x1b' and data.len > 1) switch (data[1]) {
-        0x4f => return parseSs3(data, consumed_bytes),
-        0x5b => return parseCsi(data, consumed_bytes),
+        0x4f => return parseSS3(data, consumed_bytes),
+        0x5b => return parseCSI(data, consumed_bytes),
         else => {
             var key_event = parseAscii(data[1]);
             key_event.key_pressed.mods.alt = true;
@@ -50,7 +53,7 @@ fn parseAscii(c: u8) Event {
     return .{ .key_pressed = key_event };
 }
 
-fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
+fn parseSS3(data: []const u8, consumed_bytes: *usize) Event {
     if (data.len < 3) return .none;
     assert(data[0] == '\x1b');
     assert(data[1] == 'O');
@@ -81,162 +84,250 @@ fn parseSs3(data: []const u8, consumed_bytes: *usize) Event {
     return event;
 }
 
-fn parseCsi(data: []const u8, consumed_bytes: *usize) Event {
+const ScanResult = union(enum) {
+    complete: usize,
+    incomplete,
+    malformed: usize,
+    too_long: usize,
+};
+
+inline fn isCSIParameterByte(byte: u8) bool {
+    // ECMA-48 parameter bytes: 0x30..0x3F
+    return byte >= 0x30 and byte <= 0x3F;
+}
+
+inline fn isCSIIntermediateByte(byte: u8) bool {
+    // ECMA-48 intermediate bytes: 0x20..0x2F
+    return byte >= 0x20 and byte <= 0x2F;
+}
+
+inline fn isCSIFinalByte(byte: u8) bool {
+    // ECMA-48 final byte: 0x40..0x7E (0x7F excluded)
+    return byte >= 0x40 and byte <= 0x7E;
+}
+
+const CSIScanOptions = struct {
+    csi_len_max: usize = csi_len_max_default,
+};
+
+/// Scan CSI using ECMA-48 rules.
+/// https://ecma-international.org/wp-content/uploads/ECMA-48_5th_edition_june_1991.pdf
+/// CSI P ... P I ... I F
+/// P: parameter bytes (0x30..0x3F)
+/// I: intermediate bytes (0x20..0x2F)
+/// F: final byte (0x40..0x7E)
+/// Everythign else is invalid.
+fn scanCSI(data: []const u8, options: CSIScanOptions) ScanResult {
+    assert(data.len > 2);
+    assert(data[0] == '\x1b');
+    assert(data[1] == '[');
+    // Guard against overflow if someone passes absurd max.
+    const capped_max = @min(options.csi_len_max, std.math.maxInt(usize) - 2);
+    const limit = @min(data.len, 2 + capped_max);
+
+    var i: usize = 2;
+    // CSI <P ... P> I ... I F
+    while (i < limit and isCSIParameterByte(data[i])) : (i += 1) {}
+    // CSI P ... P <I ... I> F
+    while (i < limit and isCSIIntermediateByte(data[i])) : (i += 1) {}
+
+    if (i < limit) {
+        if (isCSIFinalByte(data[i])) {
+            return .{ .complete = i + 1 };
+        } else {
+            // @NOTE encountered a byte after intermedaite that is not a valid
+            // ECMA-48 final byte. This is not a valid CSI sequence.
+            // We leave the final byte to try to reparse.
+            return .{ .malformed = i };
+        }
+    } else {
+        if (limit < data.len) return .{ .too_long = limit };
+        return .incomplete;
+    }
+}
+
+fn parseCSI(data: []const u8, consumed_bytes: *usize) Event {
     if (data.len < 3) return .none;
     assert(data[0] == '\x1b');
     assert(data[1] == '[');
 
-    // @NOTE a CSI sequence terminates when a character greater than 0x40 is encountered.
-    // This is to deal with the case we have multiple escape sequences in a row.
-    const n = for (2..data.len) |i| {
-        if (data[i] >= 0x40) break i + 1;
-    } else return .none;
+    const result = scanCSI(data, .{});
+    switch (result) {
+        .complete => |n| {
+            assert(n >= 3);
+            consumed_bytes.* = n;
+            const csi = data[0..n];
+            return switch (csi[n - 1]) {
+                'M', 'm' => parseMouse(csi, data, consumed_bytes),
+                'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S' => parseLegacyCursorKeys(csi),
+                '~' => parseLegacyTildeSequences(csi),
+                'c' => .none, // @TODO GILA(indelible_magma_xhr)
+                'n' => .none, // @TODO GILA(odd_flux_g9x)
+                't' => .none, // @TODO GILA(wry_ray_32j)
+                'y' => .none, // @TODO GILA(emotional_hash_6hm)
+                'q' => .none, // @TODO GILA(rough_fang_bxy)
+                'u' => parseKittyKeyboardProtocol(csi),
+                else => .none,
+            };
+        },
+        .incomplete => return .none,
+        .malformed => |n| {
+            consumed_bytes.* = n;
+            return .none;
+        },
+        .too_long => |n| {
+            consumed_bytes.* = n;
+            return .none;
+        },
+    }
+    unreachable;
+}
 
-    const KeyEventType = enum(u8) {
-        pressed = 1,
-        repeat = 2,
-        released = 3,
+const KeyEventType = enum(u8) {
+    pressed = 1,
+    repeat = 2,
+    released = 3,
+};
+
+fn parseKittyKeyboardProtocol(csi: []const u8) Event {
+    // @NOTE https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
+    //     CSI unicode-key-code:alternate-key-codes ; modifiers:event-type ; text-as-codepoints u
+    // Only the unicode-key-code field is mandatory, everything else is optional.
+    const n = csi.len;
+    const payload = csi[2 .. n - 1];
+    if (payload.len == 0) return .none;
+
+    const first, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
+    const key_code, const alt_key_code = if (cutScalar(u8, first, ':')) |result| result else .{ first, &.{} };
+
+    var key_event: KeyEvent = undefined;
+
+    const code = parseValue(u21, key_code, null) orelse return .none;
+    key_event.code = @enumFromInt(code);
+    key_event.physical_key = key_event.code.mapUsLayout().physical_key;
+    key_event.mods = .{};
+
+    // @TODO GILA(fluffy_tail_yw4)
+    _ = alt_key_code;
+    if (remaining.len == 0) return .{ .key_pressed = key_event };
+
+    const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
+    const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
+
+    const mod_value = parseValue(u9, modifier_string, 1) orelse return .none;
+    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
+    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
+
+    const event = parseValue(u8, event_type, 1) orelse return .none;
+    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
+
+    // @TODO GILA(fluffy_tail_yw4)
+    _ = text_as_codepoint;
+
+    return switch (key_state) {
+        .pressed => .{ .key_pressed = key_event },
+        .repeat => .{ .key_repeat = key_event },
+        .released => .{ .key_released = key_event },
     };
+}
 
-    const csi = data[0..n];
-    consumed_bytes.* = n;
-    return switch (csi[n - 1]) {
-        'M', 'm' => parseMouse(csi, data, consumed_bytes),
-        'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S' => {
-            // @NOTE There are two types of events that end in these letters https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
-            //     CSI {A,B,C,D,E,F,H,P,Q,S} (legacy)
-            //     CSI 1; modifier:type {A,B,C,D,E,F,H,P,Q,S}
+fn parseLegacyCursorKeys(csi: []const u8) Event {
+    // @NOTE There are two types of events that end in these letters https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
+    //     CSI {A,B,C,D,E,F,H,P,Q,S} (legacy)
+    //     CSI 1; modifier:type {A,B,C,D,E,F,H,P,Q,S}
 
-            const payload = csi[2 .. n - 1];
-            var key_event: KeyEvent = undefined;
-            key_event.code, key_event.physical_key = switch (csi[n - 1]) {
-                'A' => .{ KeyEvent.Code.up, KeyEvent.PhysicalKey.up },
-                'B' => .{ KeyEvent.Code.down, KeyEvent.PhysicalKey.down },
-                'C' => .{ KeyEvent.Code.right, KeyEvent.PhysicalKey.right },
-                'D' => .{ KeyEvent.Code.left, KeyEvent.PhysicalKey.left },
-                'E' => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
-                'F' => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
-                'H' => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
-                'P' => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
-                'Q' => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
-                'S' => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
-                else => unreachable,
-            };
-            key_event.mods = .{};
-            if (payload.len == 0) return .{ .key_pressed = key_event };
+    const n = csi.len;
+    const payload = csi[2 .. n - 1];
+    var key_event: KeyEvent = undefined;
+    key_event.code, key_event.physical_key = switch (csi[n - 1]) {
+        'A' => .{ KeyEvent.Code.up, KeyEvent.PhysicalKey.up },
+        'B' => .{ KeyEvent.Code.down, KeyEvent.PhysicalKey.down },
+        'C' => .{ KeyEvent.Code.right, KeyEvent.PhysicalKey.right },
+        'D' => .{ KeyEvent.Code.left, KeyEvent.PhysicalKey.left },
+        'E' => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
+        'F' => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
+        'H' => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
+        'P' => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
+        'Q' => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
+        'S' => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
+        else => unreachable,
+    };
+    key_event.mods = .{};
+    if (payload.len == 0) return .{ .key_pressed = key_event };
 
-            const left, const right = cutScalar(u8, payload, ';') orelse return .none;
-            if (left.len != 1 or (left.len == 1 and left[0] != '1')) return .none;
+    const left, const right = cutScalar(u8, payload, ';') orelse return .none;
+    if (left.len != 1 or (left.len == 1 and left[0] != '1')) return .none;
 
-            const modifier, const event_type = if (cutScalar(u8, right, ':')) |result| result else .{ right, &.{} };
-            const mod_value = parseValue(u8, modifier, 1) orelse return .none;
-            key_event.mods = @bitCast(mod_value -| 1);
+    const modifier, const event_type = if (cutScalar(u8, right, ':')) |result| result else .{ right, &.{} };
+    const mod_value = parseValue(u9, modifier, 1) orelse return .none;
+    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
+    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
 
-            const event = parseValue(u8, event_type, 1) orelse return .none;
-            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
-            return switch (key_state) {
-                .pressed => .{ .key_pressed = key_event },
-                .repeat => .{ .key_repeat = key_event },
-                .released => .{ .key_released = key_event },
-            };
-        },
-        '~' => {
-            // @NOTE There are three types of events that end in ~
-            //     CSI number ~
-            //     CSI number; modifier:type ~
-            //     CSI number; modifier:type; text_as_codepoint ~
-            // see: https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
-            const payload = csi[2 .. n - 1];
-            const string_number, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
-            const number = parseValue(u16, string_number, null) orelse return .none;
+    const event = parseValue(u8, event_type, 1) orelse return .none;
+    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
+    return switch (key_state) {
+        .pressed => .{ .key_pressed = key_event },
+        .repeat => .{ .key_repeat = key_event },
+        .released => .{ .key_released = key_event },
+    };
+}
 
-            var key_event: KeyEvent = undefined;
-            key_event.code, key_event.physical_key = switch (number) {
-                2 => .{ KeyEvent.Code.insert, KeyEvent.PhysicalKey.insert },
-                3 => .{ KeyEvent.Code.delete, KeyEvent.PhysicalKey.delete },
-                5 => .{ KeyEvent.Code.page_up, KeyEvent.PhysicalKey.page_up },
-                6 => .{ KeyEvent.Code.page_down, KeyEvent.PhysicalKey.page_down },
-                7 => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
-                8 => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
-                11 => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
-                12 => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
-                13 => .{ KeyEvent.Code.f3, KeyEvent.PhysicalKey.f3 },
-                14 => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
-                15 => .{ KeyEvent.Code.f5, KeyEvent.PhysicalKey.f5 },
-                17 => .{ KeyEvent.Code.f6, KeyEvent.PhysicalKey.f6 },
-                18 => .{ KeyEvent.Code.f7, KeyEvent.PhysicalKey.f7 },
-                19 => .{ KeyEvent.Code.f8, KeyEvent.PhysicalKey.f8 },
-                20 => .{ KeyEvent.Code.f9, KeyEvent.PhysicalKey.f9 },
-                21 => .{ KeyEvent.Code.f10, KeyEvent.PhysicalKey.f10 },
-                23 => .{ KeyEvent.Code.f11, KeyEvent.PhysicalKey.f11 },
-                24 => .{ KeyEvent.Code.f12, KeyEvent.PhysicalKey.f12 },
-                29 => .{ KeyEvent.Code.menu, KeyEvent.PhysicalKey.menu },
-                57427 => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
-                200 => return .none, // @TODO GILA(loyal_azure_qss)
-                201 => return .none, // @TODO GILA(loyal_azure_qss)
-                else => return .none,
-            };
-            key_event.mods = .{};
-            if (remaining.len == 0) return .{ .key_pressed = key_event };
+fn parseLegacyTildeSequences(csi: []const u8) Event {
+    // @NOTE There are three types of events that end in ~
+    //     CSI number ~
+    //     CSI number; modifier:type ~
+    //     CSI number; modifier:type; text_as_codepoint ~
+    // see: https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
+    const n = csi.len;
+    const payload = csi[2 .. n - 1];
+    const string_number, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
+    const number = parseValue(u16, string_number, null) orelse return .none;
 
-            const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-            const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
-            const modifier = parseValue(u8, modifier_string, 1) orelse return .none;
-            key_event.mods = @bitCast(modifier -| 1);
-            const event = parseValue(u8, event_type, 1) orelse return .none;
-            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
+    var key_event: KeyEvent = undefined;
+    key_event.code, key_event.physical_key = switch (number) {
+        2 => .{ KeyEvent.Code.insert, KeyEvent.PhysicalKey.insert },
+        3 => .{ KeyEvent.Code.delete, KeyEvent.PhysicalKey.delete },
+        5 => .{ KeyEvent.Code.page_up, KeyEvent.PhysicalKey.page_up },
+        6 => .{ KeyEvent.Code.page_down, KeyEvent.PhysicalKey.page_down },
+        7 => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
+        8 => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
+        11 => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
+        12 => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
+        13 => .{ KeyEvent.Code.f3, KeyEvent.PhysicalKey.f3 },
+        14 => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
+        15 => .{ KeyEvent.Code.f5, KeyEvent.PhysicalKey.f5 },
+        17 => .{ KeyEvent.Code.f6, KeyEvent.PhysicalKey.f6 },
+        18 => .{ KeyEvent.Code.f7, KeyEvent.PhysicalKey.f7 },
+        19 => .{ KeyEvent.Code.f8, KeyEvent.PhysicalKey.f8 },
+        20 => .{ KeyEvent.Code.f9, KeyEvent.PhysicalKey.f9 },
+        21 => .{ KeyEvent.Code.f10, KeyEvent.PhysicalKey.f10 },
+        23 => .{ KeyEvent.Code.f11, KeyEvent.PhysicalKey.f11 },
+        24 => .{ KeyEvent.Code.f12, KeyEvent.PhysicalKey.f12 },
+        29 => .{ KeyEvent.Code.menu, KeyEvent.PhysicalKey.menu },
+        57427 => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
+        200 => return .none, // @TODO GILA(loyal_azure_qss)
+        201 => return .none, // @TODO GILA(loyal_azure_qss)
+        else => return .none,
+    };
+    key_event.mods = .{};
+    if (remaining.len == 0) return .{ .key_pressed = key_event };
 
-            // @TODO GILA(fluffy_tail_yw4)
-            _ = text_as_codepoint;
-            return switch (key_state) {
-                .pressed => .{ .key_pressed = key_event },
-                .repeat => .{ .key_repeat = key_event },
-                .released => .{ .key_released = key_event },
-            };
-        },
-        'c' => .none, // @TODO GILA(indelible_magma_xhr)
-        'n' => .none, // @TODO GILA(odd_flux_g9x)
-        't' => .none, // @TODO GILA(wry_ray_32j)
-        'y' => .none, // @TODO GILA(emotional_hash_6hm)
-        'q' => .none, // @TODO GILA(rough_fang_bxy)
-        'u' => {
-            // @NOTE https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
-            //     CSI unicode-key-code:alternate-key-codes ; modifiers:event-type ; text-as-codepoints u
-            // Only the unicode-key-code field is mandatory, everything else is optional.
-            const payload = csi[2 .. n - 1];
-            if (payload.len == 0) return .none;
+    const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
+    const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
 
-            const first, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
-            const key_code, const alt_key_code = if (cutScalar(u8, first, ':')) |result| result else .{ first, &.{} };
+    const mod_value = parseValue(u9, modifier_string, 1) orelse return .none;
+    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
+    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
 
-            var key_event: KeyEvent = undefined;
+    const event = parseValue(u8, event_type, 1) orelse return .none;
+    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
 
-            const code = parseValue(u21, key_code, null) orelse return .none;
-            key_event.code = @enumFromInt(code);
-            key_event.physical_key = key_event.code.mapUsLayout().physical_key;
-            key_event.mods = .{};
-
-            // @TODO GILA(fluffy_tail_yw4)
-            _ = alt_key_code;
-            if (remaining.len == 0) return .{ .key_pressed = key_event };
-
-            const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-            const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
-            const modifier = parseValue(u8, modifier_string, 1) orelse return .none;
-            key_event.mods = @bitCast(modifier -| 1);
-            const event = parseValue(u8, event_type, 1) orelse return .none;
-            const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
-
-            // @TODO GILA(fluffy_tail_yw4)
-            _ = text_as_codepoint;
-
-            return switch (key_state) {
-                .pressed => .{ .key_pressed = key_event },
-                .repeat => .{ .key_repeat = key_event },
-                .released => .{ .key_released = key_event },
-            };
-        },
-        else => .none,
+    // @TODO GILA(fluffy_tail_yw4)
+    _ = text_as_codepoint;
+    return switch (key_state) {
+        .pressed => .{ .key_pressed = key_event },
+        .repeat => .{ .key_repeat = key_event },
+        .released => .{ .key_released = key_event },
     };
 }
 
@@ -264,7 +355,7 @@ fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
     } else if (csi.len >= 4 and csi[2] == '<') blk: {
         // @NOTE SGR on
         sgr = true;
-        consumed_bytes.* = csi.len;
+        assert(consumed_bytes.* == csi.len);
         const mouse_event_type, const coordinates = cutScalar(u8, csi[3..m], ';') orelse return .none;
         const string_x, const string_y = cutScalar(u8, coordinates, ';') orelse return .none;
         const x = parseValue(u16, string_x, null) orelse return .none;
@@ -1147,6 +1238,12 @@ test "keyboard events" {
         .{ .sequence = "\x1bOZ", .expected = .none },
         .{ .sequence = "\x1b[1;1X", .expected = .none },
         .{ .sequence = "\x1b[999~", .expected = .none },
+        // Modifier encoding is 1 + bitmask; 0 and > 256 are invalid
+        .{ .sequence = "\x1b[97;282u", .expected = .none },
+        .{ .sequence = "\x1b[97;0:1u", .expected = .none },
+        .{ .sequence = "\x1b[97;0:2u", .expected = .none },
+        .{ .sequence = "\x1b[1;257A", .expected = .none },
+        .{ .sequence = "\x1b[3;0~", .expected = .none },
     };
 
     try testTerminalSequences(&test_cases);
@@ -1186,4 +1283,89 @@ test "mouse events" {
     };
 
     try testTerminalSequences(&test_cases);
+}
+
+const ScanTestCase = struct {
+    sequence: []const u8,
+    options: CSIScanOptions = .{},
+    expected: ScanResult,
+};
+
+fn expectScanResult(actual: ScanResult, expected: ScanResult) !void {
+    const Tag = std.meta.Tag(ScanResult);
+    try std.testing.expectEqual(@as(Tag, expected), @as(Tag, actual));
+    switch (expected) {
+        .complete => |n| try std.testing.expectEqual(n, actual.complete),
+        .malformed => |n| try std.testing.expectEqual(n, actual.malformed),
+        .too_long => |n| try std.testing.expectEqual(n, actual.too_long),
+        .incomplete => {},
+    }
+}
+
+fn testScanCSI(comptime cases: []const ScanTestCase) !void {
+    inline for (cases) |tc| {
+        const actual = scanCSI(tc.sequence, tc.options);
+        try expectScanResult(actual, tc.expected);
+    }
+}
+
+test "scanCSI ECMA-48 grammar and bounds" {
+    const cases = [_]ScanTestCase{
+        // Complete
+        .{ .sequence = "\x1b[A", .expected = .{ .complete = 3 } },
+        .{ .sequence = "\x1b[?25h", .expected = .{ .complete = 6 } },
+        .{ .sequence = "\x1b[[", .expected = .{ .complete = 3 } }, // '[' is a valid final byte class
+        // Incomplete (must be len > 2 because scanCSI asserts that)
+        .{ .sequence = "\x1b[1", .expected = .incomplete },
+        .{ .sequence = "\x1b[?25", .expected = .incomplete },
+        // Malformed: parameter byte after intermediate byte
+        .{ .sequence = "\x1b[ 0", .expected = .{ .malformed = 3 } },
+        // Malformed: invalid byte immediately after CSI introducer
+        .{ .sequence = "\x1b[\x10", .expected = .{ .malformed = 2 } },
+        // Malformed: preserve potential next ESC sequence start
+        // "\x1b[12" malformed at index 4 where next ESC begins.
+        .{ .sequence = "\x1b[12\x1b[A", .expected = .{ .malformed = 4 } },
+        // Too long using a small cap
+        .{
+            .sequence = "\x1b[12345A",
+            .options = .{ .csi_len_max = 4 },
+            .expected = .{ .too_long = 6 },
+        },
+    };
+    try testScanCSI(&cases);
+}
+
+test "scanCSI malformed preserves potential next ESC" {
+    const sequence = "\x1b[12\x1b[A";
+    const result = scanCSI(sequence, .{});
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(ScanResult), .malformed),
+        @as(std.meta.Tag(ScanResult), result),
+    );
+    try std.testing.expectEqual(@as(usize, 4), result.malformed);
+}
+
+test "parseEvent malformed CSI does not eat next event start" {
+    const sequence = "\x1b[12\x1b[A";
+    // First parse: malformed CSI prefix only.
+    var consumed_first: usize = 0;
+    const first = parseEvent(sequence, &consumed_first);
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(Event), .none),
+        @as(std.meta.Tag(Event), first),
+    );
+    try std.testing.expectEqual(@as(usize, 4), consumed_first);
+    // Second parse: remaining bytes should still start with ESC [ A.
+    const remaining = sequence[consumed_first..];
+    var consumed_second: usize = 0;
+    const second = parseEvent(remaining, &consumed_second);
+    try std.testing.expectEqual(@as(usize, 3), consumed_second);
+    switch (second) {
+        .key_pressed => |key| {
+            try std.testing.expectEqual(KeyEvent.Code.up, key.code);
+            try std.testing.expectEqual(KeyEvent.PhysicalKey.up, key.physical_key);
+            try std.testing.expectEqual(Mods{}, key.mods);
+        },
+        else => try std.testing.expect(false),
+    }
 }

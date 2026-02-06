@@ -319,6 +319,7 @@ pub const Terminal = struct {
         try self.write("\x1bP=2s\x1b\\");
     }
 
+    // @TODO This should drain the event queue in multithreaded mode when that is implemented
     pub fn pollEvents(self: *Terminal, timeout_ms: i32) error{PollFailed}![]Event {
         var events = std.ArrayList(Event).initBuffer(&self.event_queue);
 
@@ -342,23 +343,21 @@ pub const Terminal = struct {
                 .revents = 0,
             },
         };
+        var poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollFailed;
+
+        if (poll_result == 0) {
+            return events.items;
+        }
+        if (fds[0].revents & std.posix.POLL.IN == 0) {
+            return events.items;
+        }
 
         // @TODO GILA(frosty_gale_9rz) This buffer is fixed which means if we get a large stdin we will block. We could use a ring buffer
         //       or we could keep shifting the buffer discarding old data. But for now if write_head == buf.len we will break
         //       and discard the data we read so far and next time we will start readign from incomplete data.
-        var buf: [1024]u8 = undefined;
+        var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
         var write_head: usize = 0;
         reading_stdin: while (true) {
-            // FIXME: In macos you cant poll dev/tty. It needs select
-            const poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollFailed;
-
-            if (poll_result == 0) {
-                break :reading_stdin;
-            }
-            if (fds[0].revents & std.posix.POLL.IN == 0) {
-                break :reading_stdin;
-            }
-
             // @TODO GILA(frosty_gale_9rz) we need to check here if write_head == buf.len
             const n = std.posix.read(self.fd, buf[write_head..]) catch return error.PollFailed;
             if (n == 0) {
@@ -374,16 +373,28 @@ pub const Terminal = struct {
                         buf[i] = data[i];
                     }
                     write_head = data.len;
-                    continue :reading_stdin;
+                    break;
                 }
+                write_head = 0;
                 data = data[consumed_bytes..];
 
                 // @TODO GILA(dependent_thorn_fh0)  This basically stops if event queue is full. Try somethign else
                 if (event != .none) events.appendBounded(event) catch break :reading_stdin;
 
+                // @NOTE We are done if we have consumed all the bytes in the buffer and the data in the buffer does not
+                //       fill the entire buffer i.e there should not be any leftover byts to read from stdin
                 if (data.len == 0 and n != (buf.len - write_head)) break :reading_stdin;
             }
-            write_head = 0;
+
+            // FIXME: In macos you cant poll dev/tty. It needs select
+            poll_result = std.posix.poll(&fds, 0) catch return error.PollFailed;
+
+            if (poll_result == 0) {
+                break :reading_stdin;
+            }
+            if (fds[0].revents & std.posix.POLL.IN == 0) {
+                break :reading_stdin;
+            }
         }
 
         return events.items;
