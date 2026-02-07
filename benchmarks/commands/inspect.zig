@@ -387,7 +387,7 @@ fn renderInspectView(ctx: *const renderer.Context, state: *InspectState) !void {
             var x: u16 = 0;
             while (x < blit_width) : (x += 1) {
                 const cell = src.get(x, y);
-                scissor.set(x, y, cell);
+                scissor.set(x, y, cell) catch {};
             }
         }
         const src_end = src.grapheme_buffer.end_index;
@@ -408,7 +408,7 @@ fn renderInspectView(ctx: *const renderer.Context, state: *InspectState) !void {
                 const bar_width = bar.width_global;
                 var x: u16 = 0;
                 while (x < bar_width) : (x += 1) {
-                    bar.set(x, row, renderer.Cell.empty);
+                    bar.set(x, row, renderer.Cell.empty) catch {};
                 }
             }
             var info_buf: [160]u8 = undefined;

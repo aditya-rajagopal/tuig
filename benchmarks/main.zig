@@ -66,5 +66,6 @@ pub fn main(init: std.process.Init) !void {
 test "benchmarks module tests" {
     _ = @import("common.zig");
     _ = @import("patterns.zig");
+    _ = @import("print_helpers.zig");
     _ = @import("ui.zig");
 }

@@ -122,16 +122,29 @@ fn renderWaiting(self: *Snake, ctx: *const Context) void {
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Press `ENTER` to start", .{}) catch unreachable;
     const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(score.len)), 2);
-    const msg_y = ctx.scissor.height_global - 1;
-    const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(score.len), 1);
-    _ = msg_region.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
+    if (ctx.scissor.height_global > 0) {
+        const msg_y: i17 = @intCast(ctx.scissor.height_global - 1);
+        const msg_region = ctx.scissor.initChild(msg_x, msg_y, @intCast(score.len), 1);
+        _ = msg_region.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
+    }
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.playing);
 }
 
 fn newFood(self: *Snake, scissor: Scissor) void {
+    if (scissor.width_global == 0 or scissor.height_global == 0) {
+        self.food_position = .{ .x = 0, .y = 0 };
+        return;
+    }
+
     self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
     self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
-    while (scissor.get(self.food_position.x, self.food_position.y).?.data.codepoint != ' ') {
+    while (true) {
+        const cell = scissor.get(self.food_position.x, self.food_position.y) orelse {
+            self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
+            self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
+            continue;
+        };
+        if (cell.data.codepoint == ' ') break;
         self.food_position.x = self.random.random().intRangeAtMost(u16, 0, scissor.width_global - 1);
         self.food_position.y = self.random.random().intRangeAtMost(u16, 0, scissor.height_global - 1);
     }
@@ -151,7 +164,7 @@ fn initSnake(self: *Snake, scissor: Scissor) void {
 
 fn renderSnake(self: *Snake, game_area: Scissor) void {
     for (self.components.items) |component| {
-        _ = game_area.set(component.x, component.y, Cell{ .data = .{ .codepoint = '+' } });
+        game_area.set(component.x, component.y, Cell{ .data = .{ .codepoint = '+' } }) catch {};
     }
 }
 
@@ -171,7 +184,10 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
             if (head.x == game_area.width_global - 1) head.x = 0 else head.x += 1;
         },
     }
-    const space = game_area.get(head.x, head.y).?;
+    const space = game_area.get(head.x, head.y) orelse {
+        self.transitonTo(.game_over);
+        return;
+    };
     if (space.data.codepoint == '+') {
         self.transitonTo(.game_over);
     } else if (space.data.codepoint == 'O') {
@@ -180,7 +196,7 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
         self.newFood(game_area);
     }
     self.components.appendAssumeCapacity(head);
-    game_area.set(head.x, head.y, Cell{ .data = .{ .codepoint = '+' } });
+    game_area.set(head.x, head.y, Cell{ .data = .{ .codepoint = '+' } }) catch {};
 
     const tail = self.components.items[0];
     if (self.eaten_food.items.len > 0) {
@@ -189,11 +205,11 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
             _ = self.eaten_food.orderedRemove(0);
         } else {
             _ = self.components.orderedRemove(0);
-            game_area.set(tail.x, tail.y, .empty);
+            game_area.set(tail.x, tail.y, .empty) catch {};
         }
     } else {
         _ = self.components.orderedRemove(0);
-        game_area.set(tail.x, tail.y, .empty);
+        game_area.set(tail.x, tail.y, .empty) catch {};
     }
 }
 
@@ -245,7 +261,7 @@ fn renderPlaying(self: *Snake, ctx: *const Context) void {
         }
     }
 
-    _ = game_area.set(self.food_position.x, self.food_position.y, Cell{ .data = .{ .codepoint = 'O' } });
+    game_area.set(self.food_position.x, self.food_position.y, Cell{ .data = .{ .codepoint = 'O' } }) catch {};
     self.renderSnake(game_area);
     if (self.frame_ticked) {
         self.moveSnake(game_area);
@@ -258,10 +274,12 @@ fn renderGameOver(self: *Snake, ctx: *const Context) void {
     self.components.clearRetainingCapacity();
     const frame = game_over_frames[self.frame_tick % frames.len];
     const region = ctx.scissor;
-    const start_x = (region.width_global - game_over_title_width) / 2;
-    const start_y = (region.height_global - game_over_title_height) / 2;
+    const region_width_i17: i17 = @intCast(region.width_global);
+    const region_height_i17: i17 = @intCast(region.height_global);
+    const start_x: i17 = @divFloor(region_width_i17 - @as(i17, @intCast(game_over_title_width)), 2);
+    const start_y: i17 = @divFloor(region_height_i17 - @as(i17, @intCast(game_over_title_height)), 2);
 
-    const area = region.initChild(@intCast(start_x), @intCast(start_y), game_over_title_width, game_over_title_height);
+    const area = region.initChild(start_x, start_y, game_over_title_width, game_over_title_height);
 
     for (0..game_over_title_height) |row| {
         const start = row * (game_over_title_width + 1);
@@ -270,15 +288,17 @@ fn renderGameOver(self: *Snake, ctx: *const Context) void {
     }
     var buf: [128]u8 = undefined;
     const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
-    const x = (region.width_global - score.len) / 2;
-    const y = start_y + game_over_title_height + 3;
-    const score_area = region.initChild(@intCast(x), @intCast(y), @intCast(score.len), 1);
+    const x: i17 = @divFloor(region_width_i17 - @as(i17, @intCast(score.len)), 2);
+    const y: i17 = start_y + @as(i17, @intCast(game_over_title_height)) + 3;
+    const score_area = region.initChild(x, y, @intCast(score.len), 1);
     _ = score_area.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
     const msg = std.fmt.bufPrint(&buf, "Press `ENTER` to restart", .{}) catch unreachable;
     const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(msg.len)), 2);
-    const msg_y = ctx.scissor.height_global - 1;
-    const msg_region = ctx.scissor.initChild(@intCast(msg_x), @intCast(msg_y), @intCast(msg.len), 1);
-    _ = msg_region.printAssumeNoGrapheme(msg, 0, 0, .{ .wrap = false, .tab_width = 4 });
+    if (ctx.scissor.height_global > 0) {
+        const msg_y: i17 = @intCast(ctx.scissor.height_global - 1);
+        const msg_region = ctx.scissor.initChild(msg_x, msg_y, @intCast(msg.len), 1);
+        _ = msg_region.printAssumeNoGrapheme(msg, 0, 0, .{ .wrap = false, .tab_width = 4 });
+    }
 
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.waiting);
 }

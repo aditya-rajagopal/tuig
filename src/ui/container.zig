@@ -119,21 +119,20 @@ pub fn drawBox(
     if (width < 2 or height < 2) return area.initChild(x, y, width, height);
 
     const box = area.initChild(x, y, width, height);
+    const top = Cell{ .data = .{ .codepoint = config.border.top } };
+    const bottom = Cell{ .data = .{ .codepoint = config.border.bottom } };
+    const left = Cell{ .data = .{ .codepoint = config.border.left } };
+    const right = Cell{ .data = .{ .codepoint = config.border.right } };
 
-    for (1..width - 1) |column| {
-        box.set(@intCast(column), 0, Cell{ .data = .{ .codepoint = config.border.top } });
-        box.set(@intCast(column), height - 1, Cell{ .data = .{ .codepoint = config.border.bottom } });
-    }
+    box.fillRowNarrow(0, top);
+    box.fillRowNarrow(height - 1, bottom);
+    box.fillColumnNarrow(0, left);
+    box.fillColumnNarrow(width - 1, right);
 
-    for (0..height - 1) |row| {
-        box.set(0, @intCast(row), Cell{ .data = .{ .codepoint = config.border.left } });
-        box.set(width - 1, @intCast(row), Cell{ .data = .{ .codepoint = config.border.right } });
-    }
-
-    box.set(0, 0, Cell{ .data = .{ .codepoint = config.border.top_left } });
-    box.set(width - 1, 0, Cell{ .data = .{ .codepoint = config.border.top_right } });
-    box.set(0, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_left } });
-    box.set(width - 1, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_right } });
+    box.set(0, 0, Cell{ .data = .{ .codepoint = config.border.top_left } }) catch {};
+    box.set(width - 1, 0, Cell{ .data = .{ .codepoint = config.border.top_right } }) catch {};
+    box.set(0, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_left } }) catch {};
+    box.set(width - 1, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_right } }) catch {};
 
     if (config.title.len > 0 and width > 4) {
         // @TODO GILA(glass_link_3a7) this is wrong if there are graphemes in the title

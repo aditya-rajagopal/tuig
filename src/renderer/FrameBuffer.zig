@@ -53,6 +53,10 @@ pub fn scissor(self: *FrameBuffer) Scissor {
         .y_global = 0,
         .width_global = self.width,
         .height_global = self.height,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = self.width,
+        .height_clip = self.height,
         .buffer = self,
     };
 }

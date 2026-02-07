@@ -70,8 +70,13 @@ pub fn updateAndRender(self: *Application, ctx: *const Context) bool {
     const time_ms = @as(f32, @floatFromInt(frame_time)) / (1000.0 * 1000.0);
     var fps_buffer: [128]u8 = undefined;
     const fps = std.fmt.bufPrint(&fps_buffer, "Time: {d}ms, FPS: {d}", .{ time_ms, 1000.0 / time_ms }) catch unreachable;
-    const area = ctx.scissor.initChild(0, ctx.scissor.height_global - 1, @intCast(fps.len), 1);
-    _ = area.printAssumeNoGrapheme(fps, 0, 0, .{ .wrap = false, .tab_width = 4 });
+    if (ctx.scissor.height_global > 0 and ctx.scissor.width_global > 0) {
+        const fps_width: u16 = @intCast(@min(fps.len, @as(usize, ctx.scissor.width_global)));
+        if (fps_width > 0) {
+            const area = ctx.scissor.initChild(0, @intCast(ctx.scissor.height_global - 1), fps_width, 1);
+            _ = area.printAssumeNoGrapheme(fps, 0, 0, .{ .wrap = false, .tab_width = 4 });
+        }
+    }
     loop: switch (self.mode) {
         .render_scene => |scene| switch (scene) {
             .splash_screen => {

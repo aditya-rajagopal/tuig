@@ -86,10 +86,12 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             self.splash_progress = 0;
         }
     }
-    const width = ctx.scissor.width_global;
-    const height = ctx.scissor.height_global;
-    const start_x = width / 2 - codepoint_width / 2;
-    const start_y = height / 2 - codepoint_height / 2;
+    const width_i17: i17 = @intCast(ctx.scissor.width_global);
+    const height_i17: i17 = @intCast(ctx.scissor.height_global);
+    const splash_width_i17: i17 = @intCast(codepoint_width);
+    const splash_height_i17: i17 = @intCast(codepoint_height);
+    const start_x: i17 = @divFloor(width_i17 - splash_width_i17, 2);
+    const start_y: i17 = @divFloor(height_i17 - splash_height_i17, 2);
 
     const area = loop: switch (self.splash_animation_mode) {
         .start => blk: {
@@ -97,10 +99,10 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
                 self.splash_progress += 1;
             } else {
                 self.splash_animation_mode = .move_to_top;
-                self.splash_progress = @intCast(start_y);
+                self.splash_progress = if (start_y > 1) @intCast(start_y) else 1;
                 continue :loop .move_to_top;
             }
-            break :blk ctx.scissor.initChild(@intCast(start_x), @intCast(start_y), self.splash_progress, codepoint_height);
+            break :blk ctx.scissor.initChild(start_x, start_y, self.splash_progress, codepoint_height);
         },
         .move_to_top, .done => blk: {
             if (self.splash_progress > 1) {
@@ -108,7 +110,7 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             } else {
                 self.splash_animation_mode = .done;
             }
-            break :blk ctx.scissor.initChild(@intCast(start_x), @intCast(self.splash_progress), codepoint_width + 1, codepoint_height);
+            break :blk ctx.scissor.initChild(start_x, @intCast(self.splash_progress), codepoint_width + 1, codepoint_height);
         },
     };
     var text_iter = std.mem.splitScalar(u8, splash_text, '\n');
@@ -137,13 +139,17 @@ pub fn updateAndRender(self: *SplashScreen, ctx: *const Context, options: []cons
             }
         }
         assert(self.options_width != null);
-        const options_x = (ctx.scissor.width_global - self.options_width.?) / 2 + 1;
+        const options_text_width: i17 = @intCast(self.options_width.?);
+        const options_x: i17 = @divFloor(width_i17 - options_text_width, 2);
+        const options_width: u16 = @intCast(self.options_width.? + 2);
+        const options_height: u16 = @intCast(options.len);
+        const options_y: i17 = @intCast(codepoint_height + 3);
 
         const options_scissor = ctx.scissor.initChild(
-            @intCast(options_x - 1),
-            codepoint_height + 3,
-            @intCast(self.options_width.? + 2),
-            @intCast(options.len),
+            options_x,
+            options_y,
+            options_width,
+            options_height,
         );
 
         var selection_style: Style.Id = self.selection_hover;

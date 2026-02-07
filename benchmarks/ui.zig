@@ -198,7 +198,7 @@ fn setCodepoint(scissor: renderer.Scissor, x: u16, y: u16, codepoint: u21, style
         .width = .narrow,
         .style = style_id,
     };
-    scissor.set(x, y, cell);
+    scissor.set(x, y, cell) catch {};
 }
 
 fn drawTableRow(
@@ -823,7 +823,7 @@ fn setAsciiCell(scissor: renderer.Scissor, x: u16, y: u16, byte: u8, style_id: r
         .width = .narrow,
         .style = style_id,
     };
-    scissor.set(x, y, cell);
+    scissor.set(x, y, cell) catch {};
 }
 
 const Rendered = struct {

@@ -13,140 +13,306 @@ const Position = t.Position;
 const UTF8Decoder = @import("unicode").UTF8Decoder;
 const getProperty = @import("unicode").getProperty;
 
+const BoundsGlobal = struct {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+
+    inline fn intersect(self: BoundsGlobal, other: BoundsGlobal) ?BoundsGlobal {
+        const left = @max(self.left, other.left);
+        const top = @max(self.top, other.top);
+        const right = @min(self.right, other.right);
+        const bottom = @min(self.bottom, other.bottom);
+        if (right <= left or bottom <= top) return null;
+        return .{ .left = left, .top = top, .right = right, .bottom = bottom };
+    }
+};
+
 pub const Scissor = @This();
 
 x_global: i17,
 y_global: i17,
 width_global: u16,
 height_global: u16,
+
+x_clip: u16,
+y_clip: u16,
+width_clip: u16,
+height_clip: u16,
+
 buffer: *FrameBuffer,
 
+// initChild creates a child scissor in global space, then clips it to the
+// parent's *visible* bounds (parent clip), not just parent logical bounds.
+//
+// Steps:
+// 1) child logical rect:
+//      child_pos = parent_pos + (x_offset, y_offset)
+//      child_size = (width, height)
+// 2) visible rect = intersect(child_logical, parent_clip)
+// 3) store visible rect as child-local clip offsets/sizes:
+//      x_clip = visible.left - child.left
+//      y_clip = visible.top  - child.top
+//      width_clip  = visible.right  - visible.left
+//      height_clip = visible.bottom - visible.top
+//
+// If intersection is empty, clip size is 0x0 (child exists logically but
+// has no visible pixels/cells).
+//
+// Example:
+// parent logical = [5,15)x[3,9), parent clip = [7,11)x[4,7)
+// child logical (offset 1,1 size 8x4) = [6,14)x[4,8)
+// intersection = [7,11)x[4,7)
+// child clip = (x=1, y=0, w=4, h=3)
 pub fn initChild(self: Scissor, x_offset: i17, y_offset: i17, width: u16, height: u16) Scissor {
-    return Scissor{
-        .x_global = self.x_global + x_offset,
-        .y_global = self.y_global + y_offset,
+    self.assertInvariants();
+
+    var child = Scissor{
+        .x_global = std.math.add(i17, self.x_global, x_offset) catch unreachable,
+        .y_global = std.math.add(i17, self.y_global, y_offset) catch unreachable,
         .width_global = width,
         .height_global = height,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 0,
+        .height_clip = 0,
         .buffer = self.buffer,
     };
+
+    const child_logical = child.logicalBoundsGlobal();
+    const parent_clip = self.clipBoundsGlobal();
+    child.setClipFromVisibleBounds(child_logical.intersect(parent_clip));
+
+    child.assertInvariants();
+    return child;
 }
 
 pub fn inner(self: Scissor) Scissor {
-    if (self.width_global < 2 or self.height_global < 2) return Scissor{
-        .x_global = self.x_global,
-        .y_global = self.y_global,
-        .width_global = 0,
-        .height_global = 0,
-        .buffer = self.buffer,
-    };
-    return Scissor{
-        .x_global = self.x_global + 1,
-        .y_global = self.y_global + 1,
-        .width_global = self.width_global - 2,
-        .height_global = self.height_global - 2,
-        .buffer = self.buffer,
-    };
+    self.assertInvariants();
+    if (self.width_global < 2 or self.height_global < 2) {
+        @branchHint(.unlikely);
+        return self.initChild(0, 0, 0, 0);
+    }
+    return self.initChild(1, 1, self.width_global - 2, self.height_global - 2);
 }
 
+/// Intersects only the visible clip regions of two scissors.
+///
+/// The returned scissor preserves `self` logical bounds (`x_global`, `y_global`,
+/// `width_global`, `height_global`) and only narrows the clip fields.
+pub fn intersect(self: Scissor, other: Scissor) Scissor {
+    assert(self.buffer == other.buffer);
+    self.assertInvariants();
+    other.assertInvariants();
+
+    const self_clip = self.clipBoundsGlobal();
+    const other_clip = other.clipBoundsGlobal();
+
+    var clipped = self;
+    clipped.setClipFromVisibleBounds(self_clip.intersect(other_clip));
+
+    clipped.assertInvariants();
+    return clipped;
+}
+
+/// Get cell at `x,y` in scissor's visible region.
+///
+/// This is slow due to extensive checks for out-of-bounds.
 pub fn get(self: Scissor, x: u16, y: u16) ?Cell {
+    self.assertInvariants();
     if (x >= self.width_global or y >= self.height_global) return null;
-    const global_x: i17 = self.x_global + x;
-    const global_y: i17 = self.y_global + y;
-    if (global_x < 0 or global_y < 0) return null;
-    if (global_x >= self.buffer.width or global_y >= self.buffer.height) return null;
+    const visible = clampedVisibleBoundsGlobal(self) orelse return null;
+
+    const global_x: i32 = @as(i32, self.x_global) + @as(i32, x);
+    const global_y: i32 = @as(i32, self.y_global) + @as(i32, y);
+    if (global_x < visible.left or global_x >= visible.right or global_y < visible.top or global_y >= visible.bottom) return null;
 
     return self.buffer.get(@intCast(global_x), @intCast(global_y));
 }
 
-pub fn set(self: Scissor, x: u16, y: u16, cell: Cell) void {
-    if (x >= self.width_global or y >= self.height_global) return;
-    const global_x: i17 = self.x_global + x;
-    const global_y: i17 = self.y_global + y;
-    if (global_x < self.x_global or global_y < self.y_global) return;
-    if (global_x >= self.x_global + self.width_global or global_y >= self.y_global + self.height_global) return;
-    if (global_x < 0 or global_y < 0) return;
-    if (global_x >= self.buffer.width or global_y >= self.buffer.height) return;
+pub const SetError = error{
+    OutOfBoundsLogical,
+    OutOfBoundsVisible,
+    InvalidWideEnd,
+    WideStartWouldClip,
+};
 
-    self.buffer.set(@intCast(global_x), @intCast(global_y), cell);
+/// Set cell at `x,y` in scissor's visible region.
+///
+/// This is slow due to extensive checks for out-of-bounds.
+pub fn set(self: Scissor, x: u16, y: u16, cell: Cell) SetError!void {
+    self.assertInvariants();
+    if (x >= self.width_global or y >= self.height_global) return error.OutOfBoundsLogical;
+    const visible = clampedVisibleBoundsGlobal(self) orelse return error.OutOfBoundsVisible;
+
+    const global_x: i32 = @as(i32, self.x_global) + @as(i32, x);
+    const global_y: i32 = @as(i32, self.y_global) + @as(i32, y);
+    if (global_x < visible.left or global_x >= visible.right or global_y < visible.top or global_y >= visible.bottom) {
+        return error.OutOfBoundsVisible;
+    }
+
+    if (cell.width == .wide_end) return error.InvalidWideEnd;
+
+    const buffer_x: u16 = @intCast(global_x);
+    const buffer_y: u16 = @intCast(global_y);
+
+    if (cell.width == .wide_start) {
+        const second_x = global_x + 1;
+        if (second_x >= visible.right) return error.WideStartWouldClip;
+
+        const second_buffer_x: u16 = @intCast(second_x);
+        self.clearWidePairAt(buffer_x, buffer_y);
+        self.clearWidePairAt(second_buffer_x, buffer_y);
+
+        self.buffer.set(buffer_x, buffer_y, cell);
+        self.buffer.set(second_buffer_x, buffer_y, .initWideEnd(cell.style));
+        return;
+    }
+
+    self.clearWidePairAt(buffer_x, buffer_y);
+    self.buffer.set(buffer_x, buffer_y, cell);
 }
 
-pub fn contains(self: Scissor, x: u16, y: u16) bool {
-    return x >= self.x_global and y >= self.y_global and x < self.x_global + self.width_global and y < self.y_global + self.height_global;
+// @TODO maybe add setAssumeBounds and getAssumeBounds for faster access
+
+pub fn globalToVisibleLocal(self: Scissor, x_global: u16, y_global: u16) ?Position {
+    self.assertInvariants();
+    const visible = clampedVisibleBoundsGlobal(self) orelse return null;
+    const x_global_i32: i32 = x_global;
+    const y_global_i32: i32 = y_global;
+    if (x_global_i32 < visible.left or x_global_i32 >= visible.right or y_global_i32 < visible.top or y_global_i32 >= visible.bottom) {
+        return null;
+    }
+
+    return .{
+        .x = @intCast(x_global_i32 - visible.left),
+        .y = @intCast(y_global_i32 - visible.top),
+    };
 }
 
-pub fn fillRow(self: Scissor, row: u16, cell: Cell) void {
+pub fn globalToLogicalLocal(self: Scissor, x_global: u16, y_global: u16) ?Position {
+    self.assertInvariants();
+    if (!self.containsVisible(x_global, y_global)) return null;
+    const x_global_i32: i32 = x_global;
+    const y_global_i32: i32 = y_global;
+    return .{
+        .x = @intCast(x_global_i32 - @as(i32, self.x_global)),
+        .y = @intCast(y_global_i32 - @as(i32, self.y_global)),
+    };
+}
+
+pub fn containsLogical(self: Scissor, x: u16, y: u16) bool {
+    self.assertInvariants();
+    const bounds = self.logicalBoundsGlobal();
+    const x_global: i32 = x;
+    const y_global: i32 = y;
+    return x_global >= bounds.left and y_global >= bounds.top and x_global < bounds.right and y_global < bounds.bottom;
+}
+
+pub fn containsVisible(self: Scissor, x: u16, y: u16) bool {
+    self.assertInvariants();
+    const visible = clampedVisibleBoundsGlobal(self) orelse return false;
+
+    const x_global: i32 = x;
+    const y_global: i32 = y;
+    return x_global >= visible.left and y_global >= visible.top and x_global < visible.right and y_global < visible.bottom;
+}
+
+pub fn fillRowNarrow(self: Scissor, row: u16, cell: Cell) void {
+    assert(cell.width == .narrow);
+    self.assertInvariants();
     if (row >= self.height_global) return;
 
-    const x_start_int = self.x_global;
-    const x_end_int = x_start_int + self.width_global;
-    const y_int = self.y_global + row;
+    const clip = self.clipBoundsGlobal();
+    const x_start_int: i32 = @max(clip.left, 0);
+    const x_end_int: i32 = @min(clip.right, @as(i32, self.buffer.width));
+    if (x_end_int <= x_start_int) return;
 
-    if (y_int >= self.buffer.height or y_int < 0) return;
-    if (x_end_int < 0 or x_start_int >= self.buffer.width) return;
+    const y_int: i32 = @as(i32, self.y_global) + @as(i32, row);
+    if (y_int < clip.top or y_int >= clip.bottom) return;
+    if (y_int < 0 or y_int >= @as(i32, self.buffer.height)) return;
 
-    const x_start: usize = @intCast(std.math.clamp(x_start_int, 0, self.buffer.width - 1));
-    const x_end: usize = @intCast(std.math.clamp(x_end_int, 0, self.buffer.width));
+    const x_start: usize = @intCast(x_start_int);
+    const x_end: usize = @intCast(x_end_int);
     const y: usize = @intCast(y_int);
+    const buffer_width: usize = self.buffer.width;
 
-    const start: usize = y * self.buffer.width + x_start;
-    const end: usize = y * self.buffer.width + x_end;
+    const start: usize = y * buffer_width + x_start;
+    const end: usize = y * buffer_width + x_end;
     @memset(self.buffer.cells[start..end], cell);
 }
 
-pub fn fillColumn(self: Scissor, column: u16, cell: Cell) void {
+pub fn fillColumnNarrow(self: Scissor, column: u16, cell: Cell) void {
+    assert(cell.width == .narrow);
+    self.assertInvariants();
     if (column >= self.width_global) return;
-    const x_int = self.x_global + column;
-    const y_start_int = self.y_global;
-    const y_end_int = self.y_global + self.height_global;
-    if (x_int >= self.buffer.width or x_int < 0) return;
-    if (y_end_int < 0 or y_start_int >= self.buffer.height) return;
+    const clip = self.clipBoundsGlobal();
+    const y_start_int: i32 = @max(clip.top, 0);
+    const y_end_int: i32 = @min(clip.bottom, @as(i32, self.buffer.height));
+    if (y_end_int <= y_start_int) return;
 
-    const y_start: usize = @intCast(std.math.clamp(y_start_int, 0, self.buffer.height - 1));
-    const y_end: usize = @intCast(std.math.clamp(y_end_int, 0, self.buffer.height));
-    const x: usize = @intCast(x_int);
+    const x_int: i32 = @as(i32, self.x_global) + @as(i32, column);
+    if (x_int < clip.left or x_int >= clip.right) return;
+    if (x_int < 0 or x_int >= @as(i32, self.buffer.width)) return;
+
+    const y_start: usize = @intCast(y_start_int);
+    const y_end: usize = @intCast(y_end_int);
+    const x: u16 = @intCast(x_int);
 
     for (y_start..y_end) |row| {
-        @call(.always_inline, FrameBuffer.set, .{ self.buffer, @as(u16, @intCast(x)), @as(u16, @intCast(row)), cell });
+        @call(.always_inline, FrameBuffer.set, .{ self.buffer, x, @as(u16, @intCast(row)), cell });
     }
 }
 
-pub fn fillRectangle(self: Scissor, x_offset: u16, y_offset: u16, width: u16, height: u16, cell: Cell) void {
+pub fn fillRectangleNarrow(self: Scissor, x_offset: u16, y_offset: u16, width: u16, height: u16, cell: Cell) void {
+    assert(cell.width == .narrow);
+    self.assertInvariants();
     if (x_offset >= self.width_global or y_offset >= self.height_global) return;
     if (width == 0 or height == 0) return;
 
-    const start_x_int: i17 = self.x_global + x_offset;
-    const end_x_int: i17 = start_x_int + width;
-    const start_y_int: i17 = self.y_global + y_offset;
-    const end_y_int: i17 = start_y_int + height;
+    const clip = self.clipBoundsGlobal();
+    const clip_left: i32 = @max(clip.left, 0);
+    const clip_top: i32 = @max(clip.top, 0);
+    const clip_right: i32 = @min(clip.right, @as(i32, self.buffer.width));
+    const clip_bottom: i32 = @min(clip.bottom, @as(i32, self.buffer.height));
+    if (clip_right <= clip_left or clip_bottom <= clip_top) return;
 
-    if (start_x_int >= self.buffer.width) return;
-    if (start_y_int >= self.buffer.height) return;
-    if (end_x_int < 0) return;
-    if (end_y_int < 0) return;
+    const rect_left: i32 = @as(i32, self.x_global) + @as(i32, x_offset);
+    const rect_top: i32 = @as(i32, self.y_global) + @as(i32, y_offset);
+    const rect_right: i32 = rect_left + @as(i32, width);
+    const rect_bottom: i32 = rect_top + @as(i32, height);
 
-    const start_x: usize = @intCast(std.math.clamp(start_x_int, 0, self.buffer.width - 1));
-    const end_x: usize = @intCast(std.math.clamp(end_x_int, 0, self.buffer.width));
-    const start_y: usize = @intCast(std.math.clamp(start_y_int, 0, self.buffer.height - 1));
-    const end_y: usize = @intCast(std.math.clamp(end_y_int, 0, self.buffer.height));
+    const start_x_int: i32 = @max(rect_left, clip_left);
+    const end_x_int: i32 = @min(rect_right, clip_right);
+    const start_y_int: i32 = @max(rect_top, clip_top);
+    const end_y_int: i32 = @min(rect_bottom, clip_bottom);
+    if (end_x_int <= start_x_int or end_y_int <= start_y_int) return;
 
-    if (start_x_int == 0 and end_x_int == self.buffer.width) {
-        const start = start_y * self.buffer.width;
-        const end = end_y * self.buffer.width;
+    const start_x: usize = @intCast(start_x_int);
+    const end_x: usize = @intCast(end_x_int);
+    const start_y: usize = @intCast(start_y_int);
+    const end_y: usize = @intCast(end_y_int);
+    const buffer_width: usize = self.buffer.width;
+
+    if (start_x == 0 and end_x == buffer_width) {
+        const start = start_y * buffer_width;
+        const end = end_y * buffer_width;
         @memset(self.buffer.cells[start..end], cell);
     } else {
         for (start_y..end_y) |row| {
-            const start = row * self.buffer.width;
-            @memset(self.buffer.cells[start..][start_x..end_x], cell);
+            const start = row * buffer_width;
+            @memset(self.buffer.cells[start + start_x .. start + end_x], cell);
         }
     }
 }
 
-pub fn fill(self: Scissor, cell: Cell) void {
-    self.fillRectangle(0, 0, self.width_global, self.height_global, cell);
+pub fn fillNarrow(self: Scissor, cell: Cell) void {
+    self.fillRectangleNarrow(0, 0, self.width_global, self.height_global, cell);
 }
 
 pub fn clear(self: Scissor) void {
-    self.fill(.empty);
+    self.fillNarrow(.empty);
 }
 
 /// Statistics returned after rendering text.
@@ -156,7 +322,7 @@ pub const PrintResult = struct {
     /// Number of lines used (including wraps and newlines)
     /// Minimum 1 if any content rendered, 0 if nothing rendered
     lines_used: u16,
-    /// Final cursor X position relative to scissor (may be >= width if ended at edge)
+    /// Final cursor X position relative to scissor
     final_x: u16,
     /// Final cursor Y position relative to scissor
     final_y: u16,
@@ -192,6 +358,7 @@ pub fn print(
     y: u16,
     options: PrintOptions,
 ) PrintError!PrintResult {
+    self.assertInvariants();
     var result = PrintResult{
         .bytes_consumed = 0,
         .lines_used = 0,
@@ -200,14 +367,7 @@ pub fn print(
         .graphemes_rendered = 0,
     };
 
-    const left_bound: i17 = @max(self.x_global, 0);
-    const right_bound: i17 = @min(self.x_global + self.width_global, @as(i17, self.buffer.width));
-    const top_bound: i17 = @max(self.y_global, 0);
-    const bottom_bound: i17 = @min(self.y_global + self.height_global, @as(i17, self.buffer.height));
-    if (right_bound <= left_bound or bottom_bound <= top_bound or right_bound <= 0 or bottom_bound <= 0) {
-        // Scissor is outside of buffer bounds
-        return result;
-    }
+    const bound = clampedVisibleBoundsGlobal(self) orelse return result;
 
     var cursor_x: u16 = x;
     var cursor_y: u16 = y;
@@ -254,19 +414,19 @@ pub fn print(
                 else
                     options.tab_width - @as(u8, @intCast(@mod(cursor_x, options.tab_width)));
 
-                const y_global: i17 = self.y_global + cursor_y;
+                const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
 
-                if (y_global >= bottom_bound) {
+                if (y_global >= bound.bottom) {
                     break;
                 }
                 const remaining_columns = self.width_global - cursor_x;
                 spaces_to_tab = @min(remaining_columns, spaces_to_tab);
 
                 for (0..spaces_to_tab) |_| {
-                    const x_global: i17 = self.x_global + @as(i17, cursor_x);
+                    const x_global: i32 = @as(i32, self.x_global) + @as(i32, cursor_x);
 
-                    if (x_global >= left_bound and x_global < right_bound and
-                        y_global >= top_bound and y_global < bottom_bound)
+                    if (x_global >= bound.left and x_global < bound.right and
+                        y_global >= bound.top and y_global < bound.bottom)
                     {
                         self.buffer.set(@intCast(x_global), @intCast(y_global), .empty);
                         result.graphemes_rendered += 1;
@@ -294,14 +454,18 @@ pub fn print(
             }
         }
 
-        const x_global: i17 = self.x_global + cursor_x;
-        const y_global: i17 = self.y_global + cursor_y;
+        const x_global: i32 = @as(i32, self.x_global) + @as(i32, cursor_x);
+        const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
 
-        if (x_global < left_bound or x_global >= right_bound or y_global < top_bound) {
+        if (x_global < bound.left or x_global >= bound.right or y_global < bound.top) {
             @branchHint(.unlikely);
             continue;
         }
-        if (y_global >= bottom_bound) {
+        if (grapheme_result.width == 2 and x_global + 1 >= bound.right) {
+            @branchHint(.unlikely);
+            continue;
+        }
+        if (y_global >= bound.bottom) {
             @branchHint(.unlikely);
             break;
         }
@@ -320,8 +484,8 @@ pub fn print(
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
 
         if (grapheme_result.width == 2) {
-            const second_x: i17 = x_global + 1;
-            assert(second_x < right_bound);
+            const second_x: i32 = x_global + 1;
+            assert(second_x < bound.right);
             self.buffer.set(@intCast(second_x), @intCast(y_global), .initWideEnd(options.style));
         }
 
@@ -338,8 +502,8 @@ pub fn print(
     // lines_used tracks wraps during the loop; add 1 for the initial line if we rendered anything
     if (result.graphemes_rendered > 0) {
         result.lines_used += 1;
-        const y_global: i17 = self.y_global + cursor_y;
-        if (y_global >= bottom_bound) {
+        const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
+        if (y_global >= bound.bottom) {
             result.lines_used -= 1;
         }
     }
@@ -359,6 +523,7 @@ pub fn printAssumeNoGrapheme(
     y: u16,
     options: PrintOptions,
 ) PrintResult {
+    self.assertInvariants();
     var result = PrintResult{
         .bytes_consumed = 0,
         .lines_used = 0,
@@ -367,14 +532,7 @@ pub fn printAssumeNoGrapheme(
         .graphemes_rendered = 0,
     };
 
-    const left_bound: i17 = @max(self.x_global, 0);
-    const right_bound: i17 = @min(self.x_global + self.width_global, @as(i17, self.buffer.width));
-    const top_bound: i17 = @max(self.y_global, 0);
-    const bottom_bound: i17 = @min(self.y_global + self.height_global, @as(i17, self.buffer.height));
-    if (right_bound <= left_bound or bottom_bound <= top_bound or right_bound <= 0 or bottom_bound <= 0) {
-        // Scissor is outside of buffer bounds
-        return result;
-    }
+    const bound = clampedVisibleBoundsGlobal(self) orelse return result;
 
     var cursor_x: u16 = x;
     var cursor_y: u16 = y;
@@ -428,19 +586,19 @@ pub fn printAssumeNoGrapheme(
                 else
                     options.tab_width - @as(u8, @intCast(@mod(cursor_x, options.tab_width)));
 
-                const y_global: i17 = self.y_global + cursor_y;
+                const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
 
-                if (y_global >= bottom_bound) {
+                if (y_global >= bound.bottom) {
                     break;
                 }
                 const remaining_columns = self.width_global - cursor_x;
                 spaces_to_tab = @min(remaining_columns, spaces_to_tab);
 
                 for (0..spaces_to_tab) |_| {
-                    const x_global: i17 = self.x_global + @as(i17, cursor_x);
+                    const x_global: i32 = @as(i32, self.x_global) + @as(i32, cursor_x);
 
-                    if (x_global >= left_bound and x_global < right_bound and
-                        y_global >= top_bound and y_global < bottom_bound)
+                    if (x_global >= bound.left and x_global < bound.right and
+                        y_global >= bound.top and y_global < bound.bottom)
                     {
                         self.buffer.set(@intCast(x_global), @intCast(y_global), .empty);
                         result.graphemes_rendered += 1;
@@ -481,15 +639,20 @@ pub fn printAssumeNoGrapheme(
             }
         }
 
-        const x_global: i17 = self.x_global + cursor_x;
-        const y_global: i17 = self.y_global + cursor_y;
+        const x_global: i32 = @as(i32, self.x_global) + @as(i32, cursor_x);
+        const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
 
-        if (x_global < left_bound or x_global >= right_bound or y_global < top_bound) {
+        if (x_global < bound.left or x_global >= bound.right or y_global < bound.top) {
             @branchHint(.unlikely);
             cursor_x += width;
             continue;
         }
-        if (y_global >= bottom_bound) {
+        if (width == 2 and x_global + 1 >= bound.right) {
+            @branchHint(.unlikely);
+            cursor_x += width;
+            continue;
+        }
+        if (y_global >= bound.bottom) {
             @branchHint(.unlikely);
             break;
         }
@@ -504,8 +667,8 @@ pub fn printAssumeNoGrapheme(
         self.buffer.set(@intCast(x_global), @intCast(y_global), cell);
 
         if (width == 2) {
-            const second_x: i17 = x_global + 1;
-            assert(second_x < right_bound);
+            const second_x: i32 = x_global + 1;
+            assert(second_x < bound.right);
             self.buffer.set(@intCast(second_x), @intCast(y_global), .initWideEnd(options.style));
         }
 
@@ -524,13 +687,94 @@ pub fn printAssumeNoGrapheme(
     // lines_used tracks wraps during the loop; add 1 for the initial line if we rendered anything
     if (result.graphemes_rendered > 0) {
         result.lines_used += 1;
-        const y_global: i17 = self.y_global + cursor_y;
-        if (y_global >= bottom_bound) {
+        const y_global: i32 = @as(i32, self.y_global) + @as(i32, cursor_y);
+        if (y_global >= bound.bottom) {
             result.lines_used -= 1;
         }
     }
 
     return result;
+}
+
+inline fn clampedVisibleBoundsGlobal(self: Scissor) ?BoundsGlobal {
+    const clip = self.clipBoundsGlobal();
+    const left: i32 = @max(clip.left, 0);
+    const top: i32 = @max(clip.top, 0);
+    const right: i32 = @min(clip.right, @as(i32, self.buffer.width));
+    const bottom: i32 = @min(clip.bottom, @as(i32, self.buffer.height));
+    if (right <= left or bottom <= top) return null;
+    return .{
+        .left = left,
+        .top = top,
+        .right = right,
+        .bottom = bottom,
+    };
+}
+
+inline fn clearWidePairAt(self: Scissor, x: u16, y: u16) void {
+    const existing = self.buffer.get(x, y);
+    switch (existing.width) {
+        .narrow => {},
+        .wide_start => {
+            self.buffer.set(x, y, .empty);
+            const next_x, const overflow = @addWithOverflow(x, @as(u16, 1));
+            if (overflow == 0 and next_x < self.buffer.width) {
+                const next_cell = self.buffer.get(next_x, y);
+                if (next_cell.width == .wide_end) {
+                    self.buffer.set(next_x, y, .empty);
+                }
+            }
+        },
+        .wide_end => {
+            self.buffer.set(x, y, .empty);
+            if (x > 0) {
+                const prev_x = x - 1;
+                const prev_cell = self.buffer.get(prev_x, y);
+                if (prev_cell.width == .wide_start) {
+                    self.buffer.set(prev_x, y, .empty);
+                }
+            }
+        },
+    }
+}
+
+inline fn assertInvariants(self: Scissor) void {
+    assert(self.x_clip <= self.width_global);
+    assert(self.y_clip <= self.height_global);
+    assert(self.width_clip <= self.width_global - self.x_clip);
+    assert(self.height_clip <= self.height_global - self.y_clip);
+}
+
+inline fn logicalBoundsGlobal(self: Scissor) BoundsGlobal {
+    return .{
+        .left = self.x_global,
+        .top = self.y_global,
+        .right = @as(i32, self.x_global) + self.width_global,
+        .bottom = @as(i32, self.y_global) + self.height_global,
+    };
+}
+
+inline fn clipBoundsGlobal(self: Scissor) BoundsGlobal {
+    return .{
+        .left = @as(i32, self.x_global) + self.x_clip,
+        .top = @as(i32, self.y_global) + self.y_clip,
+        .right = @as(i32, self.x_global) + self.x_clip + self.width_clip,
+        .bottom = @as(i32, self.y_global) + self.y_clip + self.height_clip,
+    };
+}
+
+inline fn setClipFromVisibleBounds(self: *Scissor, visible: ?BoundsGlobal) void {
+    self.x_clip = 0;
+    self.y_clip = 0;
+    self.width_clip = 0;
+    self.height_clip = 0;
+
+    const bounds = visible orelse return;
+    const logical = self.logicalBoundsGlobal();
+    self.x_clip = @intCast(bounds.left - logical.left);
+    self.y_clip = @intCast(bounds.top - logical.top);
+    self.width_clip = @intCast(bounds.right - bounds.left);
+    self.height_clip = @intCast(bounds.bottom - bounds.top);
 }
 
 const testing = std.testing;
@@ -580,27 +824,176 @@ const TestContext = struct {
     }
 };
 
-test "Scissor.initChild creates correct child region" {
+test "Scissor.initChild" {
     const cells = try testing.allocator.alloc(Cell, 200);
     defer testing.allocator.free(cells);
     var fb = try FrameBuffer.init(cells, 20, 10, .tiny);
     defer fb.deinit();
 
-    const parent = Scissor{
+    const ScissorTestCase = struct {
+        parent: Scissor,
+        init: struct { x: i17, y: i17, width: u16, height: u16 },
+        expected: Scissor,
+    };
+
+    const test_cases: []const ScissorTestCase = &.{
+        // creates correct child region
+        .{
+            .parent = Scissor{
+                .x_global = 5,
+                .y_global = 3,
+                .width_global = 15,
+                .height_global = 7,
+                .x_clip = 0,
+                .y_clip = 0,
+                .width_clip = 15,
+                .height_clip = 7,
+                .buffer = &fb,
+            },
+            .init = .{ .x = 2, .y = 1, .width = 10, .height = 4 },
+            .expected = .{
+                .x_global = 7,
+                .y_global = 4,
+                .width_global = 10,
+                .height_global = 4,
+                .x_clip = 0,
+                .y_clip = 0,
+                .width_clip = 10,
+                .height_clip = 4,
+                .buffer = &fb,
+            },
+        },
+        //clips to parent visible bounds
+        .{
+            .parent = Scissor{
+                .x_global = 5,
+                .y_global = 3,
+                .width_global = 10,
+                .height_global = 6,
+                .x_clip = 2,
+                .y_clip = 1,
+                .width_clip = 4,
+                .height_clip = 3,
+                .buffer = &fb,
+            },
+            .init = .{ .x = 1, .y = 1, .width = 8, .height = 4 },
+            .expected = Scissor{
+                .x_global = 6,
+                .y_global = 4,
+                .width_global = 8,
+                .height_global = 4,
+                .x_clip = 1,
+                .y_clip = 0,
+                .width_clip = 4,
+                .height_clip = 3,
+                .buffer = &fb,
+            },
+        },
+        // handles partially off-screen top-left
+        .{
+            .parent = fb.scissor(),
+            .init = .{ .x = -5, .y = -3, .width = 10, .height = 8 },
+            .expected = Scissor{
+                .x_global = -5,
+                .y_global = -3,
+                .width_global = 10,
+                .height_global = 8,
+                .x_clip = 5,
+                .y_clip = 3,
+                .width_clip = 5,
+                .height_clip = 5,
+                .buffer = &fb,
+            },
+        },
+        .{
+            .parent = fb.scissor(),
+            .init = .{ .x = -100, .y = -100, .width = 50, .height = 50 },
+            .expected = Scissor{
+                .x_global = -100,
+                .y_global = -100,
+                .width_global = 50,
+                .height_global = 50,
+                .x_clip = 0,
+                .y_clip = 0,
+                .width_clip = 0,
+                .height_clip = 0,
+                .buffer = &fb,
+            },
+        },
+    };
+
+    for (test_cases) |case| {
+        const child = case.parent.initChild(case.init.x, case.init.y, case.init.width, case.init.height);
+        try testing.expectEqual(case.expected, child);
+    }
+}
+
+test "Scissor.intersect clips only visible region" {
+    const cells = try testing.allocator.alloc(Cell, 200);
+    defer testing.allocator.free(cells);
+    var fb = try FrameBuffer.init(cells, 20, 10, .tiny);
+    defer fb.deinit();
+
+    const lhs = Scissor{
+        .x_global = 2,
+        .y_global = 2,
+        .width_global = 10,
+        .height_global = 6,
+        .x_clip = 1,
+        .y_clip = 1,
+        .width_clip = 6,
+        .height_clip = 4,
+        .buffer = &fb,
+    };
+    const rhs = Scissor{
         .x_global = 5,
-        .y_global = 3,
-        .width_global = 15,
-        .height_global = 7,
+        .y_global = 1,
+        .width_global = 8,
+        .height_global = 6,
+        .x_clip = 0,
+        .y_clip = 2,
+        .width_clip = 5,
+        .height_clip = 3,
         .buffer = &fb,
     };
 
-    const child = parent.initChild(2, 1, 10, 4);
+    const clipped = lhs.intersect(rhs);
 
-    try std.testing.expectEqual(@as(i17, 7), child.x_global);
-    try std.testing.expectEqual(@as(i17, 4), child.y_global);
-    try std.testing.expectEqual(@as(u16, 10), child.width_global);
-    try std.testing.expectEqual(@as(u16, 4), child.height_global);
-    try std.testing.expect(child.buffer == &fb);
+    try testing.expectEqual(Scissor{
+        .x_global = 2,
+        .y_global = 2,
+        .width_global = 10,
+        .height_global = 6,
+        .x_clip = 3,
+        .y_clip = 1,
+        .width_clip = 4,
+        .height_clip = 3,
+        .buffer = &fb,
+    }, clipped);
+
+    const disjoint = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 2,
+        .height_global = 2,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 2,
+        .height_clip = 2,
+        .buffer = &fb,
+    };
+    const empty_clip = lhs.intersect(disjoint);
+    try testing.expectEqual(Scissor{
+        .x_global = 2,
+        .y_global = 2,
+        .width_global = 10,
+        .height_global = 6,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 0,
+        .height_clip = 0,
+        .buffer = &fb,
+    }, empty_clip);
 }
 
 test "Scissor.fillRectangle clips to buffer bounds" {
@@ -616,13 +1009,15 @@ test "Scissor.fillRectangle clips to buffer bounds" {
         .y_global = 0,
         .width_global = 10,
         .height_global = 5,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 10,
+        .height_clip = 5,
         .buffer = &fb,
     };
 
-    // Rectangle extends beyond buffer
-    scissor.fillRectangle(8, 3, 5, 5, Cell{ .data = .{ .codepoint = '+' } });
+    scissor.fillRectangleNarrow(8, 3, 5, 5, Cell{ .data = .{ .codepoint = '+' } });
 
-    // Should only fill positions within buffer: x=8-9, y=3-4
     for (0..5) |y| {
         for (0..10) |x| {
             const expected: u21 = if (x >= 8 and y >= 3) '+' else ' ';
@@ -642,14 +1037,24 @@ test "print basic ASCII" {
     try testing.expectEqual(@as(u16, 5), result.final_x);
     try testing.expectEqual(@as(u16, 0), result.final_y);
     try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
-
     try tc.expectCodepointAt(0, 0, 'H');
     try tc.expectCodepointAt(1, 0, 'e');
     try tc.expectCodepointAt(2, 0, 'l');
     try tc.expectCodepointAt(3, 0, 'l');
     try tc.expectCodepointAt(4, 0, 'o');
+    try tc.expectCellWidth(0, 0, .narrow);
+    try tc.expectCellWidth(4, 0, .narrow);
 
-    // All should be narrow width
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result2.bytes_consumed);
+    try testing.expectEqual(@as(u16, 1), result2.lines_used);
+    try testing.expectEqual(@as(u16, 5), result2.final_x);
+    try testing.expectEqual(@as(u16, 0), result2.final_y);
+    try testing.expectEqual(@as(usize, 5), result2.graphemes_rendered);
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(4, 0, 'o');
     try tc.expectCellWidth(0, 0, .narrow);
     try tc.expectCellWidth(4, 0, .narrow);
 }
@@ -671,6 +1076,17 @@ test "print ASCII with offset" {
     // Original cells should still be space
     try tc.expectCodepointAt(0, 0, ' ');
     try tc.expectCodepointAt(2, 2, ' ');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "Hi", 3, 2, .default);
+    try testing.expectEqual(@as(usize, 2), result2.bytes_consumed);
+    try testing.expectEqual(@as(u16, 5), result2.final_x);
+    try testing.expectEqual(@as(u16, 2), result2.final_y);
+    try tc.expectCodepointAt(3, 2, 'H');
+    try tc.expectCodepointAt(4, 2, 'i');
+    try tc.expectCodepointAt(0, 0, ' ');
+    try tc.expectCodepointAt(2, 2, ' ');
 }
 
 test "print ASCII truncates at right edge" {
@@ -687,6 +1103,14 @@ test "print ASCII truncates at right edge" {
     try tc.expectCodepointAt(1, 0, 'e');
     try tc.expectCodepointAt(2, 0, 'l');
     try tc.expectCodepointAt(3, 0, 'l');
+    try tc.expectCodepointAt(4, 0, 'o');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result2.lines_used);
+    try tc.expectCodepointAt(0, 0, 'H');
     try tc.expectCodepointAt(4, 0, 'o');
 }
 
@@ -710,6 +1134,11 @@ test "print outside buffer returns early" {
 
     try testing.expectEqual(@as(usize, 0), result.graphemes_rendered);
     try testing.expectEqual(@as(u16, 0), result.lines_used);
+
+    // Also verify printAssumeNoGrapheme
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 10, .default);
+    try testing.expectEqual(@as(usize, 0), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result2.lines_used);
 }
 
 test "print starting past right edge" {
@@ -747,6 +1176,18 @@ test "print wraps at scissor edge" {
     try tc.expectCodepointAt(2, 1, 'H');
     try tc.expectCodepointAt(3, 1, 'I');
     try tc.expectCodepointAt(4, 1, 'J');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJ", 0, 0, .{ .wrap = true, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 10), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result2.lines_used);
+    try testing.expectEqual(@as(u16, 0), result2.final_x);
+    try testing.expectEqual(@as(u16, 2), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "print stops at bottom with wrap" {
@@ -767,6 +1208,16 @@ test "print stops at bottom with wrap" {
     // Row 1
     try tc.expectCodepointAt(0, 1, 'F');
     try tc.expectCodepointAt(4, 1, 'J');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJKLMNO", 0, 0, .{ .wrap = true, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 10), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result2.lines_used);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'E');
+    try tc.expectCodepointAt(0, 1, 'F');
+    try tc.expectCodepointAt(4, 1, 'J');
 }
 
 test "print wrap disabled truncates" {
@@ -783,6 +1234,15 @@ test "print wrap disabled truncates" {
     try tc.expectCodepointAt(4, 0, 'o');
 
     // Row 1 should still be empty
+    try tc.expectCodepointAt(0, 1, ' ');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .{ .wrap = false, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 5), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result2.lines_used);
+    try tc.expectCodepointAt(0, 0, 'H');
+    try tc.expectCodepointAt(4, 0, 'o');
     try tc.expectCodepointAt(0, 1, ' ');
 }
 
@@ -805,6 +1265,18 @@ test "print wrap with offset" {
     try tc.expectCodepointAt(4, 0, 'B');
 
     // Row 1
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(4, 1, 'G');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "ABCDEFG", 3, 0, .{ .wrap = true, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 7), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result2.lines_used);
+    try testing.expectEqual(@as(u16, 0), result2.final_x);
+    try testing.expectEqual(@as(u16, 2), result2.final_y);
+    try tc.expectCodepointAt(3, 0, 'A');
+    try tc.expectCodepointAt(4, 0, 'B');
     try tc.expectCodepointAt(0, 1, 'C');
     try tc.expectCodepointAt(4, 1, 'G');
 }
@@ -832,6 +1304,20 @@ test "print multiple wraps" {
     // Row 2: G H I
     try tc.expectCodepointAt(0, 2, 'G');
     try tc.expectCodepointAt(2, 2, 'I');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHI", 0, 0, .{ .wrap = true, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 9), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 3), result2.lines_used);
+    try testing.expectEqual(@as(u16, 0), result2.final_x);
+    try testing.expectEqual(@as(u16, 3), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(2, 0, 'C');
+    try tc.expectCodepointAt(0, 1, 'D');
+    try tc.expectCodepointAt(2, 1, 'F');
+    try tc.expectCodepointAt(0, 2, 'G');
+    try tc.expectCodepointAt(2, 2, 'I');
 }
 
 test "print handles newlines" {
@@ -854,6 +1340,19 @@ test "print handles newlines" {
     // Row 1
     try tc.expectCodepointAt(0, 1, 'C');
     try tc.expectCodepointAt(1, 1, 'D');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "AB\nCD", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result2.bytes_consumed);
+    try testing.expectEqual(@as(u16, 2), result2.lines_used);
+    try testing.expectEqual(@as(usize, 4), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result2.final_x);
+    try testing.expectEqual(@as(u16, 1), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(0, 1, 'C');
+    try tc.expectCodepointAt(1, 1, 'D');
 }
 
 test "print multiple consecutive newlines" {
@@ -873,6 +1372,19 @@ test "print multiple consecutive newlines" {
     try tc.expectCodepointAt(0, 3, 'B');
 
     // Rows 1 and 2 should be empty
+    try tc.expectCodepointAt(0, 1, ' ');
+    try tc.expectCodepointAt(0, 2, ' ');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "A\n\n\nB", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result2.bytes_consumed);
+    try testing.expectEqual(@as(u16, 4), result2.lines_used);
+    try testing.expectEqual(@as(usize, 2), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result2.final_x);
+    try testing.expectEqual(@as(u16, 3), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 3, 'B');
     try tc.expectCodepointAt(0, 1, ' ');
     try tc.expectCodepointAt(0, 2, ' ');
 }
@@ -948,6 +1460,14 @@ test "print newline stops at bottom" {
 
     try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCodepointAt(0, 1, 'B');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "A\nB\nC", 0, 0, .default);
+    try testing.expectEqual(@as(u16, 2), result2.lines_used);
+    try testing.expectEqual(@as(usize, 2), result2.graphemes_rendered);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(0, 1, 'B');
 }
 
 test "print newline with offset" {
@@ -989,6 +1509,19 @@ test "print expands tabs" {
     try tc.expectCodepointAt(2, 0, ' '); // Tab space
     try tc.expectCodepointAt(3, 0, ' '); // Tab space
     try tc.expectCodepointAt(4, 0, 'B');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 3), result2.bytes_consumed);
+    try testing.expectEqual(@as(u16, 1), result2.lines_used);
+    try testing.expectEqual(@as(usize, 5), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 5), result2.final_x);
+    try testing.expectEqual(@as(u16, 0), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, ' ');
+    try tc.expectCodepointAt(3, 0, ' ');
+    try tc.expectCodepointAt(4, 0, 'B');
 }
 
 test "print tab at tab stop" {
@@ -1005,6 +1538,15 @@ test "print tab at tab stop" {
     try tc.expectCodepointAt(5, 0, ' '); // Tab space
     try tc.expectCodepointAt(6, 0, ' '); // Tab space
     try tc.expectCodepointAt(7, 0, ' '); // Tab space
+    try tc.expectCodepointAt(8, 0, 'X');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "\tX", 4, 0, .{ .wrap = false, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 5), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 9), result2.final_x);
+    try tc.expectCodepointAt(4, 0, ' ');
+    try tc.expectCodepointAt(7, 0, ' ');
     try tc.expectCodepointAt(8, 0, 'X');
 }
 
@@ -1060,6 +1602,15 @@ test "print custom tab width" {
     try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCodepointAt(7, 0, ' '); // Last tab space
     try tc.expectCodepointAt(8, 0, 'B');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 8 });
+    try testing.expectEqual(@as(usize, 9), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 9), result2.final_x);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(7, 0, ' ');
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "print tab truncates without wrap" {
@@ -1096,6 +1647,15 @@ test "print multiple tabs" {
     try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCodepointAt(4, 0, ' '); // Start of second tab
     try tc.expectCodepointAt(8, 0, 'B');
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "A\t\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 9), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 9), result2.final_x);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(4, 0, ' ');
+    try tc.expectCodepointAt(8, 0, 'B');
 }
 
 test "print UTF-8 narrow" {
@@ -1116,6 +1676,17 @@ test "print UTF-8 narrow" {
     try tc.expectCodepointAt(3, 0, 0xE9); // é = U+00E9
 
     // All should be narrow width and codepoint tag (single codepoint each)
+    try tc.expectCellWidth(3, 0, .narrow);
+    try tc.expectCellTag(3, 0, .codepoint);
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "café", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result2.bytes_consumed);
+    try testing.expectEqual(@as(usize, 4), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 4), result2.final_x);
+    try tc.expectCodepointAt(0, 0, 'c');
+    try tc.expectCodepointAt(3, 0, 0xE9);
     try tc.expectCellWidth(3, 0, .narrow);
     try tc.expectCellTag(3, 0, .codepoint);
 }
@@ -1250,6 +1821,19 @@ test "print CJK characters" {
     try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCodepointAt(3, 0, ' ');
     try tc.expectCellWidth(3, 0, .wide_end);
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "中文", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 6), result2.bytes_consumed);
+    try testing.expectEqual(@as(usize, 2), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 4), result2.final_x);
+    try tc.expectCodepointAt(0, 0, 0x4E2D);
+    try tc.expectCellWidth(0, 0, .wide_start);
+    try tc.expectCellWidth(1, 0, .wide_end);
+    try tc.expectCodepointAt(2, 0, 0x6587);
+    try tc.expectCellWidth(2, 0, .wide_start);
+    try tc.expectCellWidth(3, 0, .wide_end);
 }
 
 test "print emoji" {
@@ -1267,6 +1851,16 @@ test "print emoji" {
     try tc.expectCodepointAt(0, 0, 0x1F600);
     try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCodepointAt(1, 0, ' ');
+    try tc.expectCellWidth(1, 0, .wide_end);
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "😀", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 4), result2.bytes_consumed);
+    try testing.expectEqual(@as(usize, 1), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 2), result2.final_x);
+    try tc.expectCodepointAt(0, 0, 0x1F600);
+    try tc.expectCellWidth(0, 0, .wide_start);
     try tc.expectCellWidth(1, 0, .wide_end);
 }
 
@@ -1318,6 +1912,14 @@ test "print wide at boundary no wrap" {
     // Empty cell at position 2
     try tc.expectCodepointAt(2, 0, ' ');
     try tc.expectCellWidth(2, 0, .narrow);
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .{ .wrap = false, .tab_width = 4 });
+    try testing.expectEqual(@as(usize, 2), result2.graphemes_rendered);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, ' ');
 }
 
 test "print wide exactly fits" {
@@ -1336,6 +1938,18 @@ test "print wide exactly fits" {
     try tc.expectCodepointAt(2, 0, 0x4E2D);
     try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCodepointAt(3, 0, ' ');
+    try tc.expectCellWidth(3, 0, .wide_end);
+
+    // Also verify printAssumeNoGrapheme
+    tc.buffer.clear();
+    const result2 = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 3), result2.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result2.final_x);
+    try testing.expectEqual(@as(u16, 1), result2.final_y);
+    try tc.expectCodepointAt(0, 0, 'A');
+    try tc.expectCodepointAt(1, 0, 'B');
+    try tc.expectCodepointAt(2, 0, 0x4E2D);
+    try tc.expectCellWidth(2, 0, .wide_start);
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
@@ -1386,30 +2000,6 @@ test "print mixed narrow and wide" {
     try tc.expectCellWidth(9, 0, .narrow);
 }
 
-test "print skin tone emoji" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 👨🏽 = man + fitzpatrick type-4 (2 codepoints, width=2)
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, "\xF0\x9F\x91\xA8\xF0\x9F\x8F\xBD", 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 8), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    // First cell: base emoji with grapheme tag (multi-codepoint)
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-
-    // Second cell: wide_end
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    // Grapheme buffer should contain the full UTF-8 bytes
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings("\xF0\x9F\x91\xA8\xF0\x9F\x8F\xBD", grapheme.?);
-}
-
 test "print ZWJ family sequence" {
     var tc = try TestContext.init(10, 5);
     defer tc.deinit();
@@ -1434,31 +2024,6 @@ test "print ZWJ family sequence" {
     const grapheme = tc.getGraphemeAt(0, 0);
     try testing.expect(grapheme != null);
     try testing.expectEqualStrings(family, grapheme.?);
-}
-
-test "print flag emoji" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 🇺🇸 = US flag (2 regional indicators, width=2)
-    const flag = "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8";
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, flag, 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 8), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    // First cell: first regional indicator with grapheme tag
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-
-    // Second cell: wide_end
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    // Grapheme buffer should contain full flag
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings(flag, grapheme.?);
 }
 
 test "print variation selector emoji" {
@@ -1502,94 +2067,6 @@ test "print text heart without variation selector" {
     try tc.expectCodepointAt(0, 0, 0x2764); // ❤ U+2764
     try tc.expectCellWidth(0, 0, .narrow);
     try tc.expectCellTag(0, 0, .codepoint);
-}
-
-test "print keycap sequence" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 1️⃣ = 1 + VS16 + combining enclosing keycap (3 codepoints, width=2)
-    const keycap = "1\xEF\xB8\x8F\xE2\x83\xA3";
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, keycap, 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 7), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    // First cell: '1' with grapheme tag
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-
-    // Second cell: wide_end
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    // Grapheme buffer should contain full keycap sequence
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings(keycap, grapheme.?);
-}
-
-test "print ZWJ profession emoji" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 👨‍💻 = man + ZWJ + laptop (3 codepoints, width=2)
-    const technologist = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x92\xBB";
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, technologist, 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 11), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings(technologist, grapheme.?);
-}
-
-test "print subdivision flag" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 🏴󠁧󠁢󠁥󠁮󠁧󠁿 = England flag (black flag + tag sequence)
-    const england = "\xF0\x9F\x8F\xB4\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2\xF3\xA0\x81\xA5\xF3\xA0\x81\xAE\xF3\xA0\x81\xA7\xF3\xA0\x81\xBF";
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, england, 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 28), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings(england, grapheme.?);
-}
-
-test "print complex emoji with skin tone and profession" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // 👨🏽‍⚕️ = man + skin tone + ZWJ + medical symbol + VS16 (5 codepoints)
-    const doctor = "\xF0\x9F\x91\xA8\xF0\x9F\x8F\xBD\xE2\x80\x8D\xE2\x9A\x95\xEF\xB8\x8F";
-    const result = try print(tc.scissor(), &TestContext.test_codepoint_buffer, doctor, 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 17), result.bytes_consumed);
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCellTag(0, 0, .grapheme);
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    const grapheme = tc.getGraphemeAt(0, 0);
-    try testing.expect(grapheme != null);
-    try testing.expectEqualStrings(doctor, grapheme.?);
 }
 
 test "print multiple complex emoji in sequence" {
@@ -1779,226 +2256,6 @@ test "print exact boundary - wide char fills last two cells" {
     try tc.expectCellWidth(3, 0, .wide_end);
 }
 
-test "printAssumeNoGrapheme basic ASCII" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 5), result.bytes_consumed);
-    try testing.expectEqual(@as(u16, 1), result.lines_used);
-    try testing.expectEqual(@as(u16, 5), result.final_x);
-    try testing.expectEqual(@as(u16, 0), result.final_y);
-    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
-
-    try tc.expectCodepointAt(0, 0, 'H');
-    try tc.expectCodepointAt(1, 0, 'e');
-    try tc.expectCodepointAt(2, 0, 'l');
-    try tc.expectCodepointAt(3, 0, 'l');
-    try tc.expectCodepointAt(4, 0, 'o');
-
-    // All should be narrow width
-    try tc.expectCellWidth(0, 0, .narrow);
-    try tc.expectCellWidth(4, 0, .narrow);
-}
-
-test "printAssumeNoGrapheme ASCII with offset" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "Hi", 3, 2, .default);
-
-    try testing.expectEqual(@as(usize, 2), result.bytes_consumed);
-    try testing.expectEqual(@as(u16, 5), result.final_x);
-    try testing.expectEqual(@as(u16, 2), result.final_y);
-
-    // Cells at offset should be set
-    try tc.expectCodepointAt(3, 2, 'H');
-    try tc.expectCodepointAt(4, 2, 'i');
-
-    // Original cells should still be space
-    try tc.expectCodepointAt(0, 0, ' ');
-    try tc.expectCodepointAt(2, 2, ' ');
-}
-
-test "printAssumeNoGrapheme ASCII truncates at right edge" {
-    var tc = try TestContext.init(5, 5);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .default);
-
-    // Should only render "Hello" (5 chars)
-    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 1), result.lines_used);
-
-    try tc.expectCodepointAt(0, 0, 'H');
-    try tc.expectCodepointAt(1, 0, 'e');
-    try tc.expectCodepointAt(2, 0, 'l');
-    try tc.expectCodepointAt(3, 0, 'l');
-    try tc.expectCodepointAt(4, 0, 'o');
-}
-
-test "printAssumeNoGrapheme outside buffer returns early" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // Start below the buffer
-    const result = printAssumeNoGrapheme(tc.scissor(), "Hello", 0, 10, .default);
-
-    try testing.expectEqual(@as(usize, 0), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 0), result.lines_used);
-}
-
-test "printAssumeNoGrapheme wraps at scissor edge" {
-    var tc = try TestContext.init(5, 3);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJ", 0, 0, .{ .wrap = true, .tab_width = 4 });
-
-    // Row 0: A B C D E
-    // Row 1: F G H I J
-    try testing.expectEqual(@as(usize, 10), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.lines_used);
-    try testing.expectEqual(@as(u16, 0), result.final_x);
-    try testing.expectEqual(@as(u16, 2), result.final_y);
-
-    // Row 0
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(4, 0, 'E');
-
-    // Row 1
-    try tc.expectCodepointAt(0, 1, 'F');
-    try tc.expectCodepointAt(4, 1, 'J');
-}
-
-test "printAssumeNoGrapheme stops at bottom with wrap" {
-    var tc = try TestContext.init(5, 2);
-    defer tc.deinit();
-
-    // 15 chars but only 2 rows available (10 cells max)
-    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHIJKLMNO", 0, 0, .{ .wrap = true, .tab_width = 4 });
-
-    // Should only render 10 chars (2 lines of 5)
-    try testing.expectEqual(@as(usize, 10), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.lines_used);
-
-    // Row 0
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(4, 0, 'E');
-
-    // Row 1
-    try tc.expectCodepointAt(0, 1, 'F');
-    try tc.expectCodepointAt(4, 1, 'J');
-}
-
-test "printAssumeNoGrapheme wrap disabled truncates" {
-    var tc = try TestContext.init(5, 3);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "Hello World", 0, 0, .{ .wrap = false, .tab_width = 4 });
-
-    // Should only render "Hello" (5 chars)
-    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 1), result.lines_used);
-
-    try tc.expectCodepointAt(0, 0, 'H');
-    try tc.expectCodepointAt(4, 0, 'o');
-
-    // Row 1 should still be empty
-    try tc.expectCodepointAt(0, 1, ' ');
-}
-
-test "printAssumeNoGrapheme wrap with offset" {
-    var tc = try TestContext.init(5, 3);
-    defer tc.deinit();
-
-    // Start at x=3, so first line has 2 chars, then wrap
-    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFG", 3, 0, .{ .wrap = true, .tab_width = 4 });
-
-    // Row 0: _ _ _ A B
-    // Row 1: C D E F G
-    try testing.expectEqual(@as(usize, 7), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.lines_used);
-    try testing.expectEqual(@as(u16, 0), result.final_x);
-    try testing.expectEqual(@as(u16, 2), result.final_y);
-
-    // Row 0
-    try tc.expectCodepointAt(3, 0, 'A');
-    try tc.expectCodepointAt(4, 0, 'B');
-
-    // Row 1
-    try tc.expectCodepointAt(0, 1, 'C');
-    try tc.expectCodepointAt(4, 1, 'G');
-}
-
-test "printAssumeNoGrapheme multiple wraps" {
-    var tc = try TestContext.init(3, 5);
-    defer tc.deinit();
-
-    // 9 chars, 3 chars per row, should use 3 rows
-    const result = printAssumeNoGrapheme(tc.scissor(), "ABCDEFGHI", 0, 0, .{ .wrap = true, .tab_width = 4 });
-
-    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 3), result.lines_used);
-    try testing.expectEqual(@as(u16, 0), result.final_x);
-    try testing.expectEqual(@as(u16, 3), result.final_y);
-
-    // Row 0: A B C
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(2, 0, 'C');
-
-    // Row 1: D E F
-    try tc.expectCodepointAt(0, 1, 'D');
-    try tc.expectCodepointAt(2, 1, 'F');
-
-    // Row 2: G H I
-    try tc.expectCodepointAt(0, 2, 'G');
-    try tc.expectCodepointAt(2, 2, 'I');
-}
-
-test "printAssumeNoGrapheme handles newlines" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "AB\nCD", 0, 0, .default);
-
-    // Row 0: A B, Row 1: C D
-    try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // "AB\nCD" = 5 bytes
-    try testing.expectEqual(@as(u16, 2), result.lines_used);
-    try testing.expectEqual(@as(usize, 4), result.graphemes_rendered); // A, B, C, D (newline not rendered)
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-    try testing.expectEqual(@as(u16, 1), result.final_y);
-
-    // Row 0
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(1, 0, 'B');
-
-    // Row 1
-    try tc.expectCodepointAt(0, 1, 'C');
-    try tc.expectCodepointAt(1, 1, 'D');
-}
-
-test "printAssumeNoGrapheme multiple consecutive newlines" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    const result = printAssumeNoGrapheme(tc.scissor(), "A\n\n\nB", 0, 0, .default);
-
-    // A on row 0, B on row 3
-    try testing.expectEqual(@as(usize, 5), result.bytes_consumed);
-    try testing.expectEqual(@as(u16, 4), result.lines_used); // 4 lines: 0, 1, 2, 3
-    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 1), result.final_x);
-    try testing.expectEqual(@as(u16, 3), result.final_y);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(0, 3, 'B');
-
-    // Rows 1 and 2 should be empty
-    try tc.expectCodepointAt(0, 1, ' ');
-    try tc.expectCodepointAt(0, 2, ' ');
-}
-
 test "printAssumeNoGrapheme CRLF not combined" {
     var tc = try TestContext.init(10, 5);
     defer tc.deinit();
@@ -2022,92 +2279,6 @@ test "printAssumeNoGrapheme CRLF not combined" {
     try tc.expectCodepointAt(1, 1, 'D');
 }
 
-test "printAssumeNoGrapheme newline stops at bottom" {
-    var tc = try TestContext.init(10, 2);
-    defer tc.deinit();
-
-    // Only 2 rows, but text has 3 lines
-    const result = printAssumeNoGrapheme(tc.scissor(), "A\nB\nC", 0, 0, .default);
-
-    // Should render A and B, stop before C
-    try testing.expectEqual(@as(u16, 2), result.lines_used);
-    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(0, 1, 'B');
-}
-
-test "printAssumeNoGrapheme expands tabs" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // "A\tB" with tab_width=4
-    // A at 0, tab expands to spaces at 1,2,3, B at 4
-    const result = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
-
-    try testing.expectEqual(@as(usize, 3), result.bytes_consumed); // A + \t + B
-    try testing.expectEqual(@as(u16, 1), result.lines_used);
-    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // A + 3 spaces + B
-    try testing.expectEqual(@as(u16, 5), result.final_x);
-    try testing.expectEqual(@as(u16, 0), result.final_y);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(1, 0, ' '); // Tab space
-    try tc.expectCodepointAt(2, 0, ' '); // Tab space
-    try tc.expectCodepointAt(3, 0, ' '); // Tab space
-    try tc.expectCodepointAt(4, 0, 'B');
-}
-
-test "printAssumeNoGrapheme tab at tab stop" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // Start at column 4 (already at tab stop), tab should advance 4 spaces to column 8
-    const result = printAssumeNoGrapheme(tc.scissor(), "\tX", 4, 0, .{ .wrap = false, .tab_width = 4 });
-
-    try testing.expectEqual(@as(usize, 5), result.graphemes_rendered); // 4 spaces + X
-    try testing.expectEqual(@as(u16, 9), result.final_x);
-
-    try tc.expectCodepointAt(4, 0, ' '); // Tab space
-    try tc.expectCodepointAt(5, 0, ' '); // Tab space
-    try tc.expectCodepointAt(6, 0, ' '); // Tab space
-    try tc.expectCodepointAt(7, 0, ' '); // Tab space
-    try tc.expectCodepointAt(8, 0, 'X');
-}
-
-test "printAssumeNoGrapheme custom tab width" {
-    var tc = try TestContext.init(20, 5);
-    defer tc.deinit();
-
-    // "A\tB" with tab_width=8
-    // A at 0, tab expands to 7 spaces (1,2,3,4,5,6,7), B at 8
-    const result = printAssumeNoGrapheme(tc.scissor(), "A\tB", 0, 0, .{ .wrap = false, .tab_width = 8 });
-
-    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered); // A + 7 spaces + B
-    try testing.expectEqual(@as(u16, 9), result.final_x);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(7, 0, ' '); // Last tab space
-    try tc.expectCodepointAt(8, 0, 'B');
-}
-
-test "printAssumeNoGrapheme multiple tabs" {
-    var tc = try TestContext.init(20, 5);
-    defer tc.deinit();
-
-    // "A\t\tB" with tab_width=4
-    // A at 0, first tab to 4, second tab to 8, B at 8
-    const result = printAssumeNoGrapheme(tc.scissor(), "A\t\tB", 0, 0, .{ .wrap = false, .tab_width = 4 });
-
-    // A + 3 spaces + 4 spaces + B = 9 graphemes
-    try testing.expectEqual(@as(usize, 9), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 9), result.final_x);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(4, 0, ' '); // Start of second tab
-    try tc.expectCodepointAt(8, 0, 'B');
-}
-
 test "printAssumeNoGrapheme tab_width zero" {
     var tc = try TestContext.init(10, 5);
     defer tc.deinit();
@@ -2120,110 +2291,6 @@ test "printAssumeNoGrapheme tab_width zero" {
 
     try tc.expectCodepointAt(0, 0, 'A');
     try tc.expectCodepointAt(1, 0, 'B');
-}
-
-test "printAssumeNoGrapheme UTF-8 narrow" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // "café" - 'é' is 2 bytes, width=1
-    const result = printAssumeNoGrapheme(tc.scissor(), "café", 0, 0, .default);
-
-    // 4 graphemes: c, a, f, é
-    try testing.expectEqual(@as(usize, 5), result.bytes_consumed); // 3 ASCII + 2-byte é
-    try testing.expectEqual(@as(usize, 4), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 4), result.final_x);
-
-    try tc.expectCodepointAt(0, 0, 'c');
-    try tc.expectCodepointAt(1, 0, 'a');
-    try tc.expectCodepointAt(2, 0, 'f');
-    try tc.expectCodepointAt(3, 0, 0xE9); // é = U+00E9
-
-    try tc.expectCellWidth(3, 0, .narrow);
-    try tc.expectCellTag(3, 0, .codepoint);
-}
-
-test "printAssumeNoGrapheme CJK" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // "中文" - two CJK characters, each 2 cells wide
-    const result = printAssumeNoGrapheme(tc.scissor(), "中文", 0, 0, .default);
-
-    // 2 graphemes, 4 cells
-    try testing.expectEqual(@as(usize, 6), result.bytes_consumed); // Each CJK char is 3 bytes
-    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 4), result.final_x);
-
-    // First character: 中 (U+4E2D)
-    try tc.expectCodepointAt(0, 0, 0x4E2D);
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCodepointAt(1, 0, ' ');
-    try tc.expectCellWidth(1, 0, .wide_end);
-
-    // Second character: 文 (U+6587)
-    try tc.expectCodepointAt(2, 0, 0x6587);
-    try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCodepointAt(3, 0, ' ');
-    try tc.expectCellWidth(3, 0, .wide_end);
-}
-
-test "printAssumeNoGrapheme emoji" {
-    var tc = try TestContext.init(10, 5);
-    defer tc.deinit();
-
-    // "😀" - emoji, 2 cells wide
-    const result = printAssumeNoGrapheme(tc.scissor(), "😀", 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 4), result.bytes_consumed); // 4-byte emoji
-    try testing.expectEqual(@as(usize, 1), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 2), result.final_x);
-
-    // Emoji: 😀 (U+1F600)
-    try tc.expectCodepointAt(0, 0, 0x1F600);
-    try tc.expectCellWidth(0, 0, .wide_start);
-    try tc.expectCodepointAt(1, 0, ' ');
-    try tc.expectCellWidth(1, 0, .wide_end);
-}
-
-test "printAssumeNoGrapheme wide at boundary no wrap skips" {
-    var tc = try TestContext.init(3, 3);
-    defer tc.deinit();
-
-    // "AB中" in 3-wide buffer without wrap
-    // A at 0, B at 1, cursor at 2
-    // 中 needs 2 cells but only 1 remains (position 2) so it will be skipped
-    const result = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .{ .wrap = false, .tab_width = 4 });
-
-    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCellWidth(0, 0, .narrow);
-
-    try tc.expectCodepointAt(1, 0, 'B');
-    try tc.expectCellWidth(1, 0, .narrow);
-
-    // Cell at position 2 should still be empty (space)
-    try tc.expectCodepointAt(2, 0, ' ');
-}
-
-test "printAssumeNoGrapheme wide exactly fits" {
-    var tc = try TestContext.init(4, 3);
-    defer tc.deinit();
-
-    // "AB中" in 4-wide buffer - 中 should exactly fit at positions 2-3
-    const result = printAssumeNoGrapheme(tc.scissor(), "AB中", 0, 0, .default);
-
-    try testing.expectEqual(@as(usize, 3), result.graphemes_rendered);
-    try testing.expectEqual(@as(u16, 0), result.final_x);
-    try testing.expectEqual(@as(u16, 1), result.final_y);
-
-    try tc.expectCodepointAt(0, 0, 'A');
-    try tc.expectCodepointAt(1, 0, 'B');
-    try tc.expectCodepointAt(2, 0, 0x4E2D);
-    try tc.expectCellWidth(2, 0, .wide_start);
-    try tc.expectCodepointAt(3, 0, ' ');
-    try tc.expectCellWidth(3, 0, .wide_end);
 }
 
 test "printAssumeNoGrapheme skips zero-width" {
@@ -2307,10 +2374,14 @@ test "Scissor.fillRectangle fills partial region" {
         .y_global = 0,
         .width_global = 10,
         .height_global = 5,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 10,
+        .height_clip = 5,
         .buffer = &fb,
     };
 
-    scissor.fillRectangle(2, 1, 3, 2, Cell{ .data = .{ .codepoint = '*' } });
+    scissor.fillRectangleNarrow(2, 1, 3, 2, Cell{ .data = .{ .codepoint = '*' } });
 
     // Check rectangle at (2,1) with size 3x2
     for (0..5) |y| {
@@ -2319,4 +2390,315 @@ test "Scissor.fillRectangle fills partial region" {
             try std.testing.expectEqual(expected, fb.cells[y * 10 + x].data.codepoint);
         }
     }
+}
+
+test "print wide char clipped by framebuffer" {
+    var tc = try TestContext.init(5, 2);
+    defer tc.deinit();
+    // Logical scissor extends past framebuffer right edge.
+    // Framebuffer: x = 0..4
+    // Scissor:     x = 4..6 (only x=4 is visible)
+    const scissor = Scissor{
+        .x_global = 4,
+        .y_global = 0,
+        .width_global = 3,
+        .height_global = 2,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 3,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+    const result = try print(
+        scissor,
+        &TestContext.test_codepoint_buffer,
+        "中",
+        0,
+        0,
+        .{ .wrap = true, .tab_width = 4 },
+    );
+    // Input consumed, but glyph is skipped because second cell is clipped.
+    try testing.expectEqual(@as(usize, 3), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 0), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result.lines_used);
+    try testing.expectEqual(@as(u16, 2), result.final_x);
+    try testing.expectEqual(@as(u16, 0), result.final_y);
+    // Visible edge cell remains untouched.
+    try tc.expectCodepointAt(4, 0, ' ');
+
+    const resultNoGrapheme = printAssumeNoGrapheme(
+        scissor,
+        "中",
+        0,
+        0,
+        .{ .wrap = true, .tab_width = 4 },
+    );
+    try testing.expectEqual(@as(usize, 3), resultNoGrapheme.bytes_consumed);
+    try testing.expectEqual(@as(usize, 0), resultNoGrapheme.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), resultNoGrapheme.lines_used);
+    try testing.expectEqual(@as(u16, 2), resultNoGrapheme.final_x);
+    try testing.expectEqual(@as(u16, 0), resultNoGrapheme.final_y);
+    try tc.expectCodepointAt(4, 0, ' ');
+}
+
+test "Scissor.set and get clip to visible bounds" {
+    var tc = try TestContext.init(6, 4);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 4,
+        .x_clip = 2,
+        .y_clip = 1,
+        .width_clip = 2,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    try testing.expectError(error.OutOfBoundsVisible, scissor.set(1, 1, Cell{ .data = .{ .codepoint = 'A' } }));
+    try scissor.set(2, 1, Cell{ .data = .{ .codepoint = 'B' } });
+    try scissor.set(3, 2, Cell{ .data = .{ .codepoint = 'C' } });
+
+    try tc.expectCodepointAt(1, 1, ' ');
+    try tc.expectCodepointAt(2, 1, 'B');
+    try tc.expectCodepointAt(3, 2, 'C');
+
+    try testing.expect(scissor.get(1, 1) == null);
+    const visible = scissor.get(2, 1);
+    try testing.expect(visible != null);
+    try testing.expectEqual(@as(u21, 'B'), visible.?.data.codepoint);
+}
+
+test "Scissor.set enforces wide-cell behavior" {
+    var tc = try TestContext.init(6, 2);
+    defer tc.deinit();
+
+    const full = tc.scissor();
+    try testing.expectError(error.OutOfBoundsLogical, full.set(99, 0, .empty));
+    try testing.expectError(error.InvalidWideEnd, full.set(0, 0, .wide_end));
+
+    const clipped = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 2,
+        .x_clip = 1,
+        .y_clip = 0,
+        .width_clip = 2,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    try testing.expectError(error.OutOfBoundsVisible, clipped.set(0, 0, Cell{ .data = .{ .codepoint = 'X' } }));
+    try testing.expectError(error.WideStartWouldClip, clipped.set(2, 0, Cell{ .data = .{ .codepoint = 0x4E2D }, .width = .wide_start }));
+
+    try clipped.set(1, 0, Cell{ .data = .{ .codepoint = 0x4E2D }, .width = .wide_start });
+    try tc.expectCellWidth(1, 0, .wide_start);
+    try tc.expectCellWidth(2, 0, .wide_end);
+
+    try clipped.set(2, 0, Cell{ .data = .{ .codepoint = 'Q' } });
+    try tc.expectCodepointAt(1, 0, ' ');
+    try tc.expectCellWidth(1, 0, .narrow);
+    try tc.expectCodepointAt(2, 0, 'Q');
+    try tc.expectCellWidth(2, 0, .narrow);
+}
+
+test "print handlse negative-offset scissor" {
+    var tc = try TestContext.init(6, 4);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = -2,
+        .y_global = -1,
+        .width_global = 6,
+        .height_global = 3,
+        .x_clip = 0,
+        .y_clip = 0,
+        .width_clip = 6,
+        .height_clip = 3,
+        .buffer = &tc.buffer,
+    };
+
+    const result = try print(scissor, &TestContext.test_codepoint_buffer, "ABCDE", 0, 1, .default);
+    try testing.expectEqual(@as(usize, 3), result.graphemes_rendered);
+    try tc.expectCodepointAt(0, 0, 'C');
+    try tc.expectCodepointAt(1, 0, 'D');
+    try tc.expectCodepointAt(2, 0, 'E');
+
+    tc.buffer.clear();
+    const result_no_grapheme = printAssumeNoGrapheme(scissor, "ABCDE", 0, 1, .default);
+    try testing.expectEqual(@as(usize, 3), result_no_grapheme.graphemes_rendered);
+    try tc.expectCodepointAt(0, 0, 'C');
+    try tc.expectCodepointAt(1, 0, 'D');
+    try tc.expectCodepointAt(2, 0, 'E');
+}
+
+test "Scissor.containsLogical and containsVisible diverge with clipping" {
+    var tc = try TestContext.init(8, 4);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = 1,
+        .y_global = 1,
+        .width_global = 5,
+        .height_global = 3,
+        .x_clip = 2,
+        .y_clip = 1,
+        .width_clip = 2,
+        .height_clip = 1,
+        .buffer = &tc.buffer,
+    };
+
+    try testing.expect(scissor.containsLogical(2, 2));
+    try testing.expect(!scissor.containsVisible(2, 2));
+
+    try testing.expect(scissor.containsLogical(3, 2));
+    try testing.expect(scissor.containsVisible(3, 2));
+}
+
+test "Scissor fill row/column/rectangle clip to visible bounds" {
+    var tc = try TestContext.init(6, 4);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 4,
+        .x_clip = 1,
+        .y_clip = 1,
+        .width_clip = 3,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    scissor.fillRowNarrow(1, Cell{ .data = .{ .codepoint = 'R' } });
+    try tc.expectCodepointAt(0, 1, ' ');
+    try tc.expectCodepointAt(1, 1, 'R');
+    try tc.expectCodepointAt(3, 1, 'R');
+    try tc.expectCodepointAt(4, 1, ' ');
+
+    scissor.fillColumnNarrow(2, Cell{ .data = .{ .codepoint = 'C' } });
+    try tc.expectCodepointAt(2, 0, ' ');
+    try tc.expectCodepointAt(2, 1, 'C');
+    try tc.expectCodepointAt(2, 2, 'C');
+    try tc.expectCodepointAt(2, 3, ' ');
+
+    scissor.fillRectangleNarrow(0, 0, 6, 4, Cell{ .data = .{ .codepoint = 'F' } });
+    for (0..4) |y| {
+        for (0..6) |x| {
+            const expected: u21 = if (x >= 1 and x < 4 and y >= 1 and y < 3) 'F' else ' ';
+            try testing.expectEqual(expected, tc.buffer.get(@intCast(x), @intCast(y)).data.codepoint);
+        }
+    }
+}
+
+test "Scissor.fill and clear clip to visible bounds" {
+    var tc = try TestContext.init(6, 4);
+    defer tc.deinit();
+
+    tc.scissor().fillNarrow(Cell{ .data = .{ .codepoint = '#' } });
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 4,
+        .x_clip = 1,
+        .y_clip = 1,
+        .width_clip = 3,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    scissor.fillNarrow(Cell{ .data = .{ .codepoint = 'X' } });
+    for (0..4) |y| {
+        for (0..6) |x| {
+            const expected: u21 = if (x >= 1 and x < 4 and y >= 1 and y < 3) 'X' else '#';
+            try testing.expectEqual(expected, tc.buffer.get(@intCast(x), @intCast(y)).data.codepoint);
+        }
+    }
+
+    scissor.clear();
+    for (0..4) |y| {
+        for (0..6) |x| {
+            const expected: u21 = if (x >= 1 and x < 4 and y >= 1 and y < 3) ' ' else '#';
+            try testing.expectEqual(expected, tc.buffer.get(@intCast(x), @intCast(y)).data.codepoint);
+        }
+    }
+}
+
+test "print methods clip rendering to visible bounds" {
+    var tc = try TestContext.init(8, 2);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 2,
+        .x_clip = 2,
+        .y_clip = 0,
+        .width_clip = 2,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    const result = try print(scissor, &TestContext.test_codepoint_buffer, "ABCDE", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 2), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result.lines_used);
+    try testing.expectEqual(@as(u16, 5), result.final_x);
+    try testing.expectEqual(@as(u16, 0), result.final_y);
+    try tc.expectCodepointAt(1, 0, ' ');
+    try tc.expectCodepointAt(2, 0, 'C');
+    try tc.expectCodepointAt(3, 0, 'D');
+    try tc.expectCodepointAt(4, 0, ' ');
+
+    tc.buffer.clear();
+    const result_no_grapheme = printAssumeNoGrapheme(scissor, "ABCDE", 0, 0, .default);
+    try testing.expectEqual(@as(usize, 5), result_no_grapheme.bytes_consumed);
+    try testing.expectEqual(@as(usize, 2), result_no_grapheme.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 1), result_no_grapheme.lines_used);
+    try testing.expectEqual(@as(u16, 5), result_no_grapheme.final_x);
+    try testing.expectEqual(@as(u16, 0), result_no_grapheme.final_y);
+    try tc.expectCodepointAt(1, 0, ' ');
+    try tc.expectCodepointAt(2, 0, 'C');
+    try tc.expectCodepointAt(3, 0, 'D');
+    try tc.expectCodepointAt(4, 0, ' ');
+}
+
+test "print methods skip wide glyph crossing visible clip edge" {
+    var tc = try TestContext.init(6, 2);
+    defer tc.deinit();
+
+    const scissor = Scissor{
+        .x_global = 0,
+        .y_global = 0,
+        .width_global = 6,
+        .height_global = 2,
+        .x_clip = 1,
+        .y_clip = 0,
+        .width_clip = 2,
+        .height_clip = 2,
+        .buffer = &tc.buffer,
+    };
+
+    const result = try print(scissor, &TestContext.test_codepoint_buffer, "中", 2, 0, .default);
+    try testing.expectEqual(@as(usize, 3), result.bytes_consumed);
+    try testing.expectEqual(@as(usize, 0), result.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result.lines_used);
+    try testing.expectEqual(@as(u16, 4), result.final_x);
+    try testing.expectEqual(@as(u16, 0), result.final_y);
+    try tc.expectCodepointAt(2, 0, ' ');
+
+    const result_no_grapheme = printAssumeNoGrapheme(scissor, "中", 2, 0, .default);
+    try testing.expectEqual(@as(usize, 3), result_no_grapheme.bytes_consumed);
+    try testing.expectEqual(@as(usize, 0), result_no_grapheme.graphemes_rendered);
+    try testing.expectEqual(@as(u16, 0), result_no_grapheme.lines_used);
+    try testing.expectEqual(@as(u16, 4), result_no_grapheme.final_x);
+    try testing.expectEqual(@as(u16, 0), result_no_grapheme.final_y);
+    try tc.expectCodepointAt(2, 0, ' ');
 }

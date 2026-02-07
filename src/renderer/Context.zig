@@ -54,10 +54,9 @@ pub fn isKeyReleased(self: Context, code: KeyEvent.PhysicalKey) bool {
 }
 
 pub fn isHovered(self: Context, scissor: Scissor) ?Position {
-    if (scissor.contains(self.mouse_x, self.mouse_y)) {
-        return .{
-            .x = @intCast(@as(i17, self.mouse_x) - scissor.x_global),
-            .y = @intCast(@as(i17, self.mouse_y) - scissor.y_global),
-        };
-    } else return null;
+    return scissor.globalToLogicalLocal(self.mouse_x, self.mouse_y);
+}
+
+pub fn isHoveredVisible(self: Context, scissor: Scissor) ?Position {
+    return scissor.globalToVisibleLocal(self.mouse_x, self.mouse_y);
 }

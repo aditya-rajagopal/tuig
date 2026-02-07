@@ -375,8 +375,8 @@ fn renderGameArea(self: *Tetris, game_area: Scissor) void {
 }
 
 fn renderCell(game_area: Scissor, x: u16, y: u16, style: Style.Id) void {
-    game_area.set(x, y, Cell{ .data = .{ .codepoint = '█' }, .style = style });
-    game_area.set(x + 1, y, Cell{ .data = .{ .codepoint = '█' }, .style = style });
+    game_area.set(x, y, Cell{ .data = .{ .codepoint = '█' }, .style = style }) catch {};
+    game_area.set(x + 1, y, Cell{ .data = .{ .codepoint = '█' }, .style = style }) catch {};
 }
 
 const Position = struct {
