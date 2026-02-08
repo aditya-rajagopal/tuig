@@ -6,6 +6,8 @@ const Style = tuig.renderer.Style;
 const Scissor = tuig.renderer.Scissor;
 const drawBox = tuig.ui.drawBox;
 const DrawBoxConfig = tuig.ui.DrawBoxConfig;
+const layout = tuig.layout;
+const Constraint = layout.Constraint;
 
 const app = @import("app.zig");
 
@@ -61,18 +63,23 @@ pub fn updateAndRender(self: *Widgets, ctx: *const Context) bool {
     const root = ctx.scissor;
     if (root.width_global == 0 or root.height_global == 0) return false;
 
-    const header = root.initChild(0, 0, root.width_global, 1);
-    self.drawHeader(ctx, header);
+    const root_rect = root.toRect();
+    const root_constraints = [_]Constraint{ Constraint.fixed(1), Constraint.flex(1), Constraint.fixed(1) };
+    var root_panes: [3]layout.Rect = undefined;
+    _ = root_rect.split(&root_constraints, .{}, &root_panes) catch unreachable;
 
-    const footer_height: u16 = if (root.height_global >= 3) 1 else 0;
-    const screen_height = root.height_global - 1 - footer_height;
-    if (screen_height > 0) {
-        const screen = root.initChild(0, 1, root.width_global, screen_height);
+    if (root_panes[0].height > 0 and root_panes[0].width > 0) {
+        const header = root.initChildRect(root_panes[0]);
+        self.drawHeader(ctx, header);
+    }
+
+    if (root_panes[1].height > 0 and root_panes[1].width > 0) {
+        const screen = root.initChildRect(root_panes[1]);
         self.drawScreen(ctx, screen);
     }
 
-    if (footer_height > 0) {
-        const footer = root.initChild(0, @intCast(root.height_global - footer_height), root.width_global, footer_height);
+    if (root_panes[2].height > 0 and root_panes[2].width > 0) {
+        const footer = root.initChildRect(root_panes[2]);
         self.drawFooter(ctx, footer);
     }
 
@@ -82,21 +89,23 @@ pub fn updateAndRender(self: *Widgets, ctx: *const Context) bool {
 fn drawScreen(self: *Widgets, ctx: *const Context, scr: Scissor) void {
     scr.fillNarrow(.{ .style = self.screen_background_style });
 
-    const sidebar_width: u16 = @min(scr.width_global, 24);
-    if (sidebar_width > 0) {
-        const sidebar = scr.initChild(0, 0, sidebar_width, scr.height_global);
+    const screen_rect = scr.toRect();
+    const screen_constraints = [_]Constraint{ Constraint.fixed(24), Constraint.fixed(1), Constraint.flex(1) };
+    var screen_panes: [3]layout.Rect = undefined;
+    _ = screen_rect.split(&screen_constraints, .{ .axis = .horizontal }, &screen_panes) catch unreachable;
+
+    if (screen_panes[0].width > 0 and screen_panes[0].height > 0) {
+        const sidebar = scr.initChildRect(screen_panes[0]);
         _ = sidebar.printAssumeNoGrapheme("Sidebar", 0, 0, .default);
     }
 
-    const has_separator = scr.width_global > sidebar_width;
-    if (has_separator) {
-        const vbar = scr.initChild(@intCast(sidebar_width), 0, 1, scr.height_global);
+    if (screen_panes[1].width > 0 and screen_panes[1].height > 0) {
+        const vbar = scr.initChildRect(screen_panes[1]);
         vbar.fillNarrow(.{ .data = .{ .codepoint = '│' }, .style = self.screen_background_style });
     }
 
-    const content_x: u16 = sidebar_width + @as(u16, @intFromBool(has_separator));
-    if (content_x < scr.width_global) {
-        const content = scr.initChild(@intCast(content_x), 0, scr.width_global - content_x, scr.height_global);
+    if (screen_panes[2].width > 0 and screen_panes[2].height > 0) {
+        const content = scr.initChildRect(screen_panes[2]);
         self.drawMovingBox(ctx, content);
     }
 }

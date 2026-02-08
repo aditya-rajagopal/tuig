@@ -7,6 +7,8 @@ const tuig = @import("tuig");
 const Context = tuig.renderer.Context;
 const Scissor = tuig.renderer.Scissor;
 const Cell = tuig.renderer.Cell;
+const layout = tuig.layout;
+const Constraint = layout.Constraint;
 
 const Snake = @This();
 const app = @import("app.zig");
@@ -31,6 +33,9 @@ const Direction = enum { up, down, left, right };
 
 const gameplay_area_x: u16 = 41;
 const gameplay_area_y: u16 = 21;
+
+const waiting_prompt = "Press `ENTER` to start";
+const restart_prompt = "Press `ENTER` to restart";
 
 pub fn init(self: *Snake) void {
     self.state = .waiting;
@@ -110,24 +115,126 @@ pub fn updateAndRender(self: *Snake, ctx: *const Context) SnakeResult {
 }
 
 fn renderWaiting(self: *Snake, ctx: *const Context) void {
+    const min_width: u16 = @intCast(@max(title_width, waiting_prompt.len));
+    const min_height: u16 = title_height + 1;
+    if (ctx.scissor.width_global < min_width or ctx.scissor.height_global < min_height) {
+        renderResizeHint(ctx.scissor, min_width, min_height);
+        return;
+    }
+
+    const root_rect = ctx.scissor.toRect();
+    const constraints = [_]Constraint{
+        Constraint.fixed(title_height).withCross(title_width, .center),
+        Constraint.flex(1),
+        Constraint.fixed(1).withCross(@intCast(waiting_prompt.len), .center),
+    };
+    var panes: [3]layout.Rect = undefined;
+    _ = root_rect.split(&constraints, .{}, &panes) catch unreachable;
+
     const frame = frames[self.frame_tick % frames.len];
-    const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(title_width)), 2);
-    const y = 1;
-    const region = ctx.scissor.initChild(@intCast(x), y, title_width, title_height);
-    for (0..title_height) |row| {
-        const start = row * (title_width + 1);
-        const end = start + title_width;
-        _ = region.printAssumeNoGrapheme(frame[start..end], 0, @intCast(row), .{ .wrap = false, .tab_width = 4 });
-    }
-    var buf: [128]u8 = undefined;
-    const score = std.fmt.bufPrint(&buf, "Press `ENTER` to start", .{}) catch unreachable;
-    const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(score.len)), 2);
-    if (ctx.scissor.height_global > 0) {
-        const msg_y: i17 = @intCast(ctx.scissor.height_global - 1);
-        const msg_region = ctx.scissor.initChild(msg_x, msg_y, @intCast(score.len), 1);
-        _ = msg_region.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
-    }
+    const title_region = ctx.scissor.initChildRect(panes[0]);
+    _ = title_region.printAssumeNoGrapheme(frame, 0, 0, .{ .wrap = true, .tab_width = 4 });
+
+    const prompt_region = ctx.scissor.initChildRect(panes[2]);
+    _ = prompt_region.printAssumeNoGrapheme(waiting_prompt, 0, 0, .{ .wrap = false, .tab_width = 4 });
+
     if (ctx.isKeyPressed(.enter)) self.transitonTo(.playing);
+}
+
+fn renderGameOver(self: *Snake, ctx: *const Context) void {
+    self.components.clearRetainingCapacity();
+    const frame = game_over_frames[self.frame_tick % game_over_frames.len];
+
+    var buf: [128]u8 = undefined;
+    const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
+    const min_width: u16 = @intCast(@max(game_over_title_width, @max(score.len, restart_prompt.len)));
+    const min_height: u16 = game_over_title_height + 5;
+    if (ctx.scissor.width_global < min_width or ctx.scissor.height_global < min_height) {
+        renderResizeHint(ctx.scissor, min_width, min_height);
+        return;
+    }
+
+    const root_rect = ctx.scissor.toRect();
+    const root_constraints = [_]Constraint{ Constraint.flex(1), Constraint.fixed(1) };
+    var root_panes: [2]layout.Rect = undefined;
+    _ = root_rect.split(&root_constraints, .{}, &root_panes) catch unreachable;
+
+    const content_constraints = [_]Constraint{
+        Constraint.fixed(game_over_title_height).withCross(game_over_title_width, .center),
+        Constraint.fixed(1).withCross(@intCast(score.len), .center),
+    };
+    var content_panes: [2]layout.Rect = undefined;
+    _ = root_panes[0].split(&content_constraints, .{ .gap = 3, .alignment = .center }, &content_panes) catch unreachable;
+
+    const title_area = ctx.scissor.initChildRect(content_panes[0]);
+    _ = title_area.printAssumeNoGrapheme(frame, 0, 0, .{ .wrap = true, .tab_width = 4 });
+
+    const score_area = ctx.scissor.initChildRect(content_panes[1]);
+    _ = score_area.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    const bottom_row = ctx.scissor.initChildRect(root_panes[1]);
+    const restart_area = bottom_row.centeredChild(@intCast(restart_prompt.len), 1);
+    _ = restart_area.printAssumeNoGrapheme(restart_prompt, 0, 0, .{ .wrap = false, .tab_width = 4 });
+
+    if (ctx.isKeyPressed(.enter)) self.transitonTo(.waiting);
+}
+
+fn renderPlaying(self: *Snake, ctx: *const Context) void {
+    if (ctx.scissor.width_global < gameplay_area_x or ctx.scissor.height_global < gameplay_area_y) {
+        renderResizeHint(ctx.scissor, gameplay_area_x, gameplay_area_y);
+        return;
+    }
+    assert(ctx.scissor.width_global >= gameplay_area_x);
+    assert(ctx.scissor.height_global >= gameplay_area_y);
+
+    const centered_game_rect = ctx.scissor.centeredChild(gameplay_area_x, gameplay_area_y);
+    var buf: [128]u8 = undefined;
+    const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
+
+    const box_config = tuig.ui.DrawBoxConfig{
+        .title = score,
+    };
+    const game_area = tuig.ui.drawBox(
+        ctx.scissor,
+        centered_game_rect.x_global,
+        centered_game_rect.y_global,
+        centered_game_rect.width_global,
+        centered_game_rect.height_global,
+        &box_config,
+    );
+
+    if (!self.game_started) {
+        self.initSnake(game_area);
+        // NOTE(adi): This is after so we can check for snake body collision when spawning
+        self.newFood(game_area);
+        self.game_started = true;
+    }
+
+    for (ctx.key_pressed) |key| {
+        switch (key.physical_key) {
+            .up, .W => {
+                if (self.direction != .down) self.next_direction = .up;
+            },
+            .down, .S => {
+                if (self.direction != .up) self.next_direction = .down;
+            },
+            .left, .A => {
+                if (self.direction != .right) self.next_direction = .left;
+            },
+            .right, .D => {
+                if (self.direction != .left) self.next_direction = .right;
+            },
+            else => {},
+        }
+    }
+
+    game_area.set(self.food_position.x, self.food_position.y, Cell{ .data = .{ .codepoint = 'O' } }) catch {};
+    self.renderSnake(game_area);
+    if (self.frame_ticked) {
+        self.moveSnake(game_area);
+        self.direction = self.next_direction;
+        self.frame_ticked = false;
+    }
 }
 
 fn newFood(self: *Snake, scissor: Scissor) void {
@@ -213,94 +320,17 @@ fn moveSnake(self: *Snake, game_area: Scissor) void {
     }
 }
 
-fn renderPlaying(self: *Snake, ctx: *const Context) void {
-    if (ctx.scissor.width_global < gameplay_area_x or ctx.scissor.height_global < gameplay_area_y) {
-        var buf: [128]u8 = undefined;
-        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ gameplay_area_x, gameplay_area_y, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
-        const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
-        const y = (ctx.scissor.height_global - 1) / 2;
-        const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
-        _ = area.printAssumeNoGrapheme(str, 0, 0, .{ .wrap = false, .tab_width = 4 });
-        return;
-    }
-    assert(ctx.scissor.width_global >= gameplay_area_x);
-    assert(ctx.scissor.height_global >= gameplay_area_y);
-
-    const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, gameplay_area_x), 2);
-    const y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, gameplay_area_y), 2);
+fn renderResizeHint(scissor: Scissor, min_width: u16, min_height: u16) void {
     var buf: [128]u8 = undefined;
-    const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
+    const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{
+        min_width,
+        min_height,
+        scissor.width_global,
+        scissor.height_global,
+    }) catch unreachable;
 
-    const box_config = tuig.ui.DrawBoxConfig{
-        .title = score,
-    };
-    const game_area = tuig.ui.drawBox(ctx.scissor, x, y, gameplay_area_x, gameplay_area_y, &box_config);
-
-    if (!self.game_started) {
-        self.initSnake(game_area);
-        // NOTE(adi): This is after so we can check for snake body collision when spawning
-        self.newFood(game_area);
-        self.game_started = true;
-    }
-
-    for (ctx.key_pressed) |key| {
-        switch (key.physical_key) {
-            .up, .W => {
-                if (self.direction != .down) self.next_direction = .up;
-            },
-            .down, .S => {
-                if (self.direction != .up) self.next_direction = .down;
-            },
-            .left, .A => {
-                if (self.direction != .right) self.next_direction = .left;
-            },
-            .right, .D => {
-                if (self.direction != .left) self.next_direction = .right;
-            },
-            else => {},
-        }
-    }
-
-    game_area.set(self.food_position.x, self.food_position.y, Cell{ .data = .{ .codepoint = 'O' } }) catch {};
-    self.renderSnake(game_area);
-    if (self.frame_ticked) {
-        self.moveSnake(game_area);
-        self.direction = self.next_direction;
-        self.frame_ticked = false;
-    }
-}
-
-fn renderGameOver(self: *Snake, ctx: *const Context) void {
-    self.components.clearRetainingCapacity();
-    const frame = game_over_frames[self.frame_tick % frames.len];
-    const region = ctx.scissor;
-    const region_width_i17: i17 = @intCast(region.width_global);
-    const region_height_i17: i17 = @intCast(region.height_global);
-    const start_x: i17 = @divFloor(region_width_i17 - @as(i17, @intCast(game_over_title_width)), 2);
-    const start_y: i17 = @divFloor(region_height_i17 - @as(i17, @intCast(game_over_title_height)), 2);
-
-    const area = region.initChild(start_x, start_y, game_over_title_width, game_over_title_height);
-
-    for (0..game_over_title_height) |row| {
-        const start = row * (game_over_title_width + 1);
-        const end = start + game_over_title_width;
-        _ = area.printAssumeNoGrapheme(frame[start..end], 0, @intCast(row), .{ .wrap = false, .tab_width = 4 });
-    }
-    var buf: [128]u8 = undefined;
-    const score = std.fmt.bufPrint(&buf, "Score: {d}", .{self.score}) catch unreachable;
-    const x: i17 = @divFloor(region_width_i17 - @as(i17, @intCast(score.len)), 2);
-    const y: i17 = start_y + @as(i17, @intCast(game_over_title_height)) + 3;
-    const score_area = region.initChild(x, y, @intCast(score.len), 1);
-    _ = score_area.printAssumeNoGrapheme(score, 0, 0, .{ .wrap = false, .tab_width = 4 });
-    const msg = std.fmt.bufPrint(&buf, "Press `ENTER` to restart", .{}) catch unreachable;
-    const msg_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(msg.len)), 2);
-    if (ctx.scissor.height_global > 0) {
-        const msg_y: i17 = @intCast(ctx.scissor.height_global - 1);
-        const msg_region = ctx.scissor.initChild(msg_x, msg_y, @intCast(msg.len), 1);
-        _ = msg_region.printAssumeNoGrapheme(msg, 0, 0, .{ .wrap = false, .tab_width = 4 });
-    }
-
-    if (ctx.isKeyPressed(.enter)) self.transitonTo(.waiting);
+    const area = scissor.centeredChild(@intCast(str.len), 1);
+    _ = area.printAssumeNoGrapheme(str, 0, 0, .{ .wrap = false, .tab_width = 4 });
 }
 
 pub const frames: []const []const u8 = &.{
@@ -349,14 +379,14 @@ pub const frames: []const []const u8 = &.{
     \\
 };
 
-const title_width = std.mem.findScalar(u8, frames[0], '\n') orelse 0;
-const title_height = frames[0].len / (title_width + 1);
+const title_width = (std.mem.findScalar(u8, frames[0], '\n') orelse @compileError("Frame has no width")) + 1;
+const title_height = frames[0].len / title_width;
 
 comptime {
-    assert(frames[0].len == (title_width + 1) * title_height);
-    assert(frames[1].len == (title_width + 1) * title_height);
-    assert(frames[2].len == (title_width + 1) * title_height);
-    assert(frames[3].len == (title_width + 1) * title_height);
+    assert(frames[0].len == title_width * title_height);
+    assert(frames[1].len == title_width * title_height);
+    assert(frames[2].len == title_width * title_height);
+    assert(frames[3].len == title_width * title_height);
 }
 
 const game_over_frames = [_][]const u8{
@@ -405,5 +435,5 @@ const game_over_frames = [_][]const u8{
     \\
 };
 
-const game_over_title_width = std.mem.findScalar(u8, game_over_frames[0], '\n') orelse 0;
-const game_over_title_height = game_over_frames[0].len / (game_over_title_width + 1);
+const game_over_title_width = (std.mem.findScalar(u8, game_over_frames[0], '\n') orelse @compileError("Frame has no width")) + 1;
+const game_over_title_height = game_over_frames[0].len / game_over_title_width;

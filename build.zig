@@ -28,6 +28,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const layout = b.addModule("layout", .{
+        .root_source_file = b.path("src/layout/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "stdx", .module = stdx },
+        },
+    });
+
     const renderer = b.addModule("renderer", .{
         .root_source_file = b.path("src/renderer/root.zig"),
         .target = target,
@@ -36,6 +45,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "unicode", .module = unicode },
             .{ .name = "stdx", .module = stdx },
             .{ .name = "terminal", .module = terminal },
+            .{ .name = "layout", .module = layout },
         },
     });
 
@@ -58,6 +68,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "stdx", .module = stdx },
             .{ .name = "terminal", .module = terminal },
             .{ .name = "ui", .module = ui },
+            .{ .name = "layout", .module = layout },
         },
     });
 
@@ -106,6 +117,11 @@ pub fn build(b: *std.Build) void {
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
+    const layout_tests = b.addTest(.{
+        .root_module = layout,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_layout_tests = b.addRunArtifact(layout_tests);
 
     const benchmark_tests_mod = b.createModule(.{
         .root_source_file = b.path("benchmarks/main.zig"),
@@ -129,6 +145,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_renderer_tests.step);
     test_step.dependOn(&run_unicode_tests.step);
     test_step.dependOn(&run_ui_tests.step);
+    test_step.dependOn(&run_layout_tests.step);
     test_step.dependOn(&run_benchmark_tests.step);
 
     const check_exe = b.addExecutable(.{ .name = "check", .root_module = example_mod });

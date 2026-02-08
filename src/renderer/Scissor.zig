@@ -2,6 +2,8 @@ const std = @import("std");
 
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
+const layout = @import("layout");
+const LayoutRect = layout.Rect;
 
 const FrameBuffer = @import("FrameBuffer.zig");
 const Cell = @import("root.zig").Cell;
@@ -86,6 +88,26 @@ pub fn initChild(self: Scissor, x_offset: i17, y_offset: i17, width: u16, height
 
     child.assertInvariants();
     return child;
+}
+
+pub inline fn toRect(self: Scissor) LayoutRect {
+    self.assertInvariants();
+    return .{
+        .x = 0,
+        .y = 0,
+        .width = self.width_global,
+        .height = self.height_global,
+    };
+}
+
+pub inline fn initChildRect(self: Scissor, rect: LayoutRect) Scissor {
+    self.assertInvariants();
+    return self.initChild(@intCast(rect.x), @intCast(rect.y), rect.width, rect.height);
+}
+
+pub inline fn centeredChild(self: Scissor, width: u16, height: u16) Scissor {
+    self.assertInvariants();
+    return self.initChildRect(self.toRect().centeredChild(width, height));
 }
 
 pub fn inner(self: Scissor) Scissor {

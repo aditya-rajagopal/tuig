@@ -56,6 +56,8 @@ const TetrisResult = enum { quit, noop, back };
 const Size = struct { width: u16, height: u16 };
 
 const play_area = Size{ .width = 10, .height = 20 };
+const game_area_width: u16 = play_area.width * 2 + 2;
+const game_area_height: u16 = play_area.height + 2;
 
 const lock_delay_ns = 500 * 1000 * 1000;
 const base_gravity_time: f32 = 1000.0 * 1000.0 * 1000.0 / 60.0;
@@ -93,12 +95,11 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
     if (ctx.isKeyPressed(.Q)) return .quit;
     if (ctx.isKeyPressed(.escape)) return .back;
 
-    if (ctx.scissor.width_global < play_area.width * 2 + 2 or ctx.scissor.height_global < play_area.height + 2) {
+    if (ctx.scissor.width_global < game_area_width or ctx.scissor.height_global < game_area_height) {
         var buf: [128]u8 = undefined;
-        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ play_area.width * 2 + 2, play_area.height + 2, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
-        const x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, @intCast(str.len)), 2);
-        const y = (ctx.scissor.height_global - 1) / 2;
-        const area = ctx.scissor.initChild(@intCast(x), @intCast(y), @intCast(str.len), 1);
+        const str = std.fmt.bufPrint(&buf, "Resize to atleast {d}x{d}[Now: {d}x{d}]", .{ game_area_width, game_area_height, ctx.scissor.width_global, ctx.scissor.height_global }) catch unreachable;
+
+        const area = ctx.scissor.centeredChild(@intCast(str.len), 1);
         _ = area.printAssumeNoGrapheme(str, 0, 0, .{ .wrap = false, .tab_width = 4 });
         return .noop;
     }
@@ -109,13 +110,19 @@ pub fn updateAndRender(self: *Tetris, ctx: *const Context) TetrisResult {
     const timer = &self.timer.?;
     const frame_time = timer.lap();
 
-    const start_x = @divFloor(@as(i17, ctx.scissor.width_global) - @as(i17, play_area.width * 2 + 2), 2);
-    const start_y = @divFloor(@as(i17, ctx.scissor.height_global) - @as(i17, play_area.height + 2), 2);
+    const game_rect = ctx.scissor.centeredChild(game_area_width, game_area_height);
 
     const box_config = tuig.ui.DrawBoxConfig{
         .border = tetris_box,
     };
-    const game_area = tuig.ui.drawBox(ctx.scissor, start_x, start_y, play_area.width * 2 + 2, play_area.height + 2, &box_config);
+    const game_area = tuig.ui.drawBox(
+        ctx.scissor,
+        game_rect.x_global,
+        game_rect.y_global,
+        game_rect.width_global,
+        game_rect.height_global,
+        &box_config,
+    );
 
     self.handleTranslation(ctx);
 
