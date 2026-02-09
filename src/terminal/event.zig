@@ -3,6 +3,7 @@ const std = @import("std");
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 const cutScalar = stdx.cutScalar;
+const seq = @import("sequences.zig");
 
 pub const csi_len_max_default: usize = 128;
 
@@ -158,12 +159,12 @@ fn parseCSI(data: []const u8, consumed_bytes: *usize) Event {
                 'M', 'm' => parseMouse(csi, data, consumed_bytes),
                 'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S' => parseLegacyCursorKeys(csi),
                 '~' => parseLegacyTildeSequences(csi),
-                'c' => .none, // @TODO GILA(indelible_magma_xhr)
+                'c' => parseDeviceAttributes(csi),
                 'n' => .none, // @TODO GILA(odd_flux_g9x)
                 't' => .none, // @TODO GILA(wry_ray_32j)
-                'y' => .none, // @TODO GILA(emotional_hash_6hm)
+                'y' => parseDECRPM(csi),
                 'q' => .none, // @TODO GILA(rough_fang_bxy)
-                'u' => parseKittyKeyboardProtocol(csi),
+                'u' => parseKitty(csi),
                 else => .none,
             };
         },
@@ -178,6 +179,12 @@ fn parseCSI(data: []const u8, consumed_bytes: *usize) Event {
         },
     }
     unreachable;
+}
+
+fn parseKitty(csi: []const u8) Event {
+    assert(csi.len > 2);
+    if (csi[2] == '?') return parseKittyKeyboardQuery(csi);
+    return parseKittyKeyboardProtocol(csi);
 }
 
 const KeyEventType = enum(u8) {
@@ -228,10 +235,137 @@ fn parseKittyKeyboardProtocol(csi: []const u8) Event {
     };
 }
 
+fn parseKittyKeyboardQuery(csi: []const u8) Event {
+    assert(csi.len >= 4);
+    assert(csi[2] == '?');
+    const n = csi.len;
+    assert(csi[n - 1] == 'u');
+    const body = csi[3 .. n - 1];
+
+    const flags_string, _ = if (cutScalar(u8, body, ';')) |result| result else .{ body, &.{} };
+    const raw_flags = parseValue(u16, flags_string, 0) orelse return .none;
+    const known_flags_mask: u16 = 0b1_1111;
+    const known_flags: seq.kitty.Flags = .{
+        .disambiguate_escape_codes = (raw_flags & 0b00001) != 0,
+        .report_event_types = (raw_flags & 0b00010) != 0,
+        .report_alternate_keys = (raw_flags & 0b00100) != 0,
+        .report_all_keys_as_escape_codes = (raw_flags & 0b01000) != 0,
+        .report_associated_text = (raw_flags & 0b10000) != 0,
+        .padding = 0,
+    };
+    return .{ .kitty_keyboard_query = .{
+        .raw_flags = raw_flags,
+        .known_flags = known_flags,
+        .unknown_flags = raw_flags & ~known_flags_mask,
+    } };
+}
+
+fn parseDECRPM(csi: []const u8) Event {
+    assert(csi.len > 2);
+    assert(csi[0] == '\x1b');
+    assert(csi[1] == '[');
+    const n = csi.len;
+    assert(csi[n - 1] == 'y');
+    const payload = csi[2 .. n - 1];
+    if (payload.len < 4) return .none;
+    if (payload[payload.len - 1] != '$') return .none;
+
+    const body = payload[0 .. payload.len - 1];
+    if (body[0] != '?') return .none;
+
+    const mode_string, const status_string = cutScalar(u8, body[1..], ';') orelse return .none;
+    const mode = parseValue(u16, mode_string, null) orelse return .none;
+    const status_value = parseValue(u8, status_string, null) orelse return .none;
+    const status = std.enums.fromInt(DECRPMStatus, status_value) orelse return .none;
+    return .{ .decrpm = .{ .mode = mode, .status = status } };
+}
+
+fn parseDeviceAttributes(csi: []const u8) Event {
+    assert(csi.len > 2);
+    assert(csi[0] == '\x1b');
+    assert(csi[1] == '[');
+    const n = csi.len;
+    assert(csi[n - 1] == 'c');
+    const payload = csi[2 .. n - 1];
+    if (payload.len == 0) return .none;
+
+    const body = payload[1..];
+    return switch (payload[0]) {
+        '?' => parsePrimaryDeviceAttributes(body),
+        '>' => parseSecondaryDeviceAttributes(body),
+        else => .none,
+    };
+}
+
+fn parsePrimaryDeviceAttributes(body: []const u8) Event {
+    if (body.len == 0) return .none;
+
+    const class_code_string, var remaining = if (cutScalar(u8, body, ';')) |result| result else .{ body, &.{} };
+    const class_code = parseValue(u16, class_code_string, null) orelse return .none;
+
+    var extensions: DA1Extensions = .{};
+    var unknown_extensions = false;
+    while (remaining.len > 0) {
+        const extension_string, remaining = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
+        const extension = parseValue(u16, extension_string, null) orelse return .none;
+        switch (extension) {
+            4 => extensions.sixel = true,
+            6 => extensions.selective_erase = true,
+            18 => extensions.windowing = true,
+            21 => extensions.horizontal_scrolling = true,
+            22 => extensions.ansi_color = true,
+            46 => extensions.ascii_emulation = true,
+            52 => extensions.clipboard = true,
+            else => unknown_extensions = true,
+        }
+    }
+
+    return .{ .primary_device_attributes = .{
+        .class_code = class_code,
+        .extensions = extensions,
+        .unknown_extensions = unknown_extensions,
+    } };
+}
+
+fn parseSecondaryDeviceAttributes(body: []const u8) Event {
+    const identification_code_string, const remaining_after_identification = cutScalar(u8, body, ';') orelse return .none;
+    const firmware_version_string, const remaining_after_firmware = cutScalar(u8, remaining_after_identification, ';') orelse return .none;
+    const keyboard_option_string, var remaining = if (cutScalar(u8, remaining_after_firmware, ';')) |result| result else .{ remaining_after_firmware, &.{} };
+
+    const identification_code = parseValue(u16, identification_code_string, null) orelse return .none;
+    const firmware_version = parseValue(u16, firmware_version_string, null) orelse return .none;
+    const keyboard_option_raw = parseValue(u16, keyboard_option_string, null) orelse return .none;
+
+    var extra_parameters = false;
+    while (remaining.len > 0) {
+        const extra_parameter_string, const next = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
+        _ = parseValue(u16, extra_parameter_string, null) orelse return .none;
+        extra_parameters = true;
+        remaining = next;
+    }
+
+    const keyboard_option: DA2KeyboardOption = switch (keyboard_option_raw) {
+        0 => .standard,
+        1 => .pc,
+        else => .unknown,
+    };
+
+    return .{ .secondary_device_attributes = .{
+        .identification_code = identification_code,
+        .firmware_version = firmware_version,
+        .keyboard_option = keyboard_option,
+        .keyboard_option_raw = keyboard_option_raw,
+        .extra_parameters = extra_parameters,
+    } };
+}
+
 fn parseLegacyCursorKeys(csi: []const u8) Event {
     // @NOTE There are two types of events that end in these letters https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
     //     CSI {A,B,C,D,E,F,H,P,Q,S} (legacy)
     //     CSI 1; modifier:type {A,B,C,D,E,F,H,P,Q,S}
+    //
+    //     CSI R was supported as F3 in the original version but was dropped as it conflicts with cursor position reporting
+    //     @TODO Should we support CSI R as F3 or should we just ignore it?
 
     const n = csi.len;
     const payload = csi[2 .. n - 1];
@@ -417,6 +551,10 @@ pub const Event = union(enum(u8)) {
     key_released: KeyEvent,
     key_repeat: KeyEvent,
     resize: ResizeEvent,
+    decrpm: DECRPMEvent,
+    kitty_keyboard_query: KittyKeyboardQueryEvent,
+    primary_device_attributes: PrimaryDeviceAttributesEvent,
+    secondary_device_attributes: SecondaryDeviceAttributesEvent,
     mouse_move: MouseEvent,
     mouse_drag_left: MouseEvent,
     mouse_drag_middle: MouseEvent,
@@ -438,6 +576,22 @@ pub const Event = union(enum(u8)) {
             .key_released => |key| try writer.print("key_released:{f}", .{key}),
             .key_repeat => |key| try writer.print("key_repeat:{f}", .{key}),
             .resize => |resize| try writer.print("resize:{f}", .{resize}),
+            .decrpm => |response| try writer.print("decrpm:?{d}={s}", .{ response.mode, @tagName(response.status) }),
+            .kitty_keyboard_query => |response| {
+                if (response.unknown_flags == 0) {
+                    try writer.print("kitty_keyboard_query:{d}", .{response.raw_flags});
+                } else {
+                    try writer.print("kitty_keyboard_query:{d}(unknown:{d})", .{ response.raw_flags, response.unknown_flags });
+                }
+            },
+            .primary_device_attributes => |response| {
+                if (response.unknown_extensions) {
+                    try writer.print("da1:{d}(unknown)", .{response.class_code});
+                } else {
+                    try writer.print("da1:{d}", .{response.class_code});
+                }
+            },
+            .secondary_device_attributes => |response| try writer.print("da2:{d};{d};{d}", .{ response.identification_code, response.firmware_version, response.keyboard_option_raw }),
             .mouse_move => |info| try writer.print("{f}mouse_move@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_drag_left => |info| try writer.print("{f}mouse_drag+left_button@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_drag_middle => |info| try writer.print("{f}mouse_drag+middle_button@[{d}x{d}]", .{ info.mods, info.x, info.y }),
@@ -454,6 +608,55 @@ pub const Event = union(enum(u8)) {
             .none => try writer.writeAll("none"),
         }
     }
+};
+
+pub const DECRPMStatus = enum(u8) {
+    not_recognized = 0,
+    set = 1,
+    reset = 2,
+    permanently_set = 3,
+    permanently_reset = 4,
+};
+
+pub const DECRPMEvent = struct {
+    mode: u16,
+    status: DECRPMStatus,
+};
+
+pub const KittyKeyboardQueryEvent = struct {
+    raw_flags: u16,
+    known_flags: seq.kitty.Flags,
+    unknown_flags: u16,
+};
+
+pub const DA1Extensions = packed struct {
+    sixel: bool = false,
+    selective_erase: bool = false,
+    windowing: bool = false,
+    horizontal_scrolling: bool = false,
+    ansi_color: bool = false,
+    ascii_emulation: bool = false,
+    clipboard: bool = false,
+};
+
+pub const PrimaryDeviceAttributesEvent = struct {
+    class_code: u16,
+    extensions: DA1Extensions,
+    unknown_extensions: bool,
+};
+
+pub const DA2KeyboardOption = enum(u2) {
+    standard,
+    pc,
+    unknown,
+};
+
+pub const SecondaryDeviceAttributesEvent = struct {
+    identification_code: u16,
+    firmware_version: u16,
+    keyboard_option: DA2KeyboardOption,
+    keyboard_option_raw: u16,
+    extra_parameters: bool,
 };
 
 pub const ResizeEvent = struct {
@@ -1180,6 +1383,96 @@ fn testTerminalSequences(comptime test_cases: []const TestCase) error{TestExpect
                         error_this_test = true;
                     }
                 },
+                .decrpm => |expected| {
+                    const actual: DECRPMEvent = @field(event, @tagName(expected_tag));
+                    if (actual.mode != expected.mode) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected mode {any}, found {any}", .{ expected.mode, actual.mode });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.status != expected.status) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected status {any}, found {any}", .{ expected.status, actual.status });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                },
+                .kitty_keyboard_query => |expected| {
+                    const actual: KittyKeyboardQueryEvent = @field(event, @tagName(expected_tag));
+                    if (actual.raw_flags != expected.raw_flags) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected raw_flags {any}, found {any}", .{ expected.raw_flags, actual.raw_flags });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.known_flags != expected.known_flags) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected known_flags {any}, found {any}", .{ expected.known_flags, actual.known_flags });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.unknown_flags != expected.unknown_flags) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected unknown_flags {any}, found {any}", .{ expected.unknown_flags, actual.unknown_flags });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                },
+                .primary_device_attributes => |expected| {
+                    const actual: PrimaryDeviceAttributesEvent = @field(event, @tagName(expected_tag));
+                    if (actual.class_code != expected.class_code) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected class_code {any}, found {any}", .{ expected.class_code, actual.class_code });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.extensions != expected.extensions) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected extensions {any}, found {any}", .{ expected.extensions, actual.extensions });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.unknown_extensions != expected.unknown_extensions) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected unknown_extensions {any}, found {any}", .{ expected.unknown_extensions, actual.unknown_extensions });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                },
+                .secondary_device_attributes => |expected| {
+                    const actual: SecondaryDeviceAttributesEvent = @field(event, @tagName(expected_tag));
+                    if (actual.identification_code != expected.identification_code) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected identification_code {any}, found {any}", .{ expected.identification_code, actual.identification_code });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.firmware_version != expected.firmware_version) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected firmware_version {any}, found {any}", .{ expected.firmware_version, actual.firmware_version });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.keyboard_option != expected.keyboard_option) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected keyboard_option {any}, found {any}", .{ expected.keyboard_option, actual.keyboard_option });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.keyboard_option_raw != expected.keyboard_option_raw) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected keyboard_option_raw {any}, found {any}", .{ expected.keyboard_option_raw, actual.keyboard_option_raw });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                    if (actual.extra_parameters != expected.extra_parameters) {
+                        if (!error_this_test) testPrint(test_case.sequence);
+                        std.log.err("\tExpected extra_parameters {any}, found {any}", .{ expected.extra_parameters, actual.extra_parameters });
+                        error_out = error.TestExpectedEqual;
+                        error_this_test = true;
+                    }
+                },
                 else => {},
             }
         } else {
@@ -1277,6 +1570,32 @@ test "mouse events" {
         .{ .sequence = "\x1b[<M", .expected = .none },
         .{ .sequence = "\x1b[M\x57\x42\x32", .expected = .none }, // Mouse is set to button 3(release) and movement. This is not valid in X10 mode
         .{ .sequence = "\x1b[M\x82\x42\x32", .expected = .none }, // Mouse has move and scroll modifiers set this is invalid
+    };
+
+    try testTerminalSequences(&test_cases);
+}
+
+test "terminal capability response events" {
+    const test_cases = [_]TestCase{
+        .{ .sequence = "\x1b[?u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 0, .known_flags = .{}, .unknown_flags = 0 } } },
+        .{ .sequence = "\x1b[?5u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 5, .known_flags = .{ .disambiguate_escape_codes = true, .report_alternate_keys = true }, .unknown_flags = 0 } } },
+        .{ .sequence = "\x1b[?7;1u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 7, .known_flags = .{ .disambiguate_escape_codes = true, .report_event_types = true, .report_alternate_keys = true }, .unknown_flags = 0 } } },
+        .{ .sequence = "\x1b[?255u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 255, .known_flags = .{ .disambiguate_escape_codes = true, .report_event_types = true, .report_alternate_keys = true, .report_all_keys_as_escape_codes = true, .report_associated_text = true }, .unknown_flags = 224 } } },
+        .{ .sequence = "\x1b[?1006;0$y", .expected = .{ .decrpm = .{ .mode = 1006, .status = .not_recognized } } },
+        .{ .sequence = "\x1b[?1006;1$y", .expected = .{ .decrpm = .{ .mode = 1006, .status = .set } } },
+        .{ .sequence = "\x1b[?1016;4$y", .expected = .{ .decrpm = .{ .mode = 1016, .status = .permanently_reset } } },
+        .{ .sequence = "\x1b[?64;4;6;18;21;22;46;52c", .expected = .{ .primary_device_attributes = .{ .class_code = 64, .extensions = .{ .sixel = true, .selective_erase = true, .windowing = true, .horizontal_scrolling = true, .ansi_color = true, .ascii_emulation = true, .clipboard = true }, .unknown_extensions = false } } },
+        .{ .sequence = "\x1b[?64;99c", .expected = .{ .primary_device_attributes = .{ .class_code = 64, .extensions = .{}, .unknown_extensions = true } } },
+        .{ .sequence = "\x1b[>61;20;1c", .expected = .{ .secondary_device_attributes = .{ .identification_code = 61, .firmware_version = 20, .keyboard_option = .pc, .keyboard_option_raw = 1, .extra_parameters = false } } },
+        .{ .sequence = "\x1b[>61;20;9;5c", .expected = .{ .secondary_device_attributes = .{ .identification_code = 61, .firmware_version = 20, .keyboard_option = .unknown, .keyboard_option_raw = 9, .extra_parameters = true } } },
+        // Negative tests
+        .{ .sequence = "\x1b[?;1$y", .expected = .none },
+        .{ .sequence = "\x1b[?1006;$y", .expected = .none },
+        .{ .sequence = "\x1b[?1006;9$y", .expected = .none },
+        .{ .sequence = "\x1b[?999999999999999999999u", .expected = .none },
+        .{ .sequence = "\x1b[?64;;1c", .expected = .none },
+        .{ .sequence = "\x1b[=1;2c", .expected = .none },
+        .{ .sequence = "\x1b[>61;20c", .expected = .none },
     };
 
     try testTerminalSequences(&test_cases);

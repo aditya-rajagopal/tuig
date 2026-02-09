@@ -24,12 +24,23 @@ pub const MouseOptions = struct {
     pub const Level = seq.mouse.TrackingLevel;
 };
 
+pub const CapabilityMode = enum {
+    /// Only enable features that are the terminal responds to as being supported.
+    strict,
+    /// If the terminal does not respond to a feature query try to enable it anyway.
+    /// NOTE: If the terminal does respond with not supported it will not be enabled.
+    optimistic,
+};
+
 pub const TerminalConfig = struct {
     raw: bool = false,
     alt_screen: bool = false,
     mouse: ?MouseOptions = null,
     kitty_keyboard_flags: ?KittyConfig = null,
     cursor_visible: bool = true,
+    capability_mode: CapabilityMode = .strict,
+    capability_probe_timeout_ms: i32 = 120,
+    capability_fence_grace_ms: i32 = 15,
 
     pub const tui_default = TerminalConfig{
         .raw = true,
@@ -37,9 +48,20 @@ pub const TerminalConfig = struct {
         .mouse = .default,
         .kitty_keyboard_flags = .{ .disambiguate_escape_codes = true, .report_all_keys_as_escape_codes = true, .report_event_types = true },
         .cursor_visible = true,
+        .capability_mode = .strict,
+        .capability_probe_timeout_ms = 120,
+        .capability_fence_grace_ms = 15,
     };
     pub const raw_terminal = TerminalConfig{ .raw = true };
     pub const default_terminal = TerminalConfig{};
+};
+
+const CapabilityState = struct {
+    kitty_keyboard_reply_received: bool = false,
+    kitty_keyboard_reply: ?e.KittyKeyboardQueryEvent = null,
+    mouse_sgr_decrpm_status: ?e.DECRPMStatus = null,
+    da1: ?e.PrimaryDeviceAttributesEvent = null,
+    da2: ?e.SecondaryDeviceAttributesEvent = null,
 };
 
 pub const Terminal = struct {
@@ -51,6 +73,7 @@ pub const Terminal = struct {
     // @TODO GILA(dependent_thorn_fh0) Make this a resizable buffer
     event_queue: [32]Event = undefined,
     config: TerminalConfig,
+    capability_state_initial: CapabilityState = .{},
 
     pub const Size = struct { width: u16, height: u16 };
 
@@ -71,6 +94,8 @@ pub const Terminal = struct {
         terminal.writer = std.Io.File.Writer.initStreaming(std.Io.File{ .handle = terminal.fd }, io, write_buffer);
         terminal.size = terminal.getSize();
         @memset(&terminal.event_queue, .none);
+        terminal.capability_state_initial = .{};
+        terminal.config.capability_mode = config.capability_mode;
 
         terminal.config.raw = false;
         if (config.raw) terminal.makeRaw() catch return error.Failed;
@@ -79,6 +104,9 @@ pub const Terminal = struct {
         terminal.config.alt_screen = false;
         if (config.alt_screen) terminal.setAlternateScreen() catch return error.Failed;
         errdefer terminal.unsetAlternateScreen();
+
+        terminal.sendCapabilityQueries() catch return error.Failed;
+        terminal.waitForCapabilityResponses(config.capability_probe_timeout_ms, config.capability_fence_grace_ms) catch return error.Failed;
 
         terminal.config.mouse = null;
         if (config.mouse) |mouse_config| terminal.enableMouse(mouse_config) catch return error.Failed;
@@ -214,14 +242,28 @@ pub const Terminal = struct {
     }
 
     pub fn enableMouse(self: *Terminal, options: MouseOptions) error{WriteFailed}!void {
+        if (self.config.mouse) |_| return;
         const writer = self.getWriter();
+        errdefer self.config.mouse = null;
         options.level.enable(writer) catch return error.WriteFailed;
+        self.config.mouse = .{ .sgr = false, .level = options.level };
         errdefer options.level.disable(writer) catch {};
         if (options.sgr) {
-            seq.mouse.enableSgr(writer) catch return error.WriteFailed;
+            if (self.capability_state_initial.mouse_sgr_decrpm_status) |status| {
+                switch (status) {
+                    .set, .permanently_set => self.config.mouse.?.sgr = true,
+                    .reset => {
+                        seq.mouse.enableSgr(writer) catch return error.WriteFailed;
+                        self.config.mouse.?.sgr = true;
+                    },
+                    else => {},
+                }
+            } else if (self.config.capability_mode == .optimistic) {
+                seq.mouse.enableSgr(writer) catch return error.WriteFailed;
+                self.config.mouse.?.sgr = true;
+            }
         }
         try self.flush();
-        self.config.mouse = options;
     }
 
     pub fn disableMouse(self: *Terminal) void {
@@ -229,7 +271,14 @@ pub const Terminal = struct {
             const writer = self.getWriter();
             options.level.disable(writer) catch {};
             if (options.sgr) {
-                seq.mouse.disableSgr(writer) catch {};
+                if (self.config.capability_mode == .optimistic) {
+                    seq.mouse.disableSgr(writer) catch {};
+                } else if (self.capability_state_initial.mouse_sgr_decrpm_status) |status| {
+                    switch (status) {
+                        .reset => seq.mouse.disableSgr(writer) catch {},
+                        else => {},
+                    }
+                }
             }
             self.flush() catch {};
             self.config.mouse = null;
@@ -238,9 +287,11 @@ pub const Terminal = struct {
 
     pub fn pushKittyKeyboardFlags(self: *Terminal, config: KittyConfig) error{WriteFailed}!void {
         if (self.config.kitty_keyboard_flags) |_| return;
-        seq.kitty.pushKeyboardFlags(self.getWriter(), config) catch return error.WriteFailed;
-        try self.flush();
-        self.config.kitty_keyboard_flags = config;
+        if (self.config.capability_mode == .optimistic or self.capability_state_initial.kitty_keyboard_reply_received) {
+            seq.kitty.pushKeyboardFlags(self.getWriter(), config) catch return error.WriteFailed;
+            try self.flush();
+            self.config.kitty_keyboard_flags = config;
+        }
     }
 
     pub fn popKittyKeyboardFlags(self: *Terminal) error{WriteFailed}!void {
@@ -266,6 +317,11 @@ pub const Terminal = struct {
             self.size = size;
         }
 
+        try self.parseInput(timeout_ms, &events);
+        return events.items;
+    }
+
+    fn parseInput(self: *Terminal, timeout_ms: i32, events: *std.ArrayList(Event)) error{PollFailed}!void {
         // @TODO Should we try to look for closed pipes?
         var fds = [_]std.posix.pollfd{
             .{
@@ -278,10 +334,10 @@ pub const Terminal = struct {
         var poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollFailed;
 
         if (poll_result == 0) {
-            return events.items;
+            return;
         }
         if (fds[0].revents & std.posix.POLL.IN == 0) {
-            return events.items;
+            return;
         }
 
         // @TODO GILA(frosty_gale_9rz) This buffer is fixed which means if we get a large stdin we will block. We could use a ring buffer
@@ -328,8 +384,73 @@ pub const Terminal = struct {
                 break :reading_stdin;
             }
         }
+    }
 
-        return events.items;
+    fn sendCapabilityQueries(self: *Terminal) error{WriteFailed}!void {
+        const writer = self.getWriter();
+
+        try writer.writeAll(seq.query.kitty_keyboard_support);
+        try seq.query.DECRQM(writer, .mouse_sgr);
+        try writer.writeAll(seq.query.secondary_device_attributes);
+        // @NOTE We write the primary device attributes query last so that when we receive it we know that most
+        //       of the other queries have been received. In rare cases it might be possible that the responses
+        //       to the queries are received out of order but I dont know yet if that is possible.
+        try writer.writeAll(seq.query.primary_device_attributes);
+        try self.flush();
+    }
+
+    fn waitForCapabilityResponses(self: *Terminal, timeout_ms: i32, fence_grace_ms: i32) error{PollFailed}!void {
+        var events = std.ArrayList(Event).initBuffer(&self.event_queue);
+
+        const timeout_ms_clamped = @max(timeout_ms, 0);
+        const fence_grace_ms_clamped = @max(fence_grace_ms, 0);
+        var timeout: u64 = @intCast(timeout_ms_clamped);
+        var timer = std.time.Timer.start() catch unreachable;
+        while (self.hasPendingCapabilityQueries()) {
+            const elapsed_ms = timer.read() / std.time.ns_per_ms;
+            if (elapsed_ms >= timeout) break;
+
+            const remaining_ms = timeout - elapsed_ms;
+
+            try self.parseInput(@intCast(remaining_ms), &events);
+            const fence_seen = self.consumeCapabilityEvents(&events);
+            if (fence_seen) {
+                timeout = fence_grace_ms_clamped;
+                timer.reset();
+            }
+        }
+    }
+
+    fn hasPendingCapabilityQueries(self: *const Terminal) bool {
+        if (!self.capability_state_initial.kitty_keyboard_reply_received) return true;
+        if (self.capability_state_initial.mouse_sgr_decrpm_status == null) return true;
+        if (self.capability_state_initial.da1 == null or self.capability_state_initial.da2 == null) return true;
+        return false;
+    }
+
+    fn consumeCapabilityEvents(self: *Terminal, events: *std.ArrayList(Event)) bool {
+        var fence_seen = false;
+        for (events.items) |event| {
+            switch (event) {
+                .kitty_keyboard_query => |reply| {
+                    self.capability_state_initial.kitty_keyboard_reply_received = true;
+                    self.capability_state_initial.kitty_keyboard_reply = reply;
+                },
+                .decrpm => |reply| {
+                    if (reply.mode == @intFromEnum(seq.PrivateMode.mouse_sgr)) {
+                        self.capability_state_initial.mouse_sgr_decrpm_status = reply.status;
+                    }
+                },
+                .primary_device_attributes => |reply| {
+                    fence_seen = true;
+                    self.capability_state_initial.da1 = reply;
+                },
+                .secondary_device_attributes => |reply| self.capability_state_initial.da2 = reply,
+                else => {},
+            }
+        }
+        events.shrinkRetainingCapacity(0);
+        return fence_seen;
     }
 
     // @TODO move this to capability detection
@@ -356,4 +477,3 @@ pub const Terminal = struct {
     //     return true;
     // }
 };
-

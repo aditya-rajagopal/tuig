@@ -262,6 +262,8 @@ pub const query = struct {
     pub const cursor_position = "\x1b[6n";
     /// Request primary device attributes (`CSI c`).
     pub const primary_device_attributes = "\x1b[c";
+    /// Request secondary device attributes (`CSI > c`).
+    pub const secondary_device_attributes = "\x1b[>c";
     /// Query pixel mouse mode (`CSI ? 1016 $ p`).
     pub const pixel_mouse_mods = "\x1b[?1016$p";
     /// Query kitty keyboard support (`CSI ? u`).
@@ -279,6 +281,11 @@ pub const query = struct {
         try writer.writeAll("\x1b]22;?");
         try writer.writeAll(shape_names_csv);
         try writer.writeAll("\x1b\\");
+    }
+
+    /// Query current state/support for DEC private mode `Ps` (`CSI ? Ps $ p`).
+    pub inline fn DECRQM(writer: *std.Io.Writer, mode: PrivateMode) error{WriteFailed}!void {
+        try writer.print("\x1b[?{d}$p", .{@intFromEnum(mode)});
     }
 };
 
