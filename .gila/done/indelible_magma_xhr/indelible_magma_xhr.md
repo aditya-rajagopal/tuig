@@ -1,10 +1,11 @@
 ---
 title: Handle Device Attributes message
-status: todo
+status: done
 priority_value: 50
 priority: medium
 owner: adiraj
 created: 2026-01-06T04:55:19Z
+completed: 2026-02-10T05:18:16Z
 tags: 
 - tui
 - csi

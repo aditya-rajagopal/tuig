@@ -10,18 +10,18 @@ views:
     order:
       - file.name
       - title
-      - priority
       - priority_value
+      - priority
       - tags
       - status
       - created
       - waiting_on
     sort:
-      - property: tags
-        direction: ASC
-      - property: status
-        direction: DESC
       - property: priority
+        direction: ASC
+      - property: tags
+        direction: DESC
+      - property: status
         direction: DESC
       - property: title
         direction: DESC
@@ -32,9 +32,9 @@ views:
       - property: priority_value
         direction: ASC
     columnSize:
-      note.title: 490
-      note.priority: 73
+      note.title: 651
       note.priority_value: 59
+      note.priority: 99
       note.tags: 148
       note.status: 71
       note.created: 178
