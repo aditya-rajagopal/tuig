@@ -16,8 +16,13 @@ pub fn GrowingBuffer(comptime E: type) type {
     const page_size = std.heap.page_size_min;
     const alignment_bytes = std.heap.page_size_min;
 
+    if (!std.math.isPowerOfTwo(page_size)) {
+        const msg = std.fmt.comptimePrint("GrowingBuffer requires power-of-two page_size_min, got {}", .{page_size});
+        @compileError(msg);
+    }
+
     if (alignment_bytes % @alignOf(E) != 0) {
-        const msg = std.fmt.comptimePrint("Alignemnt of type {s} does not evenly divide page_size_min: {} has alignment {}", .{ @typeName(E), page_size, @alignOf(E) });
+        const msg = std.fmt.comptimePrint("Alignment of type {s} does not evenly divide page_size_min: {} has alignment {}", .{ @typeName(E), page_size, @alignOf(E) });
         @compileError(msg);
     }
     if (page_size % @sizeOf(E) != 0) {
@@ -37,13 +42,16 @@ pub fn GrowingBuffer(comptime E: type) type {
         };
 
         pub fn init(max_elements: usize) error{ReserveFailed}!Buffer {
-            const max_size_bytes = max_elements * @sizeOf(E);
-            const max_pages = @divFloor(max_size_bytes, page_size) + 1;
-            const actual_max_elements = @divExact(max_pages * page_size, @sizeOf(E));
+            const max_size_bytes = std.math.mul(usize, max_elements, @sizeOf(E)) catch return error.ReserveFailed;
+            const actual_bytes = roundUpToPage(max_size_bytes) orelse return error.ReserveFailed;
+            const actual_max_elements = @divExact(actual_bytes, @sizeOf(E));
 
-            var buffer: Buffer = undefined;
-            buffer.max_elements_count = actual_max_elements;
-            try buffer.reserve(max_pages);
+            var buffer: Buffer = .{
+                .reserved_pages = &.{},
+                .max_elements_count = actual_max_elements,
+            };
+            if (actual_bytes == 0) return buffer;
+            try buffer.reserve(actual_bytes);
             return buffer;
         }
 
@@ -55,20 +63,30 @@ pub fn GrowingBuffer(comptime E: type) type {
         }
 
         pub fn deinit(self: *Buffer) void {
+            if (self.max_elements_count == 0) {
+                self.* = .empty;
+                return;
+            }
             self.reserved_pages.len = self.max_elements_count;
             const bytes: []align(alignment_bytes) u8 = std.mem.sliceAsBytes(self.reserved_pages);
             switch (builtin.os.tag) {
-                .windows => VirtualFree(@ptrCast(bytes.ptr), bytes.len, .{ .RELEASE = true }),
+                .windows => {
+                    const released = VirtualFree(@ptrCast(bytes.ptr), 0, .{ .RELEASE = true });
+                    assert(released != 0);
+                },
                 else => std.posix.munmap(bytes),
             }
+            self.* = .empty;
         }
 
-        fn reserve(self: *Buffer, pages: usize) !void {
+        fn reserve(self: *Buffer, total_bytes: usize) error{ReserveFailed}!void {
+            assert(total_bytes > 0);
+            assert(self.max_elements_count > 0);
             switch (builtin.os.tag) {
                 .windows => {
-                    const ptr = try VirtualAlloc(
+                    const ptr = VirtualAlloc(
                         null,
-                        pages * page_size,
+                        total_bytes,
                         .{ .RESERVE = true },
                         .{ .READWRITE = true },
                     ) orelse return error.ReserveFailed;
@@ -78,7 +96,7 @@ pub fn GrowingBuffer(comptime E: type) type {
                 else => {
                     const bytes = std.posix.mmap(
                         null,
-                        pages * page_size,
+                        total_bytes,
                         .{}, // PROT.NONE
                         .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
                         -1,
@@ -101,34 +119,44 @@ pub fn GrowingBuffer(comptime E: type) type {
 
         fn commitNewPages(self: *Buffer, num_elements: usize) error{OutOfMemory}!void {
             assert(self.reserved_pages.len + num_elements <= self.max_elements_count);
+            assert(num_elements > 0);
 
-            const num_bytes = required_bytes(num_elements);
-            const new_pages = @divFloor(num_bytes, page_size) + 1;
-
-            const bytes = @as([*]align(alignment_bytes) u8, @ptrCast(@alignCast(self.reserved_pages.ptr)));
+            const num_bytes = num_elements * @sizeOf(E);
+            const num_bytes_to_commit = roundUpToPage(num_bytes) orelse unreachable;
+            assert(num_bytes_to_commit > 0);
 
             const start_offset = self.reserved_pages.len * @sizeOf(E);
-            const num_bytes_to_commit = new_pages * page_size;
-            self.reserved_pages.len += @divExact(num_bytes_to_commit, @sizeOf(E));
+            const new_len = self.reserved_pages.len + @divExact(num_bytes_to_commit, @sizeOf(E));
+            assert(new_len >= self.reserved_pages.len);
+            assert(new_len <= self.max_elements_count);
+
+            const full_reserved: []align(alignment_bytes) E = self.reserved_pages.ptr[0..self.max_elements_count];
+            const bytes: []align(alignment_bytes) u8 = std.mem.sliceAsBytes(full_reserved);
+            const memory: []align(alignment_bytes) u8 = @alignCast(bytes[start_offset .. start_offset + num_bytes_to_commit]);
 
             switch (builtin.os.tag) {
                 .windows => {
-                    _ = try VirtualAlloc(
-                        @ptrCast(@alignCast(bytes)),
-                        num_bytes_to_commit,
-                        .{ .RESERVE = true, .COMMIT = true },
+                    const ptr = VirtualAlloc(
+                        @ptrCast(memory.ptr),
+                        memory.len,
+                        .{ .COMMIT = true },
                         .{ .READWRITE = true },
                     ) orelse return error.OutOfMemory;
+                    assert(@intFromPtr(ptr) == @intFromPtr(memory.ptr));
                 },
                 else => {
-                    const memory: []align(std.heap.page_size_min) u8 = @alignCast(bytes[start_offset..][0..num_bytes_to_commit]);
                     std.process.protectMemory(memory, .{ .read = true, .write = true }) catch return error.OutOfMemory;
                 },
             }
+
+            self.reserved_pages.len = new_len;
         }
 
-        inline fn required_bytes(num_elements: usize) usize {
-            return num_elements * @sizeOf(E);
+        inline fn roundUpToPage(bytes: usize) ?usize {
+            if (bytes == 0) return 0;
+            const mask = page_size - 1;
+            const with_mask = std.math.add(usize, bytes, mask) catch return null;
+            return with_mask & ~mask;
         }
     };
 }
@@ -245,10 +273,11 @@ pub const FixedGrowingBufferAllocator = struct {
         }
 
         const add = new_size - buf.len;
-        if (add + self.end_index > self.buffer.reserved_pages.len) {
-            self.buffer.ensureTotalCapacity(add + self.end_index) catch return false;
+        const new_end_index = std.math.add(usize, self.end_index, add) catch return false;
+        if (new_end_index > self.buffer.reserved_pages.len) {
+            self.buffer.ensureTotalCapacity(new_end_index) catch return false;
         }
-        self.end_index += add;
+        self.end_index = new_end_index;
         return true;
     }
 
@@ -309,6 +338,350 @@ pub const FixedGrowingBufferAllocator = struct {
             (@intFromPtr(slice.ptr) + slice.len) <= (@intFromPtr(container.ptr) + container.len);
     }
 };
+
+pub const GrowingRingBuffer = struct {
+    buffer: Backing,
+    start: usize,
+    len: usize,
+
+    pub const empty: GrowingRingBuffer = .{
+        .buffer = .empty,
+        .start = 0,
+        .len = 0,
+    };
+
+    pub const Backing = GrowingBuffer(u8);
+
+    pub const ReadableSlices = struct {
+        first: []const u8,
+        second: []const u8,
+    };
+
+    pub const WritableSlices = struct {
+        first: []u8,
+        second: []u8,
+    };
+
+    pub fn init(max_capacity: usize) error{ReserveFailed}!GrowingRingBuffer {
+        return .{
+            .buffer = try Backing.init(max_capacity),
+            .start = 0,
+            .len = 0,
+        };
+    }
+
+    pub fn initCapacity(max_capacity: usize, initial_capacity: usize) error{ OutOfMemory, ReserveFailed }!GrowingRingBuffer {
+        return .{
+            .buffer = try Backing.initCapacity(max_capacity, initial_capacity),
+            .start = 0,
+            .len = 0,
+        };
+    }
+
+    pub fn deinit(self: *GrowingRingBuffer) void {
+        self.buffer.deinit();
+        self.* = .empty;
+    }
+
+    pub fn capacity(self: *const GrowingRingBuffer) usize {
+        return self.buffer.reserved_pages.len;
+    }
+
+    pub fn maxCapacity(self: *const GrowingRingBuffer) usize {
+        return self.buffer.max_elements_count;
+    }
+
+    pub fn readableSlices(self: *const GrowingRingBuffer) ReadableSlices {
+        const cap = self.capacity();
+        if (self.len == 0 or cap == 0) {
+            return .{ .first = &.{}, .second = &.{} };
+        }
+
+        assert(self.start < cap);
+        const tail = cap - self.start;
+        if (self.len <= tail) {
+            return .{
+                .first = self.buffer.reserved_pages[self.start .. self.start + self.len],
+                .second = &.{},
+            };
+        }
+
+        return .{
+            .first = self.buffer.reserved_pages[self.start..cap],
+            .second = self.buffer.reserved_pages[0 .. self.len - tail],
+        };
+    }
+
+    pub fn ensureWritable(self: *GrowingRingBuffer, min_writable: usize) error{OutOfMemory}!void {
+        const cap = self.capacity();
+        const free_now = cap - self.len;
+        if (free_now >= min_writable) return;
+
+        const needed_total = std.math.add(usize, self.len, min_writable) catch return error.OutOfMemory;
+        if (needed_total > self.maxCapacity()) return error.OutOfMemory;
+
+        var target = needed_total;
+        if (cap > 0) {
+            const growth = std.math.add(usize, cap, cap / 2) catch self.maxCapacity();
+            if (growth > target) target = growth;
+        }
+        target = @min(target, self.maxCapacity());
+
+        const is_wrapped = cap > 0 and self.len > cap - self.start;
+
+        try self.buffer.ensureTotalCapacity(target);
+        const new_cap = self.capacity();
+        assert(new_cap >= needed_total);
+
+        if (!is_wrapped or new_cap == cap) return;
+
+        const first_len = cap - self.start;
+        const second_len = self.len - first_len;
+        const grown_by = new_cap - cap;
+
+        if (second_len <= grown_by) {
+            std.mem.copyForwards(
+                u8,
+                self.buffer.reserved_pages[cap .. cap + second_len],
+                self.buffer.reserved_pages[0..second_len],
+            );
+            return;
+        }
+
+        const new_start = new_cap - first_len;
+        std.mem.copyBackwards(
+            u8,
+            self.buffer.reserved_pages[new_start .. new_start + first_len],
+            self.buffer.reserved_pages[self.start..cap],
+        );
+        self.start = new_start;
+    }
+
+    pub fn writableSlices(self: *GrowingRingBuffer) WritableSlices {
+        const cap = self.capacity();
+        if (cap == 0) return .{ .first = &.{}, .second = &.{} };
+
+        const free = cap - self.len;
+        if (free == 0) return .{ .first = &.{}, .second = &.{} };
+
+        const write_start = self.writeStart();
+        const first_len = @min(free, cap - write_start);
+        const second_len = free - first_len;
+
+        return .{
+            .first = self.buffer.reserved_pages[write_start .. write_start + first_len],
+            .second = self.buffer.reserved_pages[0..second_len],
+        };
+    }
+
+    pub fn consume(self: *GrowingRingBuffer, count: usize) void {
+        assert(count <= self.len);
+        if (count == self.len) {
+            self.len = 0;
+            self.start = 0;
+            return;
+        }
+
+        const cap = self.capacity();
+        const remaining_to_end = cap - self.start;
+        self.start = if (count >= remaining_to_end)
+            count - remaining_to_end
+        else
+            self.start + count;
+        self.len -= count;
+    }
+
+    pub fn dropOldest(self: *GrowingRingBuffer, count: usize) usize {
+        const dropped = @min(count, self.len);
+        self.consume(dropped);
+        return dropped;
+    }
+
+    pub fn linearizeReadable(self: *GrowingRingBuffer) []const u8 {
+        if (self.len == 0) return &.{};
+
+        const slices = self.readableSlices();
+        if (slices.second.len == 0) return slices.first;
+
+        const cap = self.capacity();
+        std.mem.rotate(u8, self.buffer.reserved_pages[0..cap], self.start);
+        self.start = 0;
+        return self.buffer.reserved_pages[0..self.len];
+    }
+
+    pub fn write(self: *GrowingRingBuffer, bytes: []const u8) error{OutOfMemory}!usize {
+        if (bytes.len == 0) return 0;
+        try self.ensureWritable(bytes.len);
+
+        const writable = self.writableSlices();
+        const first_len = @min(writable.first.len, bytes.len);
+        std.mem.copyForwards(u8, writable.first[0..first_len], bytes[0..first_len]);
+
+        const remaining = bytes.len - first_len;
+        if (remaining > 0) {
+            std.mem.copyForwards(u8, writable.second[0..remaining], bytes[first_len..]);
+        }
+
+        self.len += bytes.len;
+        return bytes.len;
+    }
+
+    pub fn didWrite(self: *GrowingRingBuffer, count: usize) void {
+        if (count == 0) return;
+        const cap = self.capacity();
+        assert(count <= cap - self.len);
+        self.len += count;
+    }
+
+    fn writeStart(self: *const GrowingRingBuffer) usize {
+        const cap = self.capacity();
+        if (cap == 0) return 0;
+        const remaining_to_end = cap - self.start;
+        return if (self.len >= remaining_to_end)
+            self.len - remaining_to_end
+        else
+            self.start + self.len;
+    }
+};
+
+test "GrowingRingBuffer wraps readable slices" {
+    var rb = try GrowingRingBuffer.initCapacity(std.heap.page_size_min * 2, std.heap.page_size_min);
+    defer rb.deinit();
+
+    const cap = rb.capacity();
+    const prefix = try std.testing.allocator.alloc(u8, cap - 2);
+    defer std.testing.allocator.free(prefix);
+    @memset(prefix, 'a');
+
+    _ = try rb.write(prefix);
+    rb.consume(cap - 4);
+    _ = try rb.write("012345");
+
+    const slices = rb.readableSlices();
+    try std.testing.expect(slices.second.len > 0);
+
+    const linear = rb.linearizeReadable();
+    try std.testing.expectEqualStrings("aa012345", linear);
+}
+
+test "GrowingRingBuffer dropOldest clamps" {
+    var rb = try GrowingRingBuffer.initCapacity(64, 8);
+    defer rb.deinit();
+
+    _ = try rb.write("abcdef");
+    const dropped = rb.dropOldest(10);
+    try std.testing.expectEqual(@as(usize, 6), dropped);
+    try std.testing.expectEqual(@as(usize, 0), rb.len);
+}
+
+test "GrowingRingBuffer property: random operations preserve model" {
+    const seed = std.testing.random_seed ^ 0x2af9d8a7;
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+
+    const max_capacity = std.heap.page_size_min * 2;
+    var rb = try GrowingRingBuffer.initCapacity(max_capacity, std.heap.page_size_min);
+    defer rb.deinit();
+
+    var model: std.ArrayList(u8) = .empty;
+    defer model.deinit(std.testing.allocator);
+
+    var scratch: [96]u8 = undefined;
+
+    const Operation = enum(u8) {
+        write_random,
+        consume,
+        drop_oldest,
+        ensure_writable,
+        linearize,
+        linearize_if_wrapped,
+    };
+
+    var iteration: usize = 0;
+    while (iteration < 6000) : (iteration += 1) {
+        const op: Operation = @enumFromInt(random.uintLessThan(u8, 6));
+        switch (op) {
+            .write_random => {
+                const n = random.intRangeAtMost(usize, 0, scratch.len);
+                random.bytes(scratch[0..n]);
+                const expected_oom = model.items.len + n > rb.maxCapacity();
+                const write_result = rb.write(scratch[0..n]);
+                if (expected_oom) {
+                    if (write_result) |_| {
+                        std.debug.print("ring write expected oom seed={d} iteration={d} n={d}\n", .{ seed, iteration, n });
+                        return error.TestUnexpectedResult;
+                    } else |err| {
+                        if (err != error.OutOfMemory) return err;
+                    }
+                } else {
+                    _ = try write_result;
+                    try model.appendSlice(std.testing.allocator, scratch[0..n]);
+                }
+            },
+            .consume => {
+                const n = random.intRangeAtMost(usize, 0, model.items.len + 32);
+                const consume_count = @min(n, model.items.len);
+                rb.consume(consume_count);
+                if (consume_count > 0 and consume_count < model.items.len) {
+                    std.mem.copyForwards(u8, model.items[0 .. model.items.len - consume_count], model.items[consume_count..]);
+                }
+                model.items.len -= consume_count;
+            },
+            .drop_oldest => {
+                const n = random.intRangeAtMost(usize, 0, model.items.len + 32);
+                const expected = @min(n, model.items.len);
+                const dropped = rb.dropOldest(n);
+                if (dropped != expected) {
+                    std.debug.print("ring drop mismatch seed={d} iteration={d} expected={d} got={d}\n", .{ seed, iteration, expected, dropped });
+                    return error.TestUnexpectedResult;
+                }
+                if (expected > 0 and expected < model.items.len) {
+                    std.mem.copyForwards(u8, model.items[0 .. model.items.len - expected], model.items[expected..]);
+                }
+                model.items.len -= expected;
+            },
+            .ensure_writable => {
+                const min_writable = random.intRangeAtMost(usize, 0, 128);
+                const expected_oom = model.items.len + min_writable > rb.maxCapacity();
+                const ensure = rb.ensureWritable(min_writable);
+                if (expected_oom) {
+                    if (ensure) {
+                        std.debug.print("ring ensure expected oom seed={d} iteration={d} need={d}\n", .{ seed, iteration, min_writable });
+                        return error.TestUnexpectedResult;
+                    } else |err| {
+                        if (err != error.OutOfMemory) return err;
+                    }
+                } else {
+                    try ensure;
+                }
+            },
+            .linearize => {
+                _ = rb.linearizeReadable();
+            },
+            .linearize_if_wrapped => {
+                const slices = rb.readableSlices();
+                if (slices.second.len > 0) {
+                    _ = rb.linearizeReadable();
+                }
+            },
+        }
+
+        if (rb.len != model.items.len) {
+            std.debug.print("ring len mismatch seed={d} iteration={d} ring={d} model={d}\n", .{ seed, iteration, rb.len, model.items.len });
+            return error.TestUnexpectedResult;
+        }
+        if (rb.len > rb.capacity() or rb.capacity() > rb.maxCapacity()) {
+            std.debug.print("ring bounds violation seed={d} iteration={d} len={d} cap={d} max={d}\n", .{ seed, iteration, rb.len, rb.capacity(), rb.maxCapacity() });
+            return error.TestUnexpectedResult;
+        }
+
+        const linear = rb.linearizeReadable();
+        if (!std.mem.eql(u8, linear, model.items)) {
+            std.debug.print("ring content mismatch seed={d} iteration={d}\n", .{ seed, iteration });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
 
 pub const PROTECTION = packed struct(u32) {
     NOACCESS: bool = false,

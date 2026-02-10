@@ -1,4 +1,6 @@
 # 0.1.0
+- (2026-02-09) Added Darwin `pselect` readiness handling 
+- (2026-02-08) Tightened terminal capability gating to only enable features that are the terminal responds to as being supported.
 - (2026-02-06) Centralized terminal sequences
 - (2026-02-06) Made CSI escape parsing ECMA-48 compliant
 - (2026-02-05) Fixed multiple issues across terminal, renderer, and unicode internals; aligned unicode export/generation types.

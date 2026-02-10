@@ -48,7 +48,7 @@ pub fn main(_: std.process.Init.Minimal) void {
     };
     global_app = &app;
     while (!quit) {
-        const events = terminal.pollEvents(15) catch {
+        const events = terminal.pollEvents(14) catch {
             log.err("Failed to poll events", .{});
             return;
         };

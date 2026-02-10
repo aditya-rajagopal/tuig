@@ -951,7 +951,7 @@ test "fullRedraw and diffRedraw with stylesheet update" {
     // Swap buffers
     @memcpy(back.cells, front.cells);
     // Something causes style to change
-    id = try style_sheet.update(id, .{
+    try id.update(&style_sheet, .{
         .bg = .{ .rgb = .{ .r = 255, .g = 255, .b = 255 } },
         .flags = .{ .bold = true },
     });

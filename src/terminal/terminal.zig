@@ -1,9 +1,52 @@
 const std = @import("std");
-const assert = std.debug.assert;
+const builtin = @import("builtin");
+
+const stdx = @import("stdx");
+const assert = stdx.inlineAssert;
 
 const e = @import("event.zig");
 const Event = e.Event;
 const seq = @import("sequences.zig");
+
+const is_darwin = switch (builtin.os.tag) {
+    .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => true,
+    else => false,
+};
+
+extern "c" fn pselect(
+    nfds: c_int,
+    readfds: ?*FDSet,
+    writefds: ?*FDSet,
+    exceptfds: ?*FDSet,
+    timeout: ?*const std.posix.timespec,
+    sigmask: ?*const std.c.sigset_t,
+) c_int;
+
+const FDSet = extern struct {
+    fds_bits: [32]i32,
+
+    const fd_setsize: i32 = 1024;
+    const nfd_bits: usize = @bitSizeOf(i32);
+
+    pub const empty: FDSet = .{ .fds_bits = @splat(0) };
+
+    fn setFd(set_out: *FDSet, fd: std.posix.fd_t) void {
+        const index: usize = @intCast(fd);
+        const word_index = index / nfd_bits;
+        const bit_index = index % nfd_bits;
+        const bit_mask: u32 = @as(u32, 1) << @intCast(bit_index);
+        set_out.fds_bits[word_index] |= @as(i32, @bitCast(bit_mask));
+    }
+
+    fn isFdSet(set_in: *const FDSet, fd: std.posix.fd_t) bool {
+        const index: usize = @intCast(fd);
+        const word_index = index / nfd_bits;
+        const bit_index = index % nfd_bits;
+        const bit_mask: u32 = @as(u32, 1) << @intCast(bit_index);
+        const word_bits: u32 = @bitCast(set_in.fds_bits[word_index]);
+        return (word_bits & bit_mask) != 0;
+    }
+};
 
 pub const KittyConfig = seq.kitty.Flags;
 
@@ -41,6 +84,9 @@ pub const TerminalConfig = struct {
     capability_mode: CapabilityMode = .strict,
     capability_probe_timeout_ms: i32 = 120,
     capability_fence_grace_ms: i32 = 15,
+    read_buffer_initial_bytes: usize = std.heap.page_size_min,
+    read_buffer_max_bytes: usize = std.heap.page_size_min * 16,
+    read_overflow_policy: ReadOverflowPolicy = .drop_oldest,
 
     pub const tui_default = TerminalConfig{
         .raw = true,
@@ -64,12 +110,56 @@ const CapabilityState = struct {
     da2: ?e.SecondaryDeviceAttributesEvent = null,
 };
 
+pub const ReadOverflowPolicy = enum {
+    drop_oldest,
+};
+
+const WaitReadableError = if (is_darwin)
+    error{
+        PselectInputFdOutOfRange,
+        PselectWaitSyscallFailed,
+        PselectInvalidFd,
+        PselectInvalidArguments,
+        PselectUnexpectedResult,
+    }
+else
+    error{
+        PollWaitSyscallFailed,
+        PollWaitInvalidFd,
+        PollWaitErrorEvent,
+    };
+
+pub const PollError = error{
+    InputClosed,
+    ReadInputFailed,
+} || WaitReadableError;
+
+pub const InitError = PollError || error{
+    InvalidReadBufferInitialBytes,
+    InvalidReadBufferMaxBytes,
+    ReadBufferInitialExceedsMax,
+    OpenOutputTtyFailed,
+    OpenInputTtyFailed,
+    GetInputFdFlagsFailed,
+    SetInputFdFlagsFailed,
+    InitReadBufferFailed,
+    ReadTerminalAttributesFailed,
+    RawModeEnableFailed,
+    SetAlternateScreenFailed,
+    CapabilityQueryWriteFailed,
+    EnableMouseFailed,
+    PushKittyKeyboardFlagsFailed,
+    SetCursorVisibilityFailed,
+};
+
 pub const Terminal = struct {
-    fd: std.Io.File.Handle,
-    stdin: std.Io.File.Handle,
+    output_fd: std.Io.File.Handle,
+    input_fd: std.Io.File.Handle,
     original_state: std.posix.termios,
     writer: std.Io.File.Writer,
     size: Size,
+    read_buffer: stdx.GrowingRingBuffer,
+    dropped_input_bytes: u64 = 0,
     // @TODO GILA(dependent_thorn_fh0) Make this a resizable buffer
     event_queue: [32]Event = undefined,
     config: TerminalConfig,
@@ -83,40 +173,66 @@ pub const Terminal = struct {
         return &self.writer.interface;
     }
 
-    pub fn init(terminal: *Terminal, config: TerminalConfig, write_buffer: []u8) error{Failed}!void {
+    pub fn init(terminal: *Terminal, config: TerminalConfig, write_buffer: []u8) InitError!void {
+        if (config.read_buffer_initial_bytes == 0) return error.InvalidReadBufferInitialBytes;
+        if (config.read_buffer_max_bytes == 0) return error.InvalidReadBufferMaxBytes;
+        if (config.read_buffer_initial_bytes > config.read_buffer_max_bytes) return error.ReadBufferInitialExceedsMax;
+
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();
-        const file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch return error.Failed;
-        errdefer file.close(io);
-        terminal.fd = file.handle; //std.posix.open("/dev/tty", .{ .ACCMODE = .RDWR }, 0) catch return error.Failed;
-        terminal.stdin = std.Io.File.stdin().handle;
-        terminal.original_state = std.posix.tcgetattr(terminal.fd) catch return error.Failed;
-        terminal.writer = std.Io.File.Writer.initStreaming(std.Io.File{ .handle = terminal.fd }, io, write_buffer);
+
+        const output_file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write, .allow_ctty = false }) catch return error.OpenOutputTtyFailed;
+        errdefer output_file.close(io);
+        terminal.output_fd = output_file.handle;
+
+        const input_file = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_only, .allow_ctty = false }) catch return error.OpenInputTtyFailed;
+        errdefer input_file.close(io);
+        terminal.input_fd = input_file.handle;
+
+        if (comptime is_darwin) {
+            if (terminal.input_fd >= FDSet.fd_setsize) {
+                return error.PselectInputFdOutOfRange;
+            }
+        }
+
+        try terminal.setInputNonBlocking();
+
+        terminal.read_buffer = stdx.GrowingRingBuffer.initCapacity(config.read_buffer_max_bytes, config.read_buffer_initial_bytes) catch return error.InitReadBufferFailed;
+        errdefer terminal.read_buffer.deinit();
+        terminal.dropped_input_bytes = 0;
+
+        terminal.original_state = std.posix.tcgetattr(terminal.output_fd) catch return error.ReadTerminalAttributesFailed;
+        terminal.writer = std.Io.File.Writer.initStreaming(std.Io.File{ .handle = terminal.output_fd }, io, write_buffer);
         terminal.size = terminal.getSize();
         @memset(&terminal.event_queue, .none);
         terminal.capability_state_initial = .{};
+        terminal.config.read_buffer_initial_bytes = config.read_buffer_initial_bytes;
+        terminal.config.read_buffer_max_bytes = config.read_buffer_max_bytes;
+        terminal.config.read_overflow_policy = config.read_overflow_policy;
         terminal.config.capability_mode = config.capability_mode;
 
         terminal.config.raw = false;
-        if (config.raw) terminal.makeRaw() catch return error.Failed;
+        if (config.raw) terminal.makeRaw() catch return error.RawModeEnableFailed;
         errdefer terminal.unmakeRaw();
 
         terminal.config.alt_screen = false;
-        if (config.alt_screen) terminal.setAlternateScreen() catch return error.Failed;
+        if (config.alt_screen) terminal.setAlternateScreen() catch return error.SetAlternateScreenFailed;
         errdefer terminal.unsetAlternateScreen();
 
-        terminal.sendCapabilityQueries() catch return error.Failed;
-        terminal.waitForCapabilityResponses(config.capability_probe_timeout_ms, config.capability_fence_grace_ms) catch return error.Failed;
+        terminal.sendCapabilityQueries() catch return error.CapabilityQueryWriteFailed;
+        terminal.config.capability_probe_timeout_ms = config.capability_probe_timeout_ms;
+        terminal.config.capability_fence_grace_ms = config.capability_fence_grace_ms;
+        try terminal.waitForCapabilityResponses();
 
         terminal.config.mouse = null;
-        if (config.mouse) |mouse_config| terminal.enableMouse(mouse_config) catch return error.Failed;
+        if (config.mouse) |mouse_config| terminal.enableMouse(mouse_config) catch return error.EnableMouseFailed;
         errdefer terminal.disableMouse();
 
         terminal.config.kitty_keyboard_flags = null;
-        if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.Failed;
+        if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.PushKittyKeyboardFlagsFailed;
         errdefer terminal.popKittyKeyboardFlags() catch {};
 
-        terminal.setCursorVisible(config.cursor_visible) catch return error.Failed;
+        terminal.setCursorVisible(config.cursor_visible) catch return error.SetCursorVisibilityFailed;
 
         global_tty = terminal;
     }
@@ -130,9 +246,18 @@ pub const Terminal = struct {
         if (!self.config.cursor_visible) self.setCursorVisible(true) catch {};
         global_tty = null;
 
+        self.read_buffer.deinit();
+
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();
-        (std.Io.File{ .handle = self.fd }).close(io);
+        (std.Io.File{ .handle = self.input_fd }).close(io);
+        (std.Io.File{ .handle = self.output_fd }).close(io);
+    }
+
+    fn setInputNonBlocking(self: *Terminal) error{ GetInputFdFlagsFailed, SetInputFdFlagsFailed }!void {
+        var flags = std.posix.fcntl(self.input_fd, std.posix.F.GETFL, 0) catch return error.GetInputFdFlagsFailed;
+        flags |= @as(usize, 1 << @bitOffsetOf(std.posix.O, "NONBLOCK"));
+        _ = std.posix.fcntl(self.input_fd, std.posix.F.SETFL, flags) catch return error.SetInputFdFlagsFailed;
     }
 
     pub fn write(self: *Terminal, bytes: []const u8) error{WriteFailed}!void {
@@ -162,7 +287,7 @@ pub const Terminal = struct {
     pub fn getSize(self: *const Terminal) Size {
         // @TODO windows uses GetConsoleScreenBufferInfo
         var size: std.posix.winsize = undefined;
-        const r = std.posix.system.ioctl(self.fd, std.posix.T.IOCGWINSZ, @intFromPtr(&size));
+        const r = std.posix.system.ioctl(self.output_fd, std.posix.T.IOCGWINSZ, @intFromPtr(&size));
         if (r != 0) {
             return .{ .width = 80, .height = 24 };
         }
@@ -213,7 +338,7 @@ pub const Terminal = struct {
 
         raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
         raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
-        std.posix.tcsetattr(self.fd, .FLUSH, raw) catch {
+        std.posix.tcsetattr(self.output_fd, .FLUSH, raw) catch {
             return error.Failed;
         };
         self.config.raw = true;
@@ -221,7 +346,7 @@ pub const Terminal = struct {
 
     pub fn unmakeRaw(self: *Terminal) void {
         if (!self.config.raw) return;
-        std.posix.tcsetattr(self.fd, .FLUSH, self.original_state) catch {};
+        std.posix.tcsetattr(self.output_fd, .FLUSH, self.original_state) catch {};
         self.config.raw = false;
     }
 
@@ -302,8 +427,79 @@ pub const Terminal = struct {
         }
     }
 
+    const waitReadable = if (is_darwin) waitReadablePselect else waitReadablePoll;
+
+    fn waitReadablePoll(self: *Terminal, timeout_ms: i32) PollError!bool {
+        var fds = [_]std.posix.pollfd{
+            .{
+                .fd = self.input_fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            },
+        };
+
+        const poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollWaitSyscallFailed;
+        if (poll_result == 0) return false;
+
+        const revents = fds[0].revents;
+        if ((revents & std.posix.POLL.NVAL) != 0) return error.PollWaitInvalidFd;
+        if ((revents & std.posix.POLL.ERR) != 0) return error.PollWaitErrorEvent;
+        if ((revents & std.posix.POLL.HUP) != 0 and (revents & std.posix.POLL.IN) == 0) return error.InputClosed;
+        return (revents & std.posix.POLL.IN) != 0;
+    }
+
+    fn waitReadablePselect(self: *Terminal, timeout_ms: i32) PollError!bool {
+        if (self.input_fd < 0) return error.PselectInvalidFd;
+        if (self.input_fd >= FDSet.fd_setsize) return error.PselectInputFdOutOfRange;
+
+        const nfds: c_int = @intCast(self.input_fd + 1);
+        const has_timeout = timeout_ms >= 0;
+        const timeout_total_ms: u64 = @intCast(@max(timeout_ms, 0));
+        var timer: std.time.Timer = undefined;
+        if (has_timeout) timer = std.time.Timer.start() catch unreachable;
+        var attempted_wait = false;
+
+        while (true) {
+            var readfds: FDSet = .empty;
+            readfds.setFd(self.input_fd);
+
+            var timeout_spec: std.posix.timespec = undefined;
+            const timeout_ptr: ?*const std.posix.timespec = if (!has_timeout) null else blk: {
+                if (timeout_total_ms == 0) {
+                    if (attempted_wait) return false;
+                    timeout_spec = .{ .sec = 0, .nsec = 0 };
+                    break :blk &timeout_spec;
+                }
+
+                const elapsed_ms = timer.read() / std.time.ns_per_ms;
+                if (elapsed_ms >= timeout_total_ms) return false;
+
+                const remaining_ms = timeout_total_ms - elapsed_ms;
+                timeout_spec = .{
+                    .sec = @intCast(remaining_ms / 1000),
+                    .nsec = @intCast((remaining_ms % 1000) * std.time.ns_per_ms),
+                };
+                break :blk &timeout_spec;
+            };
+
+            attempted_wait = true;
+            const rc = pselect(nfds, &readfds, null, null, timeout_ptr, null);
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => {
+                    if (rc == 0) return false;
+                    if (!readfds.isFdSet(self.input_fd)) return error.PselectUnexpectedResult;
+                    return true;
+                },
+                .INTR => continue,
+                .BADF => return error.PselectInvalidFd,
+                .INVAL => return error.PselectInvalidArguments,
+                else => return error.PselectWaitSyscallFailed,
+            }
+        }
+    }
+
     // @TODO This should drain the event queue in multithreaded mode when that is implemented
-    pub fn pollEvents(self: *Terminal, timeout_ms: i32) error{PollFailed}![]Event {
+    pub fn pollEvents(self: *Terminal, timeout_ms: i32) PollError![]Event {
         var events = std.ArrayList(Event).initBuffer(&self.event_queue);
 
         const size = self.getSize();
@@ -321,68 +517,96 @@ pub const Terminal = struct {
         return events.items;
     }
 
-    fn parseInput(self: *Terminal, timeout_ms: i32, events: *std.ArrayList(Event)) error{PollFailed}!void {
-        // @TODO Should we try to look for closed pipes?
-        var fds = [_]std.posix.pollfd{
-            .{
-                // FIXME: In macos you cant poll dev/tty. It needs select
-                .fd = self.stdin,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
+    const ParseBufferedState = enum {
+        drained,
+        need_more_input,
+        queue_full,
+    };
+
+    fn parseBufferedEvents(self: *Terminal, events: *std.ArrayList(Event)) ParseBufferedState {
+        if (self.read_buffer.len == 0) return .drained;
+
+        var data = self.read_buffer.linearizeReadable();
+        var consumed_total: usize = 0;
+        defer if (consumed_total > 0) self.read_buffer.consume(consumed_total);
+        while (data.len > 0) {
+            var consumed_bytes: usize = 0;
+            const event = e.parseEvent(data, &consumed_bytes);
+
+            if (consumed_bytes == 0) return .need_more_input;
+
+            if (event != .none) {
+                events.appendBounded(event) catch return .queue_full;
+            }
+
+            consumed_total += consumed_bytes;
+            data = data[consumed_bytes..];
+        }
+
+        return .drained;
+    }
+
+    fn ensureReadBufferWritable(self: *Terminal) void {
+        if (self.read_buffer.len < self.read_buffer.capacity()) return;
+
+        if (self.read_buffer.ensureWritable(1)) {
+            @branchHint(.likely);
+            return;
+        } else |_| {}
+
+        switch (self.config.read_overflow_policy) {
+            .drop_oldest => {
+                // @TODO What is a good value for this?
+                const drop_count = 1;
+                const dropped = self.read_buffer.dropOldest(drop_count);
+                self.dropped_input_bytes +|= dropped;
             },
-        };
-        var poll_result = std.posix.poll(&fds, timeout_ms) catch return error.PollFailed;
-
-        if (poll_result == 0) {
-            return;
         }
-        if (fds[0].revents & std.posix.POLL.IN == 0) {
-            return;
+    }
+
+    fn readIntoReadBuffer(self: *Terminal) PollError!usize {
+        self.ensureReadBufferWritable();
+
+        const writable = self.read_buffer.writableSlices();
+        var iovecs: [2]std.posix.iovec = undefined;
+        var iovecs_len: usize = 0;
+        if (writable.first.len > 0) {
+            iovecs[iovecs_len] = .{ .base = writable.first.ptr, .len = writable.first.len };
+            iovecs_len += 1;
         }
+        if (writable.second.len > 0) {
+            iovecs[iovecs_len] = .{ .base = writable.second.ptr, .len = writable.second.len };
+            iovecs_len += 1;
+        }
+        assert(iovecs_len > 0);
 
-        // @TODO GILA(frosty_gale_9rz) This buffer is fixed which means if we get a large stdin we will block. We could use a ring buffer
-        //       or we could keep shifting the buffer discarding old data. But for now if write_head == buf.len we will break
-        //       and discard the data we read so far and next time we will start readign from incomplete data.
-        var buf: [4096]u8 align(std.atomic.cache_line) = undefined;
-        var write_head: usize = 0;
-        reading_stdin: while (true) {
-            // @TODO GILA(frosty_gale_9rz) we need to check here if write_head == buf.len
-            const n = std.posix.read(self.fd, buf[write_head..]) catch return error.PollFailed;
-            if (n == 0) {
-                break :reading_stdin;
+        while (true) {
+            const rc = std.posix.system.readv(self.input_fd, iovecs[0..iovecs_len].ptr, @intCast(iovecs_len));
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => {
+                    if (rc == 0) return error.InputClosed;
+                    const bytes_read: usize = @intCast(rc);
+                    self.read_buffer.didWrite(bytes_read);
+                    return bytes_read;
+                },
+                .INVAL => unreachable,
+                .FAULT => unreachable,
+                .INTR => continue,
+                .AGAIN => return 0,
+                else => return error.ReadInputFailed,
             }
+        }
+    }
 
-            var data: []const u8 = buf[0 .. write_head + n];
-            while (data.len > 0) {
-                var consumed_bytes: usize = 0;
-                const event = e.parseEvent(data, &consumed_bytes);
-                if (consumed_bytes == 0) {
-                    for (0..data.len) |i| {
-                        buf[i] = data[i];
-                    }
-                    write_head = data.len;
-                    break;
-                }
-                write_head = 0;
-                data = data[consumed_bytes..];
+    fn parseInput(self: *Terminal, timeout_ms: i32, events: *std.ArrayList(Event)) PollError!void {
+        if (self.parseBufferedEvents(events) == .queue_full) return;
 
-                // @TODO GILA(dependent_thorn_fh0)  This basically stops if event queue is full. Try somethign else
-                if (event != .none) events.appendBounded(event) catch break :reading_stdin;
+        if (!(try self.waitReadable(timeout_ms))) return;
 
-                // @NOTE We are done if we have consumed all the bytes in the buffer and the data in the buffer does not
-                //       fill the entire buffer i.e there should not be any leftover byts to read from stdin
-                if (data.len == 0 and n != (buf.len - write_head)) break :reading_stdin;
-            }
-
-            // FIXME: In macos you cant poll dev/tty. It needs select
-            poll_result = std.posix.poll(&fds, 0) catch return error.PollFailed;
-
-            if (poll_result == 0) {
-                break :reading_stdin;
-            }
-            if (fds[0].revents & std.posix.POLL.IN == 0) {
-                break :reading_stdin;
-            }
+        while (true) {
+            const bytes_read = try self.readIntoReadBuffer();
+            if (bytes_read == 0) return;
+            if (self.parseBufferedEvents(events) == .queue_full) return;
         }
     }
 
@@ -399,9 +623,11 @@ pub const Terminal = struct {
         try self.flush();
     }
 
-    fn waitForCapabilityResponses(self: *Terminal, timeout_ms: i32, fence_grace_ms: i32) error{PollFailed}!void {
+    fn waitForCapabilityResponses(self: *Terminal) PollError!void {
         var events = std.ArrayList(Event).initBuffer(&self.event_queue);
 
+        const timeout_ms = self.config.capability_probe_timeout_ms;
+        const fence_grace_ms = self.config.capability_fence_grace_ms;
         const timeout_ms_clamped = @max(timeout_ms, 0);
         const fence_grace_ms_clamped = @max(fence_grace_ms, 0);
         var timeout: u64 = @intCast(timeout_ms_clamped);
@@ -452,28 +678,66 @@ pub const Terminal = struct {
         events.shrinkRetainingCapacity(0);
         return fence_seen;
     }
-
-    // @TODO move this to capability detection
-    // pub fn kittyKeyboardAvailable(self: *Terminal, timeout_ms: i32) bool {
-    //     self.write("\x1b[?u") catch {};
-    //     self.write("\x1b[c") catch {};
-    //     self.flush() catch {};
-    //
-    //     var fds = [_]std.posix.pollfd{
-    //         .{
-    //             .fd = self.stdin,
-    //             .events = std.posix.POLL.IN,
-    //             .revents = 0,
-    //         },
-    //     };
-    //
-    //     const poll_result = std.posix.poll(&fds, timeout_ms) catch return false;
-    //     if (poll_result == 0) return false;
-    //     var buf: [32]u8 = undefined;
-    //     const n = std.posix.read(self.stdin, &buf) catch return false;
-    //     if (n != 5) return false;
-    //     if (!std.mem.eql(u8, buf[0..3], "\x1b[?")) return false;
-    //     if (buf[4] != 'u') return false;
-    //     return true;
-    // }
 };
+
+fn initTestTerminal(initial: usize, max: usize) !Terminal {
+    var terminal: Terminal = undefined;
+    terminal.read_buffer = try stdx.GrowingRingBuffer.initCapacity(max, initial);
+    terminal.dropped_input_bytes = 0;
+    terminal.config = .default_terminal;
+    terminal.config.read_buffer_initial_bytes = initial;
+    terminal.config.read_buffer_max_bytes = max;
+    terminal.config.read_overflow_policy = .drop_oldest;
+    return terminal;
+}
+
+test "parseBufferedEvents preserves incomplete bytes" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1b[");
+
+    var queue_storage: [4]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.need_more_input, state);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try std.testing.expectEqualStrings("\x1b[", terminal.read_buffer.linearizeReadable());
+}
+
+test "parseBufferedEvents keeps pending bytes when queue is full" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("ab");
+
+    var queue_storage: [1]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.queue_full, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(e.KeyEvent.Code.a, events.items[0].key_pressed.code);
+    try std.testing.expectEqualStrings("b", terminal.read_buffer.linearizeReadable());
+}
+
+test "ensureReadBufferWritable grows before dropping" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const old_cap = terminal.read_buffer.capacity();
+    var chunk: [256]u8 = undefined;
+    @memset(&chunk, 'x');
+    while (terminal.read_buffer.len < old_cap) {
+        const remaining = old_cap - terminal.read_buffer.len;
+        _ = try terminal.read_buffer.write(chunk[0..@min(chunk.len, remaining)]);
+    }
+
+    terminal.ensureReadBufferWritable();
+
+    try std.testing.expect(terminal.read_buffer.capacity() > old_cap);
+    try std.testing.expectEqual(@as(u64, 0), terminal.dropped_input_bytes);
+    try std.testing.expectEqual(old_cap, terminal.read_buffer.len);
+}
