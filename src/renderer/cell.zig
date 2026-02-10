@@ -75,7 +75,19 @@ pub const Style = struct {
         .flags = .{},
     };
 
-    pub const Id = enum(u24) { default = 0, error_style = 1, _ };
+    pub const Id = enum(u24) {
+        default = 0,
+        error_style = 1,
+        _,
+
+        pub fn update(self: *Id, sheet: *Sheet, changes: Sheet.StyleUpdate) error{OutOfBounds}!void {
+            self.* = try sheet.update(self.*, changes);
+        }
+
+        pub fn replace(self: *Id, sheet: *Sheet, new_style: Style) error{OutOfBounds}!void {
+            self.* = try sheet.replace(self.*, new_style);
+        }
+    };
 
     pub const RGB = packed struct(u24) {
         b: u8,
@@ -342,20 +354,20 @@ pub const Style = struct {
             flags: ?Flags = null,
         };
 
-        pub fn update(self: *Sheet, id: Id, style: StyleUpdate) error{OutOfBounds}!Id {
+        fn update(self: *Sheet, id: Id, changes: StyleUpdate) error{OutOfBounds}!Id {
             var data: InnerData = @bitCast(@intFromEnum(id));
             if (data.position >= self.styles.items.len) return error.OutOfBounds;
             if (data.position < 2) return error.OutOfBounds;
-            if (style.fg) |fg| self.styles.items[data.position].fg = fg;
-            if (style.bg) |bg| self.styles.items[data.position].bg = bg;
-            if (style.underline) |underline| self.styles.items[data.position].underline = underline;
-            if (style.flags) |flags| self.styles.items[data.position].flags = flags;
+            if (changes.fg) |fg| self.styles.items[data.position].fg = fg;
+            if (changes.bg) |bg| self.styles.items[data.position].bg = bg;
+            if (changes.underline) |underline| self.styles.items[data.position].underline = underline;
+            if (changes.flags) |flags| self.styles.items[data.position].flags = flags;
             self.generation.items[data.position] += 1;
             data.generation = self.generation.items[data.position];
             return @enumFromInt(@as(u24, @bitCast(data)));
         }
 
-        pub fn replace(self: *Sheet, id: Id, style: Style) error{OutOfBounds}!Id {
+        fn replace(self: *Sheet, id: Id, style: Style) error{OutOfBounds}!Id {
             var data: InnerData = @bitCast(@intFromEnum(id));
             if (data.position >= self.styles.items.len) return error.OutOfBounds;
             if (data.position < 2) return error.OutOfBounds;
@@ -375,4 +387,3 @@ pub const Style = struct {
         }
     };
 };
-

@@ -6,6 +6,7 @@ const common = @import("common.zig");
 const Render = @import("commands/render.zig");
 const Print = @import("commands/print.zig");
 const Inspect = @import("commands/inspect.zig");
+const EventParse = @import("commands/event_parse.zig");
 
 const terminal_mod = @import("terminal");
 const Terminal = terminal_mod.Terminal;
@@ -23,6 +24,7 @@ const CLIArgs = union(enum) {
     render_diff: Render,
     print_no_grapheme: Print,
     print: Print,
+    event_parse: EventParse,
     inspect: Inspect,
 
     pub const help =
@@ -36,6 +38,7 @@ const CLIArgs = union(enum) {
         \\  render_diff        Render, diff with previous, emit only changed cells.
         \\  print              Print full frame with grapheme-aware path.
         \\  print_no_grapheme  Print full frame assuming no grapheme clusters.
+        \\  event_parse        Parse synthetic terminal event streams.
         \\  inspect            Launch the interactive inspector.
         \\
         \\Options:
@@ -59,6 +62,7 @@ pub fn main(init: std.process.Init) !void {
         .render_diff => |cmd| try cmd.execute(ctx, .diff_redraw),
         .print => |cmd| try cmd.execute(ctx, .print),
         .print_no_grapheme => |cmd| try cmd.execute(ctx, .print_assume_no_grapheme),
+        .event_parse => |cmd| try cmd.execute(ctx),
         .inspect => |cmd| try cmd.execute(ctx),
     }
 }

@@ -1,6 +1,7 @@
 const renderer = @import("renderer");
 const Scissor = renderer.Scissor;
 const Cell = renderer.Cell;
+const Style = renderer.Style;
 
 const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
@@ -91,6 +92,7 @@ pub const DrawBoxConfig = struct {
     title: []const u8 = "",
     title_alignment: TitleAlignment = .left,
     border: BoxCharacters = .single,
+    style: Style.Id = .default,
 
     pub const default = DrawBoxConfig{
         .title = "",
@@ -119,20 +121,20 @@ pub fn drawBox(
     if (width < 2 or height < 2) return area.initChild(x, y, width, height);
 
     const box = area.initChild(x, y, width, height);
-    const top = Cell{ .data = .{ .codepoint = config.border.top } };
-    const bottom = Cell{ .data = .{ .codepoint = config.border.bottom } };
-    const left = Cell{ .data = .{ .codepoint = config.border.left } };
-    const right = Cell{ .data = .{ .codepoint = config.border.right } };
+    const top = Cell{ .data = .{ .codepoint = config.border.top }, .style = config.style };
+    const bottom = Cell{ .data = .{ .codepoint = config.border.bottom }, .style = config.style };
+    const left = Cell{ .data = .{ .codepoint = config.border.left }, .style = config.style };
+    const right = Cell{ .data = .{ .codepoint = config.border.right }, .style = config.style };
 
     box.fillRowNarrow(0, top);
     box.fillRowNarrow(height - 1, bottom);
     box.fillColumnNarrow(0, left);
     box.fillColumnNarrow(width - 1, right);
 
-    box.set(0, 0, Cell{ .data = .{ .codepoint = config.border.top_left } }) catch {};
-    box.set(width - 1, 0, Cell{ .data = .{ .codepoint = config.border.top_right } }) catch {};
-    box.set(0, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_left } }) catch {};
-    box.set(width - 1, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_right } }) catch {};
+    box.set(0, 0, Cell{ .data = .{ .codepoint = config.border.top_left }, .style = config.style }) catch {};
+    box.set(width - 1, 0, Cell{ .data = .{ .codepoint = config.border.top_right }, .style = config.style }) catch {};
+    box.set(0, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_left }, .style = config.style }) catch {};
+    box.set(width - 1, height - 1, Cell{ .data = .{ .codepoint = config.border.bottom_right }, .style = config.style }) catch {};
 
     if (config.title.len > 0 and width > 4) {
         // @TODO GILA(glass_link_3a7) this is wrong if there are graphemes in the title

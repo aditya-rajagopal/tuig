@@ -59,10 +59,9 @@ pub fn main(_: std.process.Init.Minimal) void {
         };
         defer renderer.endFrame(false, &style_sheet);
 
-        var capability_buffer: [1024]u8 = undefined;
-        const str = std.fmt.bufPrint(&capability_buffer, "Capability State: {any}", .{terminal.capability_state_initial}) catch unreachable;
-
-        _ = ctx.scissor.printAssumeNoGrapheme(str, 0, ctx.scissor.height_global - 10, .{ .wrap = true });
+        // var capability_buffer: [1024]u8 = undefined;
+        // const str = std.fmt.bufPrint(&capability_buffer, "Capability State: {any}", .{terminal.capability_state_initial}) catch unreachable;
+        // _ = ctx.scissor.printAssumeNoGrapheme(str, 0, ctx.scissor.height_global - 10, .{ .wrap = true });
 
         quit = app.updateAndRender(&ctx);
     }

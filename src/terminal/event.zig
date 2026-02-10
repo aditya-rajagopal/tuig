@@ -475,8 +475,10 @@ fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
             consumed_bytes.* = 0;
             return .none;
         }
+        if (data[3] < 32 or data[4] < 32 or data[5] < 32) {
+            return .none;
+        }
         consumed_bytes.* = 6;
-        if (data[3] < 32 or data[4] < 32 or data[5] < 32) return .none;
         const number: u16 = data[3] - 32;
         const x: u16 = data[4] - 32;
         const y: u16 = data[5] - 32;
@@ -1570,6 +1572,7 @@ test "mouse events" {
         .{ .sequence = "\x1b[<M", .expected = .none },
         .{ .sequence = "\x1b[M\x57\x42\x32", .expected = .none }, // Mouse is set to button 3(release) and movement. This is not valid in X10 mode
         .{ .sequence = "\x1b[M\x82\x42\x32", .expected = .none }, // Mouse has move and scroll modifiers set this is invalid
+        .{ .sequence = "\x1b[M\x1b[A", .expected = .none, .expected_consumed_bytes = 3 }, // Malformed X10 packet should consume only CSI bytes
     };
 
     try testTerminalSequences(&test_cases);
