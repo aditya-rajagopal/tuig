@@ -1,5 +1,6 @@
 //! WIP
 const std = @import("std");
+const Alignment = std.mem.Alignment;
 
 const builtin = @import("builtin");
 //https://github.com/ghostty-org/ghostty/blob/26e243a9194f8653e0b44cf00b600629fcee8f46/src/quirks.zig
@@ -204,6 +205,78 @@ pub const FixedGrowingBufferAllocator = struct {
         };
     }
 
+    pub fn pushAligned(
+        self: *Self,
+        comptime T: type,
+        comptime alignment: Alignment,
+    ) !*align(alignment.toByteUnits()) T {
+        const size = @sizeOf(T);
+        const new_ptr = self.allocInternal(size, alignment) orelse return error.OutOfMemory;
+        @memset(new_ptr[0..size], undefined);
+        const ptr: *align(alignment.toByteUnits()) T = @ptrCast(@alignCast(new_ptr));
+        return ptr;
+    }
+
+    pub fn push(self: *Self, comptime T: type) !*T {
+        const size = @sizeOf(T);
+        const new_ptr = self.allocInternal(size, .of(T)) orelse return error.OutOfMemory;
+        @memset(new_ptr[0..size], undefined);
+        const ptr: *T = @ptrCast(@alignCast(new_ptr));
+        return ptr;
+    }
+
+    pub fn pushArray(self: *Self, comptime T: type, length: usize) ![]T {
+        const size = std.math.mul(usize, @sizeOf(T), length) catch return error.OutOfMemory;
+        const new_ptr = self.allocInternal(size, .of(T)) orelse return error.OutOfMemory;
+        @memset(new_ptr[0..size], undefined);
+        const ptr: [*]T = @ptrCast(@alignCast(new_ptr));
+        return ptr[0..length];
+    }
+
+    pub fn pushPages(self: *Self, num_pages: usize) ![]u8 {
+        const alignment = std.heap.pageSize();
+        const size = num_pages * alignment;
+        const ptr: [*]u8 = self.allocInternal(size, .fromByteUnits(alignment)) orelse return error.OutOfMemory;
+        return ptr[0..size];
+    }
+
+    pub fn pushArrayAligned(
+        self: *Self,
+        comptime T: type,
+        comptime alignment: Alignment,
+        length: usize,
+    ) ![]align(alignment.toByteUnits()) T {
+        const size = std.math.mul(usize, @sizeOf(T), length) catch return error.OutOfMemory;
+        const new_ptr = self.allocInternal(size, alignment) orelse return error.OutOfMemory;
+        @memset(new_ptr[0..size], undefined);
+        const ptr: [*]align(alignment.toByteUnits()) T = @ptrCast(@alignCast(new_ptr));
+        return ptr[0..length];
+    }
+
+    pub fn pushString(self: *Self, str: []const u8) ![]u8 {
+        const size = str.len;
+        const ptr: [*]u8 = @ptrCast(self.allocInternal(size, .of(u8)) orelse return error.OutOfMemory);
+        @memcpy(ptr[0..size], str);
+        return ptr[0..size];
+    }
+
+    pub fn dupe(self: *Self, comptime T: type, m: []const T) ![]T {
+        const bytes = std.mem.sliceAsBytes(m);
+        const new_buf: [*]align(@alignOf(T)) u8 = @ptrCast(@alignCast(self.allocInternal(bytes.len, .of(T)) orelse return error.OutOfMemory));
+        @memcpy(new_buf[0..bytes.len], bytes);
+        return std.mem.bytesAsSlice(T, new_buf[0..bytes.len]);
+    }
+
+    pub fn pop(self: *Self, comptime T: type, ptr: *T) void {
+        const buf = std.mem.asBytes(ptr);
+        self.rawFree(buf);
+    }
+
+    pub fn popArray(self: *Self, comptime T: type, buf: []T) void {
+        const buf_bytes = std.mem.sliceAsBytes(buf);
+        self.rawFree(buf_bytes);
+    }
+
     /// Provides a lock free thread safe `Allocator` interface to the underlying `FixedBufferAllocator`
     ///
     /// Using this at the same time as the interface returned by `allocator` is not thread safe.
@@ -238,6 +311,10 @@ pub const FixedGrowingBufferAllocator = struct {
     pub fn alloc(ctx: *anyopaque, n: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
         const self: *Self = @ptrCast(@alignCast(ctx));
         _ = ra;
+        return self.allocInternal(n, alignment);
+    }
+
+    fn allocInternal(self: *Self, n: usize, alignment: std.mem.Alignment) ?[*]u8 {
         const ptr_align = alignment.toByteUnits();
         const adjust_off = std.mem.alignPointerOffset(self.buffer.reserved_pages.ptr + self.end_index, ptr_align) orelse return null;
         const adjusted_index = self.end_index + adjust_off;
@@ -300,6 +377,10 @@ pub const FixedGrowingBufferAllocator = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
         _ = alignment;
         _ = return_address;
+        self.rawFree(buf);
+    }
+
+    fn rawFree(self: *Self, buf: []u8) void {
         assert(@inComptime() or self.ownsSlice(buf));
 
         if (self.isLastAllocation(buf)) {

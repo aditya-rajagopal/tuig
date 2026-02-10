@@ -21,21 +21,7 @@ const MouseState = t.MouseState;
 
 const log = std.log.scoped(.tui);
 
-const Options = struct {
-    memory_pool: stdx.BufferPoolOptions,
-
-    pub const default = Options{
-        .memory_pool = .{
-            .block_size = stdx.MB(1),
-            .size_limit = 256,
-        },
-    };
-};
-
 const root = @import("root");
-const renderer_options: Options = if (@hasDecl(root, "renderer_options")) root.renderer_options else .default;
-
-pub const MemoryPool = stdx.BufferPoolExtra(renderer_options.memory_pool);
 
 const Renderer = @This();
 
@@ -50,26 +36,29 @@ mouse_y: u16 = 0,
 current_mouse_down: MouseState = .{},
 previous_mouse_down: MouseState = .{},
 // @TODO GILA(generous_magma_3gs)
-memory_pool: MemoryPool,
-arena: MemoryPool.ArenaAllocator,
+arena: stdx.FixedGrowingBufferAllocator,
 
 pub const Config = struct {
     max_cells: usize,
     grapheme_buffer_size: t.GraphemeBuffer.Size,
+    frame_arena_size: struct { max_bytes: usize, initial_bytes: usize },
 
     pub const default_screen = Config{
         .max_cells = 512 * 512, // 2MB cache
         .grapheme_buffer_size = .{ .max = stdx.MB(2), .initial = stdx.KB(16) },
+        .frame_arena_size = .{ .max_bytes = stdx.MB(256), .initial_bytes = stdx.KB(16) },
     };
 
     pub const small_buffer = Config{
         .max_cells = 128 * 128, // 128kb buffer
         .grapheme_buffer_size = .{ .max = stdx.KB(16), .initial = stdx.KB(4) },
+        .frame_arena_size = .{ .max_bytes = stdx.MB(1), .initial_bytes = stdx.KB(4) },
     };
 
     pub const tiny_buffer = Config{
         .max_cells = 64 * 64, // 32kb buffer
         .grapheme_buffer_size = .{ .max = stdx.KB(8), .initial = stdx.KB(4) },
+        .frame_arena_size = .{ .max_bytes = stdx.KB(32), .initial_bytes = stdx.KB(4) },
     };
 };
 
@@ -100,8 +89,10 @@ pub fn init(self: *Renderer, terminal: *Terminal, config: Config) error{ OutOfMe
     self.terminal = terminal;
     self.current_mouse_down = .{};
     self.previous_mouse_down = .{};
-    self.memory_pool = try MemoryPool.init();
-    self.arena = MemoryPool.ArenaAllocator.init(&self.memory_pool);
+    self.arena = try stdx.FixedGrowingBufferAllocator.initCapacity(
+        config.frame_arena_size.max_bytes,
+        config.frame_arena_size.initial_bytes,
+    );
 
     terminal.write(seq.screen.clear_and_home) catch {};
     terminal.flush() catch {};
