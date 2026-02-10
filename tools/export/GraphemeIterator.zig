@@ -52,7 +52,7 @@ pub fn nextCodepoint(data: []const u8, offset: usize) ?struct { u21, u3 } {
         if (!consumed) {
             @branchHint(.cold);
             assert(codepoint != null and codepoint.? == 0xFFFD);
-            return .{ 0xFFFD, @intCast(i + 1) };
+            return .{ 0xFFFD, @intCast(i) };
         }
         if (codepoint) |cp| {
             return .{ cp, @intCast(i + 1) };

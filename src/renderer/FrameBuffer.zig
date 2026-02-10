@@ -194,7 +194,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
             var start: usize = col;
             while (start < width and !self.isDiff(back_buffer, row, start)) {
                 if (back_buffer.cells[row_start + start].width == .wide_start) {
-                    assert(start < row_end - 1);
+                    assert(start < width - 1);
                     start += 2;
                 } else {
                     start += 1;
@@ -206,7 +206,7 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
 
             while (end < width and self.isDiff(back_buffer, row, end)) {
                 if (back_buffer.cells[row_start + end].width == .wide_start or self.cells[row_start + end].width == .wide_start) {
-                    assert(end < row_end - 1);
+                    assert(end < width - 1);
                     end += 2;
                 } else {
                     end += 1;
