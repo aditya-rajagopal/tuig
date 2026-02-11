@@ -47,6 +47,9 @@ pub fn main(_: std.process.Init.Minimal) void {
         return;
     };
     global_app = &app;
+    var paste_buffer: [4096]u8 = undefined;
+    var paste_buffer_len: usize = 0;
+    var num_chunks: usize = 0;
     while (!quit) {
         const events = terminal.pollEvents(14) catch {
             log.err("Failed to poll events", .{});
@@ -62,6 +65,28 @@ pub fn main(_: std.process.Init.Minimal) void {
         // var capability_buffer: [1024]u8 = undefined;
         // const str = std.fmt.bufPrint(&capability_buffer, "Capability State: {any}", .{terminal.capability_state_initial}) catch unreachable;
         // _ = ctx.scissor.printAssumeNoGrapheme(str, 0, ctx.scissor.height_global - 10, .{ .wrap = true });
+
+        for (events) |event| {
+            if (event == .paste_start) {
+                paste_buffer_len = 0;
+                num_chunks = 0;
+            }
+            if (event == .paste_data) {
+                const len = @min(event.paste_data.len, paste_buffer.len - paste_buffer_len);
+                @memcpy(paste_buffer[paste_buffer_len .. paste_buffer_len + len], event.paste_data[0..len]);
+                paste_buffer_len += len;
+                num_chunks += 1;
+            }
+            if (event == .paste_end) {
+                paste_buffer[paste_buffer_len] = 0;
+                paste_buffer_len += 1;
+            }
+        }
+        var buffer: [128]u8 = undefined;
+        const nchunks = std.fmt.bufPrint(&buffer, "Pasted {d} chunks", .{num_chunks}) catch unreachable;
+        _ = ctx.scissor.printAssumeNoGrapheme(nchunks, 0, ctx.scissor.height_global - 11, .{ .wrap = true });
+
+        _ = ctx.scissor.printAssumeNoGrapheme(paste_buffer[0..paste_buffer_len], 0, ctx.scissor.height_global - 10, .{ .wrap = true });
 
         quit = app.updateAndRender(&ctx);
     }

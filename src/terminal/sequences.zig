@@ -30,6 +30,8 @@ pub const PrivateMode = enum(u16) {
     mouse_pixel = 1016,
     /// Enter/leave alternate screen buffer
     alternate_screen = 1049,
+    /// Enable bracketed paste mode
+    bracketed_paste = 2004,
     // TODO: X10 press-only tracking (mode 9)
     // TODO: Highlight tracking (mode 1001)
     // TODO: UTF-8 mouse encoding (mode 1005, deprecated)
@@ -426,6 +428,11 @@ pub const clipboard = struct {
         try writer.writeAll(base64_payload);
         try writer.writeAll("\x1b\\");
     }
+};
+
+pub const bracketed_paste = struct {
+    pub const start = "\x1b[200~";
+    pub const end = "\x1b[201~";
 };
 
 /// Terminal default color controls (OSC 4/10/11/12/104/110/111/112).

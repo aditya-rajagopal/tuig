@@ -78,6 +78,7 @@ pub const CapabilityMode = enum {
 pub const TerminalConfig = struct {
     raw: bool = false,
     alt_screen: bool = false,
+    bracketed_paste: bool = false,
     mouse: ?MouseOptions = null,
     kitty_keyboard_flags: ?KittyConfig = null,
     cursor_visible: bool = true,
@@ -91,6 +92,7 @@ pub const TerminalConfig = struct {
     pub const tui_default = TerminalConfig{
         .raw = true,
         .alt_screen = true,
+        .bracketed_paste = true,
         .mouse = .default,
         .kitty_keyboard_flags = .{ .disambiguate_escape_codes = true, .report_all_keys_as_escape_codes = true, .report_event_types = true },
         .cursor_visible = true,
@@ -106,6 +108,7 @@ const CapabilityState = struct {
     kitty_keyboard_reply_received: bool = false,
     kitty_keyboard_reply: ?e.KittyKeyboardQueryEvent = null,
     mouse_sgr_decrpm_status: ?e.DECRPMStatus = null,
+    bracketed_paste_decrpm_status: ?e.DECRPMStatus = null,
     da1: ?e.PrimaryDeviceAttributesEvent = null,
     da2: ?e.SecondaryDeviceAttributesEvent = null,
 };
@@ -138,6 +141,7 @@ pub const InitError = PollError || error{
     InvalidReadBufferInitialBytes,
     InvalidReadBufferMaxBytes,
     ReadBufferInitialExceedsMax,
+    ReadBufferMaxTooSmallForBracketedPaste,
     OpenOutputTtyFailed,
     OpenInputTtyFailed,
     GetInputFdFlagsFailed,
@@ -148,6 +152,7 @@ pub const InitError = PollError || error{
     SetAlternateScreenFailed,
     CapabilityQueryWriteFailed,
     EnableMouseFailed,
+    EnableBracketedPasteFailed,
     PushKittyKeyboardFlagsFailed,
     SetCursorVisibilityFailed,
 };
@@ -164,6 +169,7 @@ pub const Terminal = struct {
     event_queue: [32]Event = undefined,
     config: TerminalConfig,
     capability_state_initial: CapabilityState = .{},
+    in_bracketed_paste: bool = false,
 
     pub const Size = struct { width: u16, height: u16 };
 
@@ -177,6 +183,9 @@ pub const Terminal = struct {
         if (config.read_buffer_initial_bytes == 0) return error.InvalidReadBufferInitialBytes;
         if (config.read_buffer_max_bytes == 0) return error.InvalidReadBufferMaxBytes;
         if (config.read_buffer_initial_bytes > config.read_buffer_max_bytes) return error.ReadBufferInitialExceedsMax;
+        if (config.bracketed_paste and config.read_buffer_max_bytes < seq.bracketed_paste.end.len) {
+            return error.ReadBufferMaxTooSmallForBracketedPaste;
+        }
 
         var threaded = std.Io.Threaded.init_single_threaded;
         const io = threaded.ioBasic();
@@ -232,7 +241,13 @@ pub const Terminal = struct {
         if (config.kitty_keyboard_flags) |kitty_config| terminal.pushKittyKeyboardFlags(kitty_config) catch return error.PushKittyKeyboardFlagsFailed;
         errdefer terminal.popKittyKeyboardFlags() catch {};
 
+        terminal.config.bracketed_paste = false;
+        if (config.bracketed_paste) terminal.enableBracketedPaste() catch return error.EnableBracketedPasteFailed;
+        errdefer terminal.disableBracketedPaste();
+
         terminal.setCursorVisible(config.cursor_visible) catch return error.SetCursorVisibilityFailed;
+
+        terminal.in_bracketed_paste = false;
 
         global_tty = terminal;
     }
@@ -240,6 +255,7 @@ pub const Terminal = struct {
     pub fn deinit(self: *Terminal) void {
         // IMPORTANT(adi): This order is important as we need to disable keyboard flag before leaving alternate screen
         if (self.config.kitty_keyboard_flags) |_| self.popKittyKeyboardFlags() catch {};
+        if (self.config.bracketed_paste) self.disableBracketedPaste();
         if (self.config.mouse) |_| self.disableMouse();
         if (self.config.alt_screen) self.unsetAlternateScreen();
         if (self.config.raw) self.unmakeRaw();
@@ -410,6 +426,41 @@ pub const Terminal = struct {
         }
     }
 
+    pub fn enableBracketedPaste(self: *Terminal) error{WriteFailed}!void {
+        if (self.config.bracketed_paste) return;
+        const writer = self.getWriter();
+        errdefer self.config.bracketed_paste = false;
+        if (self.capability_state_initial.bracketed_paste_decrpm_status) |status| {
+            switch (status) {
+                .set, .permanently_set => self.config.bracketed_paste = true,
+                .reset => {
+                    try seq.csiPrivateSet(writer, .bracketed_paste);
+                    self.config.bracketed_paste = true;
+                },
+                else => {},
+            }
+        } else if (self.config.capability_mode == .optimistic) {
+            try seq.csiPrivateSet(writer, .bracketed_paste);
+            self.config.bracketed_paste = true;
+        }
+        try self.flush();
+    }
+
+    pub fn disableBracketedPaste(self: *Terminal) void {
+        if (self.config.bracketed_paste) {
+            if (self.capability_state_initial.bracketed_paste_decrpm_status) |status| {
+                switch (status) {
+                    .reset => seq.csiPrivateReset(self.getWriter(), .bracketed_paste) catch {},
+                    else => {},
+                }
+            } else if (self.config.capability_mode == .optimistic) {
+                seq.csiPrivateReset(self.getWriter(), .bracketed_paste) catch {};
+            }
+            self.flush() catch {};
+            self.config.bracketed_paste = false;
+        }
+    }
+
     pub fn pushKittyKeyboardFlags(self: *Terminal, config: KittyConfig) error{WriteFailed}!void {
         if (self.config.kitty_keyboard_flags) |_| return;
         if (self.config.capability_mode == .optimistic or self.capability_state_initial.kitty_keyboard_reply_received) {
@@ -521,29 +572,78 @@ pub const Terminal = struct {
         drained,
         need_more_input,
         queue_full,
+        paste_exported_dont_invalidate_buffer,
     };
 
     fn parseBufferedEvents(self: *Terminal, events: *std.ArrayList(Event)) ParseBufferedState {
         if (self.read_buffer.len == 0) return .drained;
 
+        var emitted_paste_data = false;
         var data = self.read_buffer.linearizeReadable();
         var consumed_total: usize = 0;
         defer if (consumed_total > 0) self.read_buffer.consume(consumed_total);
         while (data.len > 0) {
+            if (self.in_bracketed_paste) {
+                const end = std.mem.find(u8, data, seq.bracketed_paste.end);
+                if (end) |position| {
+                    if (position > 0) {
+                        events.appendBounded(.{ .paste_data = data[0..position] }) catch return .queue_full;
+                        emitted_paste_data = true;
+                        consumed_total += position;
+                    }
+                    events.appendBounded(.paste_end) catch return .queue_full;
+                    self.in_bracketed_paste = false;
+                    consumed_total += seq.bracketed_paste.end.len;
+                    data = data[position + seq.bracketed_paste.end.len ..];
+                    continue;
+                }
+
+                const overlap = bracketedPasteEndOverlap(data);
+                assert(overlap <= data.len);
+                const payload_len = data.len - overlap;
+                if (payload_len > 0) {
+                    events.appendBounded(.{ .paste_data = data[0..payload_len] }) catch return .queue_full;
+                    emitted_paste_data = true;
+                    consumed_total += payload_len;
+                }
+
+                return if (emitted_paste_data) .paste_exported_dont_invalidate_buffer else .need_more_input;
+            }
             var consumed_bytes: usize = 0;
             const event = e.parseEvent(data, &consumed_bytes);
 
-            if (consumed_bytes == 0) return .need_more_input;
+            if (consumed_bytes == 0) {
+                if (emitted_paste_data) return .paste_exported_dont_invalidate_buffer else return .need_more_input;
+            }
 
-            if (event != .none) {
+            // @NOTE(adi): Paste end is emiited by this function and if we encounter it from the parseEvent it must be
+            //             a stray end and should be ignored.
+            if (event != .none and event != .paste_end) {
                 events.appendBounded(event) catch return .queue_full;
+                if (event == .paste_start) {
+                    self.in_bracketed_paste = true;
+                }
             }
 
             consumed_total += consumed_bytes;
             data = data[consumed_bytes..];
         }
 
-        return .drained;
+        if (emitted_paste_data) return .paste_exported_dont_invalidate_buffer else return .drained;
+    }
+
+    fn bracketedPasteEndOverlap(data: []const u8) usize {
+        // @NOTE(adi): Keep a suffix that could be the prefix of "\x1b[201~" so split end markers
+        //             across reads are not emitted as paste payload bytes.
+        assert(seq.bracketed_paste.end.len > 0);
+        const max_overlap = @min(data.len, seq.bracketed_paste.end.len - 1);
+        var overlap = max_overlap;
+        while (overlap > 0) : (overlap -= 1) {
+            if (std.mem.eql(u8, data[data.len - overlap ..], seq.bracketed_paste.end[0..overlap])) {
+                return overlap;
+            }
+        }
+        return 0;
     }
 
     fn ensureReadBufferWritable(self: *Terminal) void {
@@ -599,14 +699,21 @@ pub const Terminal = struct {
     }
 
     fn parseInput(self: *Terminal, timeout_ms: i32, events: *std.ArrayList(Event)) PollError!void {
-        if (self.parseBufferedEvents(events) == .queue_full) return;
+        const state = self.parseBufferedEvents(events);
+        switch (state) {
+            .queue_full, .paste_exported_dont_invalidate_buffer => return,
+            .drained, .need_more_input => {},
+        }
 
         if (!(try self.waitReadable(timeout_ms))) return;
 
         while (true) {
             const bytes_read = try self.readIntoReadBuffer();
             if (bytes_read == 0) return;
-            if (self.parseBufferedEvents(events) == .queue_full) return;
+            switch (self.parseBufferedEvents(events)) {
+                .queue_full, .paste_exported_dont_invalidate_buffer => return,
+                .drained, .need_more_input => {},
+            }
         }
     }
 
@@ -615,6 +722,7 @@ pub const Terminal = struct {
 
         try writer.writeAll(seq.query.kitty_keyboard_support);
         try seq.query.DECRQM(writer, .mouse_sgr);
+        try seq.query.DECRQM(writer, .bracketed_paste);
         try writer.writeAll(seq.query.secondary_device_attributes);
         // @NOTE We write the primary device attributes query last so that when we receive it we know that most
         //       of the other queries have been received. In rare cases it might be possible that the responses
@@ -665,6 +773,8 @@ pub const Terminal = struct {
                 .decrpm => |reply| {
                     if (reply.mode == @intFromEnum(seq.PrivateMode.mouse_sgr)) {
                         self.capability_state_initial.mouse_sgr_decrpm_status = reply.status;
+                    } else if (reply.mode == @intFromEnum(seq.PrivateMode.bracketed_paste)) {
+                        self.capability_state_initial.bracketed_paste_decrpm_status = reply.status;
                     }
                 },
                 .primary_device_attributes => |reply| {
@@ -721,6 +831,27 @@ test "parseBufferedEvents keeps pending bytes when queue is full" {
     try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
     try std.testing.expectEqual(e.KeyEvent.Code.a, events.items[0].key_pressed.code);
     try std.testing.expectEqualStrings("b", terminal.read_buffer.linearizeReadable());
+}
+
+test "parseBufferedEvents ignores stray paste_end and keeps balanced paste events" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1b[201~\x1b[200~hello\x1b[201~z");
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.paste_exported_dont_invalidate_buffer, state);
+    try std.testing.expectEqual(@as(usize, 4), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .paste_start);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[1]) == .paste_data);
+    try std.testing.expectEqualStrings("hello", events.items[1].paste_data);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[2]) == .paste_end);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[3]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[3].key_pressed.code);
+    try std.testing.expect(!terminal.in_bracketed_paste);
 }
 
 test "ensureReadBufferWritable grows before dropping" {

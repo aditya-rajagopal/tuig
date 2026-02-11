@@ -436,8 +436,8 @@ fn parseLegacyTildeSequences(csi: []const u8) Event {
         24 => .{ KeyEvent.Code.f12, KeyEvent.PhysicalKey.f12 },
         29 => .{ KeyEvent.Code.menu, KeyEvent.PhysicalKey.menu },
         57427 => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
-        200 => return .none, // @TODO GILA(loyal_azure_qss)
-        201 => return .none, // @TODO GILA(loyal_azure_qss)
+        200 => return .paste_start,
+        201 => return .paste_end,
         else => return .none,
     };
     key_event.mods = .{};
@@ -570,6 +570,9 @@ pub const Event = union(enum(u8)) {
     mouse_middle_released: MouseEvent,
     mouse_right_released: MouseEvent,
     mouse_released: MouseEvent,
+    paste_start,
+    paste_data: []const u8,
+    paste_end,
     none,
 
     pub fn format(self: Event, writer: *std.Io.Writer) std.Io.Writer.Error!void {

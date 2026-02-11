@@ -9,7 +9,6 @@ waiting_on:
 - "[[odd_flux_g9x]]"
 - "[[wry_ray_32j]]"
 - "[[rough_fang_bxy]]"
-- "[[loyal_azure_qss]]"
 - "[[fluffy_tail_yw4]]"
 - "[[shallow_wind_xbr]]"
 - "[[eager_quest_wwz]]"
