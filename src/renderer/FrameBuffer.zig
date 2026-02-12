@@ -19,14 +19,14 @@ cells: []Cell,
 width: u16,
 height: u16,
 grapheme_buffer: t.GraphemeBuffer,
-
 pub fn init(
     cells: []Cell,
     width: u16,
     height: u16,
     grapheme_buffer_size: t.GraphemeBuffer.Size,
 ) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!FrameBuffer {
-    assert(@as(usize, width) * @as(usize, height) == cells.len);
+    assert(cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(width, height) == @as(u32, @intCast(cells.len)));
     assert(grapheme_buffer_size.initial <= grapheme_buffer_size.max);
 
     var buffer: FrameBuffer = undefined;
@@ -42,7 +42,9 @@ pub fn deinit(self: *FrameBuffer) void {
 }
 
 pub fn clear(self: *FrameBuffer) void {
-    const num_cells = @as(usize, self.width) * @as(usize, self.height);
+    assert(self.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(self.width, self.height) == @as(u32, @intCast(self.cells.len)));
+    const num_cells: usize = cellCountU32(self.width, self.height);
     @memset(self.cells[0..num_cells], .empty);
     self.grapheme_buffer.reset();
 }
@@ -64,7 +66,8 @@ pub fn scissor(self: *FrameBuffer) Scissor {
 pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
     assert(x < self.width);
     assert(y < self.height);
-    assert(self.width * self.height == self.cells.len);
+    assert(self.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(self.width, self.height) == @as(u32, @intCast(self.cells.len)));
     const index: usize = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
     self.cells[index] = cell;
 }
@@ -72,7 +75,8 @@ pub inline fn set(self: *FrameBuffer, x: u16, y: u16, cell: Cell) void {
 pub inline fn get(self: FrameBuffer, x: u16, y: u16) Cell {
     assert(x < self.width);
     assert(y < self.height);
-    assert(self.width * self.height == self.cells.len);
+    assert(self.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(self.width, self.height) == @as(u32, @intCast(self.cells.len)));
     const index: usize = @as(usize, y) * @as(usize, self.width) + @as(usize, x);
     return self.cells[index];
 }
@@ -132,7 +136,8 @@ pub inline fn renderCell(frame_buffer: *const FrameBuffer, cell: Cell, writer: *
 }
 
 pub fn fullRedraw(self: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
-    assert(self.width * self.height == self.cells.len);
+    assert(self.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(self.width, self.height) == @as(u32, @intCast(self.cells.len)));
     var current_style: Style.Id = .default;
     for (0..self.height) |row| {
         try seq.cursor.to(writer, @intCast(row + 1), 1);
@@ -168,8 +173,11 @@ pub inline fn isDiff(self: *const FrameBuffer, back_buffer: *const FrameBuffer, 
 pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, style_sheet: *const Style.Sheet, writer: *std.Io.Writer) error{WriteFailed}!void {
     assert(back_buffer.width == self.width);
     assert(back_buffer.height == self.height);
-    assert(self.width * self.height == self.cells.len);
-    assert(back_buffer.width * back_buffer.height == back_buffer.cells.len);
+    assert(self.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(self.width, self.height) == @as(u32, @intCast(self.cells.len)));
+    assert(back_buffer.cells.len <= std.math.maxInt(u32));
+    assert(cellCountU32(back_buffer.width, back_buffer.height) ==
+        @as(u32, @intCast(back_buffer.cells.len)));
 
     const height: usize = back_buffer.height;
     const width: usize = back_buffer.width;
@@ -226,6 +234,10 @@ pub fn diffRedraw(self: *const FrameBuffer, back_buffer: *const FrameBuffer, sty
     }
 }
 
+inline fn cellCountU32(width: u16, height: u16) u32 {
+    return @as(u32, width) * @as(u32, height);
+}
+
 fn printSequence(sequence: []const u8) void {
     for (sequence) |byte| {
         if (byte == '\x1b') std.debug.print("\\x1b", .{}) else std.debug.print("{c}", .{byte});
@@ -242,6 +254,119 @@ fn expectEqualSequences(expected: []const u8, actual: []const u8) !void {
         print("\n======================================\n", .{});
         return error.TestExpectedEqual;
     }
+}
+
+const DiffCase = struct {
+    width: u16,
+    height: u16,
+    front_rows: []const []const u8,
+    back_rows: []const []const u8,
+    expected_output: []const u8,
+};
+
+const GraphemeDiffMode = enum {
+    same,
+    changed,
+    codepoint_vs_grapheme,
+};
+
+const GraphemeDiffCase = struct {
+    mode: GraphemeDiffMode,
+    expected_output: []const u8,
+};
+
+fn setRows(buffer: *FrameBuffer, rows: []const []const u8) void {
+    assert(rows.len == buffer.height);
+    for (rows, 0..) |row, y| {
+        assert(row.len == buffer.width);
+        for (row, 0..) |byte, x| {
+            if (byte == ' ') continue;
+            buffer.set(@intCast(x), @intCast(y), .{ .data = .{ .codepoint = byte } });
+        }
+    }
+}
+
+fn runDiffCase(case: DiffCase) !void {
+    const num_cells: usize = @intCast(@as(u32, case.width) * @as(u32, case.height));
+
+    const front_cells = try std.testing.allocator.alloc(Cell, num_cells);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, case.width, case.height, .tiny);
+    defer front.deinit();
+
+    const back_cells = try std.testing.allocator.alloc(Cell, num_cells);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, case.width, case.height, .tiny);
+    defer back.deinit();
+
+    front.clear();
+    back.clear();
+    setRows(&front, case.front_rows);
+    setRows(&back, case.back_rows);
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
+    try expectEqualSequences(case.expected_output, writer.buffered());
+}
+
+fn runGraphemeDiffCase(case: GraphemeDiffCase) !void {
+    const front_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(front_cells);
+    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
+    defer front.deinit();
+
+    const back_cells = try std.testing.allocator.alloc(Cell, 3);
+    defer std.testing.allocator.free(back_cells);
+    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
+    defer back.deinit();
+
+    front.clear();
+    back.clear();
+
+    switch (case.mode) {
+        .same => {
+            const emoji = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7";
+            const front_id = try front.grapheme_buffer.put(emoji);
+            const back_id = try back.grapheme_buffer.put(emoji);
+            front.set(1, 0, Cell.initGrapheme(front_id, .wide_start, .default));
+            front.set(2, 0, .wide_end);
+            back.set(1, 0, Cell.initGrapheme(back_id, .wide_start, .default));
+            back.set(2, 0, .wide_end);
+        },
+        .changed => {
+            const front_emoji = "\xF0\x9F\x91\x8D";
+            const back_emoji = "\xF0\x9F\x91\x8E";
+            const front_id = try front.grapheme_buffer.put(front_emoji);
+            const back_id = try back.grapheme_buffer.put(back_emoji);
+            front.set(1, 0, Cell.initGrapheme(front_id, .wide_start, .default));
+            front.set(2, 0, .wide_end);
+            back.set(1, 0, Cell.initGrapheme(back_id, .wide_start, .default));
+            back.set(2, 0, .wide_end);
+        },
+        .codepoint_vs_grapheme => {
+            const emoji = "\xF0\x9F\x91\x8D";
+            const id = try back.grapheme_buffer.put(emoji);
+            back.set(1, 0, Cell.initGrapheme(id, .wide_start, .default));
+            back.set(2, 0, .wide_end);
+            front.set(1, 0, .{ .data = .{ .codepoint = 'X' } });
+        },
+    }
+
+    var output_buffer: [4096]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output_buffer);
+
+    var style_buffer: [4]Style = undefined;
+    var generator_buffer: [4]u8 = undefined;
+    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
+
+    try front.diffRedraw(&back, &style_sheet, &writer);
+    try expectEqualSequences(case.expected_output, writer.buffered());
 }
 
 test "fullRedraw - multi-byte UTF-8" {
@@ -386,237 +511,53 @@ test "fullRedraw error handling - missing grapheme" {
     try expectEqualSequences(expected, output);
 }
 
-test "diffRedraw no changes" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 5, 2, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 5, 2, .tiny);
-    defer back.deinit();
+test "diffRedraw ASCII table cases" {
+    const cases = [_]DiffCase{
+        .{
+            .width = 5,
+            .height = 2,
+            .front_rows = &[_][]const u8{ "     ", "     " },
+            .back_rows = &[_][]const u8{ "     ", "     " },
+            .expected_output = "",
+        },
+        .{
+            .width = 5,
+            .height = 2,
+            .front_rows = &[_][]const u8{ "XXXXX", "XXXXX" },
+            .back_rows = &[_][]const u8{ "     ", "     " },
+            .expected_output = "\x1b[1;1HXXXXX\x1b[2;1HXXXXX",
+        },
+        .{
+            .width = 10,
+            .height = 1,
+            .front_rows = &[_][]const u8{"  AB   CD "},
+            .back_rows = &[_][]const u8{"          "},
+            .expected_output = "\x1b[1;3HAB\x1b[1;8HCD",
+        },
+        .{
+            .width = 5,
+            .height = 3,
+            .front_rows = &[_][]const u8{ " A   ", "  B  ", "   C " },
+            .back_rows = &[_][]const u8{ "     ", "     ", "     " },
+            .expected_output = "\x1b[1;2HA\x1b[2;3HB\x1b[3;4HC",
+        },
+    };
 
-    front.clear();
-    back.clear();
-
-    // Both buffers have same content (spaces)
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    // No changes: diffRedraw still outputs cursor positions at end of each row
-    // For width=5, cursor goes to column 6 (width + 1)
-    const expected = "";
-    try expectEqualSequences(expected, output);
-}
-
-test "diffRedraw all changed" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 5, 2, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 5, 2, .tiny);
-    defer back.deinit();
-
-    back.clear();
-
-    // Back buffer has spaces, front buffer has all 'X'
-    for (0..5) |x| {
-        for (0..2) |y| {
-            front.set(@intCast(x), @intCast(y), .{ .data = .{ .codepoint = 'X' } });
-        }
+    for (cases) |case| {
+        try runDiffCase(case);
     }
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    const expected = "\x1b[1;1HXXXXX\x1b[2;1HXXXXX";
-    try expectEqualSequences(expected, output);
 }
 
-test "diffRedraw multiple disjoint segments in one row" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 10, 1, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 10);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 10, 1, .tiny);
-    defer back.deinit();
+test "diffRedraw grapheme table cases" {
+    const cases = [_]GraphemeDiffCase{
+        .{ .mode = .same, .expected_output = "" },
+        .{ .mode = .changed, .expected_output = "\x1b[1;2H\xF0\x9F\x91\x8D" },
+        .{ .mode = .codepoint_vs_grapheme, .expected_output = "\x1b[1;2HX " },
+    };
 
-    front.clear();
-    back.clear();
-
-    front.set(2, 0, .{ .data = .{ .codepoint = 'A' } });
-    front.set(3, 0, .{ .data = .{ .codepoint = 'B' } });
-    front.set(7, 0, .{ .data = .{ .codepoint = 'C' } });
-    front.set(8, 0, .{ .data = .{ .codepoint = 'D' } });
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    const expected = "\x1b[1;3HAB\x1b[1;8HCD";
-    try expectEqualSequences(expected, output);
-}
-
-test "diffRedraw changes in multiple rows" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 15);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 5, 3, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 15);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 5, 3, .tiny);
-    defer back.deinit();
-
-    front.clear();
-    back.clear();
-
-    // Change one cell in each row
-    front.set(1, 0, .{ .data = .{ .codepoint = 'A' } });
-    front.set(2, 1, .{ .data = .{ .codepoint = 'B' } });
-    front.set(3, 2, .{ .data = .{ .codepoint = 'C' } });
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    // Each row has a change plus an end-of-row cursor position
-    const expected = "\x1b[1;2HA\x1b[2;3HB\x1b[3;4HC";
-    try expectEqualSequences(expected, output);
-}
-
-test "diffRedraw grapheme same in both buffers" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
-    defer back.deinit();
-
-    front.clear();
-    back.clear();
-
-    const emoji = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"; // 👨‍👩‍👧
-    const id = try front.grapheme_buffer.put(emoji);
-    front.set(1, 0, Cell.initGrapheme(id, .wide_start, .default));
-    front.set(2, 0, .wide_end);
-    const back_id = try back.grapheme_buffer.put(emoji);
-    back.set(1, 0, Cell.initGrapheme(back_id, .wide_start, .default));
-    back.set(2, 0, .wide_end);
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    const expected = "";
-    try expectEqualSequences(expected, output);
-}
-
-test "diffRedraw grapheme changed" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
-    defer back.deinit();
-
-    front.clear();
-    back.clear();
-
-    // Not technically a grapheme but whose gonna stop me
-    const emoji1 = "\xF0\x9F\x91\x8D"; // 👍
-    const emoji2 = "\xF0\x9F\x91\x8E"; // 👎
-    const id_1 = try front.grapheme_buffer.put(emoji1);
-    const id_2 = try back.grapheme_buffer.put(emoji2);
-    front.set(1, 0, Cell.initGrapheme(id_1, .wide_start, .default));
-    front.set(2, 0, .wide_end);
-    back.set(1, 0, Cell.initGrapheme(id_2, .wide_start, .default));
-    back.set(2, 0, .wide_end);
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    const expected = "\x1b[1;2H" ++ emoji1;
-    try expectEqualSequences(expected, output);
-}
-
-test "diffRedraw grapheme vs codepoint" {
-    const front_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(front_cells);
-    var front = try FrameBuffer.init(front_cells, 3, 1, .tiny);
-    defer front.deinit();
-    const back_cells = try std.testing.allocator.alloc(Cell, 3);
-    defer std.testing.allocator.free(back_cells);
-    var back = try FrameBuffer.init(back_cells, 3, 1, .tiny);
-    defer back.deinit();
-
-    front.clear();
-    back.clear();
-
-    const emoji = "\xF0\x9F\x91\x8D"; // 👍
-    const id = try back.grapheme_buffer.put(emoji);
-    back.set(1, 0, Cell.initGrapheme(id, .wide_start, .default));
-    back.set(2, 0, .wide_end);
-    front.set(1, 0, .{ .data = .{ .codepoint = 'X' } });
-
-    var output_buffer: [4096]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output_buffer);
-
-    var style_buffer: [4]Style = undefined;
-    var generator_buffer: [4]u8 = undefined;
-    const style_sheet = Style.Sheet.initBuffer(&style_buffer, &generator_buffer);
-
-    try front.diffRedraw(&back, &style_sheet, &writer);
-    const output = writer.buffered();
-
-    const expected = "\x1b[1;2HX ";
-    try expectEqualSequences(expected, output);
+    for (cases) |case| {
+        try runGraphemeDiffCase(case);
+    }
 }
 
 test "fullRedraw and diffRedraw with ANSI colors" {

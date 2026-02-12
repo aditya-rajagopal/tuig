@@ -317,8 +317,8 @@ pub const FixedGrowingBufferAllocator = struct {
     fn allocInternal(self: *Self, n: usize, alignment: std.mem.Alignment) ?[*]u8 {
         const ptr_align = alignment.toByteUnits();
         const adjust_off = std.mem.alignPointerOffset(self.buffer.reserved_pages.ptr + self.end_index, ptr_align) orelse return null;
-        const adjusted_index = self.end_index + adjust_off;
-        const new_end_index = adjusted_index + n;
+        const adjusted_index = std.math.add(usize, self.end_index, adjust_off) catch return null;
+        const new_end_index = std.math.add(usize, adjusted_index, n) catch return null;
         if (new_end_index > self.buffer.reserved_pages.len) {
             self.buffer.ensureTotalCapacity(new_end_index) catch return null;
         }
@@ -395,8 +395,8 @@ pub const FixedGrowingBufferAllocator = struct {
         var end_index = @atomicLoad(usize, &self.end_index, .seq_cst);
         while (true) {
             const adjust_off = std.mem.alignPointerOffset(self.buffer.reserved_pages.ptr + end_index, ptr_align) orelse return null;
-            const adjusted_index = end_index + adjust_off;
-            const new_end_index = adjusted_index + n;
+            const adjusted_index = std.math.add(usize, end_index, adjust_off) catch return null;
+            const new_end_index = std.math.add(usize, adjusted_index, n) catch return null;
             if (new_end_index > self.buffer.reserved_pages.len) {
                 self.buffer.ensureTotalCapacity(new_end_index) catch return null;
             }

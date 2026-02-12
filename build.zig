@@ -118,6 +118,11 @@ pub fn build(b: *std.Build) void {
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
     });
     const run_ui_tests = b.addRunArtifact(ui_tests);
+    const stdx_tests = b.addTest(.{
+        .root_module = stdx,
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
+    });
+    const run_stdx_tests = b.addRunArtifact(stdx_tests);
     const layout_tests = b.addTest(.{
         .root_module = layout,
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
@@ -146,6 +151,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_renderer_tests.step);
     test_step.dependOn(&run_unicode_tests.step);
     test_step.dependOn(&run_ui_tests.step);
+    test_step.dependOn(&run_stdx_tests.step);
     test_step.dependOn(&run_layout_tests.step);
     test_step.dependOn(&run_benchmark_tests.step);
 

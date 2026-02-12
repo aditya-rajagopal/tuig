@@ -277,7 +277,7 @@ pub fn BufferPoolExtra(comptime options: Options) type {
             }
 
             pub fn pushArray(self: *Self, comptime T: type, length: usize) ![]T {
-                const size = std.math.mul(usize, @sizeOf(T), length) catch unreachable;
+                const size = std.math.mul(usize, @sizeOf(T), length) catch return error.OutOfMemory;
                 const new_ptr = self.allocInternal(size, .of(T)) orelse return error.OutOfMemory;
                 @memset(new_ptr[0..size], undefined);
                 const ptr: [*]T = @ptrCast(@alignCast(new_ptr));
@@ -297,7 +297,7 @@ pub fn BufferPoolExtra(comptime options: Options) type {
                 comptime alignment: Alignment,
                 length: usize,
             ) ![]align(alignment.toByteUnits()) T {
-                const size = std.math.mul(usize, @sizeOf(T), length) catch unreachable;
+                const size = std.math.mul(usize, @sizeOf(T), length) catch return error.OutOfMemory;
                 const new_ptr = self.allocInternal(size, alignment) orelse return error.OutOfMemory;
                 @memset(new_ptr[0..size], undefined);
                 const ptr: [*]align(alignment.toByteUnits()) T = @ptrCast(@alignCast(new_ptr));

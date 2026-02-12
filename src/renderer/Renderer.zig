@@ -65,7 +65,8 @@ pub const Config = struct {
 pub fn init(self: *Renderer, terminal: *Terminal, config: Config) error{ OutOfMemory, ReserveFailed, BufferTooLarge }!void {
     const width = terminal.size.width;
     const height = terminal.size.height;
-    const size: usize = @as(usize, width) * @as(usize, height);
+    const size_u32: u32 = @as(u32, width) * @as(u32, height);
+    const size: usize = @intCast(size_u32);
 
     self.cell_buffers[0] = try t.CellBuffer.initCapacity(config.max_cells, size);
     self.cell_buffers[1] = try t.CellBuffer.initCapacity(config.max_cells, size);

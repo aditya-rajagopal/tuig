@@ -44,3 +44,7 @@ pub fn cutScalar(comptime T: type, haystack: []const T, needle: T) ?struct { []c
     const index = std.mem.findScalar(T, haystack, needle) orelse return null;
     return .{ haystack[0..index], haystack[index + 1 ..] };
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
