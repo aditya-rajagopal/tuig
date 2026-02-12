@@ -1,4 +1,5 @@
 const event = @import("event.zig");
+const parser = @import("parser.zig");
 pub const Event = event.Event;
 pub const KeyEvent = event.KeyEvent;
 pub const MouseEvent = event.MouseEvent;
@@ -7,7 +8,7 @@ pub const Mods = event.Mods;
 pub const Code = event.KeyEvent.Code;
 pub const PhysicalKey = event.KeyEvent.PhysicalKey;
 pub const PhysicalKeyState = std.EnumSet(KeyEvent.PhysicalKey);
-pub const parseEvent = event.parseEvent;
+pub const parseEvent = parser.parseEvent;
 
 pub const sequences = @import("sequences.zig");
 

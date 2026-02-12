@@ -11,9 +11,7 @@ waiting_on:
 - "[[rough_fang_bxy]]"
 - "[[fluffy_tail_yw4]]"
 - "[[shallow_wind_xbr]]"
-- "[[eager_quest_wwz]]"
 - "[[deficient_axe_v61]]"
-- "[[twin_radar_74b]]"
 - "[[fuzzy_core_z91]]"
 - "[[gleeful_beam_g5f]]"
 tags: 

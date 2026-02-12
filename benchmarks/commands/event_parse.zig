@@ -392,7 +392,7 @@ fn parseStream(stream: []const u8, counters: *IterationCounters) void {
         const emitted = blk: {
             const event = terminal_mod.parseEvent(stream[offset..], &consumed);
             std.mem.doNotOptimizeAway(event);
-            break :blk @as(std.meta.Tag(@TypeOf(event)), event) != .none;
+            break :blk @as(std.meta.Tag(@TypeOf(event)), event) == .event;
         };
 
         counters.parse_calls += 1;

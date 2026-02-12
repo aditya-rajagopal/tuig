@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "unicode", .module = unicode },
             .{ .name = "stdx", .module = stdx },
         },
     });

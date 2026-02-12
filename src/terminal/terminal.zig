@@ -5,6 +5,7 @@ const stdx = @import("stdx");
 const assert = stdx.inlineAssert;
 
 const e = @import("event.zig");
+const p = @import("parser.zig");
 const Event = e.Event;
 const seq = @import("sequences.zig");
 
@@ -157,7 +158,17 @@ pub const InitError = PollError || error{
     SetCursorVisibilityFailed,
 };
 
+// @TODO we probably want to add a timeout when reading \x1b to make sure we actually have escape key press and not
+//       the start of a control sequence. Except if kitty disambiguate_escape_codes is set to true.
 pub const Terminal = struct {
+    const ParseMode = enum {
+        ground,
+        bracketed_paste,
+        skip_till_st_discard,
+        csi_overflow_discard,
+        osc_overflow_discard,
+    };
+
     output_fd: std.Io.File.Handle,
     input_fd: std.Io.File.Handle,
     original_state: std.posix.termios,
@@ -169,7 +180,7 @@ pub const Terminal = struct {
     event_queue: [32]Event = undefined,
     config: TerminalConfig,
     capability_state_initial: CapabilityState = .{},
-    in_bracketed_paste: bool = false,
+    parse_mode: ParseMode = .ground,
 
     pub const Size = struct { width: u16, height: u16 };
 
@@ -177,6 +188,10 @@ pub const Terminal = struct {
 
     pub fn getWriter(self: *Terminal) *std.Io.Writer {
         return &self.writer.interface;
+    }
+
+    inline fn enterParseMode(self: *Terminal, mode: ParseMode) void {
+        self.parse_mode = mode;
     }
 
     pub fn init(terminal: *Terminal, config: TerminalConfig, write_buffer: []u8) InitError!void {
@@ -213,7 +228,7 @@ pub const Terminal = struct {
         terminal.original_state = std.posix.tcgetattr(terminal.output_fd) catch return error.ReadTerminalAttributesFailed;
         terminal.writer = std.Io.File.Writer.initStreaming(std.Io.File{ .handle = terminal.output_fd }, io, write_buffer);
         terminal.size = terminal.getSize();
-        @memset(&terminal.event_queue, .none);
+        @memset(&terminal.event_queue, .unrecognized);
         terminal.capability_state_initial = .{};
         terminal.config.read_buffer_initial_bytes = config.read_buffer_initial_bytes;
         terminal.config.read_buffer_max_bytes = config.read_buffer_max_bytes;
@@ -247,7 +262,7 @@ pub const Terminal = struct {
 
         terminal.setCursorVisible(config.cursor_visible) catch return error.SetCursorVisibilityFailed;
 
-        terminal.in_bracketed_paste = false;
+        terminal.enterParseMode(.ground);
 
         global_tty = terminal;
     }
@@ -550,6 +565,18 @@ pub const Terminal = struct {
     }
 
     // @TODO This should drain the event queue in multithreaded mode when that is implemented
+    /// Polls for terminal input and returns parsed events.
+    ///
+    /// `timeout_ms` follows poll semantics: negative blocks indefinitely,
+    /// zero is non-blocking, and positive waits up to that many milliseconds (precision is not guaranteed).
+    /// If exact frame timeout is required request less than yu think and then busy loop for the rest.
+    ///
+    /// The returned slice is backed by `Terminal.event_queue` and is valid until
+    /// the next call to `pollEvents` on the same terminal instance.
+    ///
+    /// `Event.paste_data` and `Event.osc_pointer_shape.value` borrow parser
+    /// buffer memory and are also valid only until the next `pollEvents` call.
+    /// Copy those slices if the data must outlive this call.
     pub fn pollEvents(self: *Terminal, timeout_ms: i32) PollError![]Event {
         var events = std.ArrayList(Event).initBuffer(&self.event_queue);
 
@@ -572,64 +599,125 @@ pub const Terminal = struct {
         drained,
         need_more_input,
         queue_full,
-        paste_exported_dont_invalidate_buffer,
+        stream_exported_dont_invalidate_buffer,
     };
+
+    inline fn pendingParseState(emitted_stream_data: bool) ParseBufferedState {
+        return if (emitted_stream_data)
+            .stream_exported_dont_invalidate_buffer
+        else
+            .need_more_input;
+    }
 
     fn parseBufferedEvents(self: *Terminal, events: *std.ArrayList(Event)) ParseBufferedState {
         if (self.read_buffer.len == 0) return .drained;
 
-        var emitted_paste_data = false;
+        var emitted_stream_data = false;
         var data = self.read_buffer.linearizeReadable();
         var consumed_total: usize = 0;
         defer if (consumed_total > 0) self.read_buffer.consume(consumed_total);
         while (data.len > 0) {
-            if (self.in_bracketed_paste) {
-                const end = std.mem.find(u8, data, seq.bracketed_paste.end);
-                if (end) |position| {
-                    if (position > 0) {
-                        events.appendBounded(.{ .paste_data = data[0..position] }) catch return .queue_full;
-                        emitted_paste_data = true;
-                        consumed_total += position;
+            switch (self.parse_mode) {
+                .skip_till_st_discard, .csi_overflow_discard, .osc_overflow_discard => |mode| {
+                    const result = switch (mode) {
+                        .skip_till_st_discard => scanSkipTillSTDiscard(data),
+                        .csi_overflow_discard => scanCSIOverflowDiscard(data),
+                        .osc_overflow_discard => scanOSCOverflowDiscard(data),
+                        else => unreachable,
+                    };
+                    switch (result) {
+                        .terminated, .resync => |n| {
+                            consumed_total += n;
+                            self.enterParseMode(.ground);
+                            data = data[n..];
+                        },
+                        .need_more => |n| {
+                            consumed_total += n;
+                            return pendingParseState(emitted_stream_data);
+                        },
                     }
-                    events.appendBounded(.paste_end) catch return .queue_full;
-                    self.in_bracketed_paste = false;
-                    consumed_total += seq.bracketed_paste.end.len;
-                    data = data[position + seq.bracketed_paste.end.len ..];
-                    continue;
-                }
+                },
+                .bracketed_paste => {
+                    const end = std.mem.find(u8, data, seq.bracketed_paste.end);
+                    if (end) |position| {
+                        if (position > 0) {
+                            events.appendBounded(.{ .paste_data = data[0..position] }) catch return .queue_full;
+                            emitted_stream_data = true;
+                            consumed_total += position;
+                        }
+                        events.appendBounded(.paste_end) catch return .queue_full;
+                        self.enterParseMode(.ground);
+                        consumed_total += seq.bracketed_paste.end.len;
+                        data = data[position + seq.bracketed_paste.end.len ..];
+                        continue;
+                    }
 
-                const overlap = bracketedPasteEndOverlap(data);
-                assert(overlap <= data.len);
-                const payload_len = data.len - overlap;
-                if (payload_len > 0) {
-                    events.appendBounded(.{ .paste_data = data[0..payload_len] }) catch return .queue_full;
-                    emitted_paste_data = true;
-                    consumed_total += payload_len;
-                }
+                    const overlap = bracketedPasteEndOverlap(data);
+                    assert(overlap <= data.len);
+                    const payload_len = data.len - overlap;
+                    if (payload_len > 0) {
+                        events.appendBounded(.{ .paste_data = data[0..payload_len] }) catch return .queue_full;
+                        emitted_stream_data = true;
+                        consumed_total += payload_len;
+                    }
 
-                return if (emitted_paste_data) .paste_exported_dont_invalidate_buffer else .need_more_input;
+                    return pendingParseState(emitted_stream_data);
+                },
+                .ground => {
+                    var consumed_bytes: usize = 0;
+                    const parsed = p.parseEvent(data, &consumed_bytes);
+
+                    // @NOTE(adi): Paste end is emiited by this function and if we encounter it from the parseEvent it must be
+                    //             a stray end and should be ignored.
+                    switch (parsed) {
+                        .need_more_input => {
+                            assert(consumed_bytes == 0);
+                            return pendingParseState(emitted_stream_data);
+                        },
+                        .ignored => {
+                            assert(consumed_bytes > 0);
+                        },
+                        .skip_till_st => {
+                            assert(consumed_bytes > 0);
+                            self.enterParseMode(.skip_till_st_discard);
+                        },
+                        .osc_overflow, .osc52_start => {
+                            // NOTE(adi): OSC52 is highly unlikley to be emitted when using this as a terminal application
+                            //            almost all terminals I know will disregard OSC52 requests from apps due to the
+                            //            security implications. But the parser is designed to be able to handle it in case
+                            //            we want to use it for a PTY.
+                            assert(consumed_bytes > 0);
+                            self.enterParseMode(.osc_overflow_discard);
+                        },
+                        .csi_overflow => {
+                            assert(consumed_bytes > 0);
+                            self.enterParseMode(.csi_overflow_discard);
+                        },
+                        .event => |ev| {
+                            assert(consumed_bytes > 0);
+                            if (ev == .paste_end) {
+                                // Ignore unmatched paste end.
+                            } else {
+                                events.appendBounded(ev) catch return .queue_full;
+                            }
+                            if (ev == .paste_start) {
+                                self.enterParseMode(.bracketed_paste);
+                            } else if (ev == .osc_pointer_shape) {
+                                emitted_stream_data = true;
+                            }
+                        },
+                    }
+
+                    consumed_total += consumed_bytes;
+                    data = data[consumed_bytes..];
+                },
             }
-            var consumed_bytes: usize = 0;
-            const event = e.parseEvent(data, &consumed_bytes);
-
-            if (consumed_bytes == 0) {
-                if (emitted_paste_data) return .paste_exported_dont_invalidate_buffer else return .need_more_input;
-            }
-
-            // @NOTE(adi): Paste end is emiited by this function and if we encounter it from the parseEvent it must be
-            //             a stray end and should be ignored.
-            if (event != .none and event != .paste_end) {
-                events.appendBounded(event) catch return .queue_full;
-                if (event == .paste_start) {
-                    self.in_bracketed_paste = true;
-                }
-            }
-
-            consumed_total += consumed_bytes;
-            data = data[consumed_bytes..];
         }
 
-        if (emitted_paste_data) return .paste_exported_dont_invalidate_buffer else return .drained;
+        return if (emitted_stream_data)
+            .stream_exported_dont_invalidate_buffer
+        else
+            .drained;
     }
 
     fn bracketedPasteEndOverlap(data: []const u8) usize {
@@ -644,6 +732,49 @@ pub const Terminal = struct {
             }
         }
         return 0;
+    }
+
+    const OverflowDiscardResult = union(enum) {
+        terminated: usize,
+        resync: usize,
+        need_more: usize,
+    };
+
+    fn scanCSIOverflowDiscard(data: []const u8) OverflowDiscardResult {
+        for (data, 0..) |byte, i| {
+            switch (byte) {
+                0x1b => return .{ .resync = i },
+                0x40...0x7E => return .{ .terminated = i + 1 },
+                else => {},
+            }
+        }
+        return .{ .need_more = data.len };
+    }
+
+    fn scanSkipTillSTDiscard(data: []const u8) OverflowDiscardResult {
+        for (data, 0..) |byte, i| {
+            if (byte == 0x1b) {
+                if (i + 1 >= data.len) return .{ .need_more = i };
+                if (data[i + 1] == '\\') return .{ .terminated = i + 2 };
+                return .{ .resync = i };
+            }
+        }
+        return .{ .need_more = data.len };
+    }
+
+    fn scanOSCOverflowDiscard(data: []const u8) OverflowDiscardResult {
+        for (data, 0..) |byte, i| {
+            switch (byte) {
+                0x07 => return .{ .terminated = i + 1 },
+                0x1b => {
+                    if (i + 1 >= data.len) return .{ .need_more = i };
+                    if (data[i + 1] == '\\') return .{ .terminated = i + 2 };
+                    return .{ .resync = i };
+                },
+                else => {},
+            }
+        }
+        return .{ .need_more = data.len };
     }
 
     fn ensureReadBufferWritable(self: *Terminal) void {
@@ -701,7 +832,7 @@ pub const Terminal = struct {
     fn parseInput(self: *Terminal, timeout_ms: i32, events: *std.ArrayList(Event)) PollError!void {
         const state = self.parseBufferedEvents(events);
         switch (state) {
-            .queue_full, .paste_exported_dont_invalidate_buffer => return,
+            .queue_full, .stream_exported_dont_invalidate_buffer => return,
             .drained, .need_more_input => {},
         }
 
@@ -711,7 +842,7 @@ pub const Terminal = struct {
             const bytes_read = try self.readIntoReadBuffer();
             if (bytes_read == 0) return;
             switch (self.parseBufferedEvents(events)) {
-                .queue_full, .paste_exported_dont_invalidate_buffer => return,
+                .queue_full, .stream_exported_dont_invalidate_buffer => return,
                 .drained, .need_more_input => {},
             }
         }
@@ -758,6 +889,7 @@ pub const Terminal = struct {
     fn hasPendingCapabilityQueries(self: *const Terminal) bool {
         if (!self.capability_state_initial.kitty_keyboard_reply_received) return true;
         if (self.capability_state_initial.mouse_sgr_decrpm_status == null) return true;
+        if (self.capability_state_initial.bracketed_paste_decrpm_status == null) return true;
         if (self.capability_state_initial.da1 == null or self.capability_state_initial.da2 == null) return true;
         return false;
     }
@@ -795,6 +927,8 @@ fn initTestTerminal(initial: usize, max: usize) !Terminal {
     terminal.read_buffer = try stdx.GrowingRingBuffer.initCapacity(max, initial);
     terminal.dropped_input_bytes = 0;
     terminal.config = .default_terminal;
+    terminal.capability_state_initial = .{};
+    terminal.parse_mode = .ground;
     terminal.config.read_buffer_initial_bytes = initial;
     terminal.config.read_buffer_max_bytes = max;
     terminal.config.read_overflow_policy = .drop_oldest;
@@ -833,6 +967,38 @@ test "parseBufferedEvents keeps pending bytes when queue is full" {
     try std.testing.expectEqualStrings("b", terminal.read_buffer.linearizeReadable());
 }
 
+test "parseBufferedEvents does not consume paste payload on queue_full" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1b[200~x\x1b[201~");
+
+    var queue_storage_small: [1]Event = undefined;
+    var small_events = std.ArrayList(Event).initBuffer(&queue_storage_small);
+
+    const first_state = terminal.parseBufferedEvents(&small_events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.queue_full, first_state);
+    try std.testing.expectEqual(@as(usize, 1), small_events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), small_events.items[0]) == .paste_start);
+    try std.testing.expectEqual(Terminal.ParseMode.bracketed_paste, terminal.parse_mode);
+    try std.testing.expectEqualStrings("x\x1b[201~", terminal.read_buffer.linearizeReadable());
+
+    var queue_storage_large: [4]Event = undefined;
+    var large_events = std.ArrayList(Event).initBuffer(&queue_storage_large);
+
+    const second_state = terminal.parseBufferedEvents(&large_events);
+    try std.testing.expectEqual(
+        Terminal.ParseBufferedState.stream_exported_dont_invalidate_buffer,
+        second_state,
+    );
+    try std.testing.expectEqual(@as(usize, 2), large_events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), large_events.items[0]) == .paste_data);
+    try std.testing.expectEqualStrings("x", large_events.items[0].paste_data);
+    try std.testing.expect(@as(std.meta.Tag(Event), large_events.items[1]) == .paste_end);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+}
+
 test "parseBufferedEvents ignores stray paste_end and keeps balanced paste events" {
     var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
     defer terminal.read_buffer.deinit();
@@ -843,7 +1009,7 @@ test "parseBufferedEvents ignores stray paste_end and keeps balanced paste event
     var events = std.ArrayList(Event).initBuffer(&queue_storage);
 
     const state = terminal.parseBufferedEvents(&events);
-    try std.testing.expectEqual(Terminal.ParseBufferedState.paste_exported_dont_invalidate_buffer, state);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.stream_exported_dont_invalidate_buffer, state);
     try std.testing.expectEqual(@as(usize, 4), events.items.len);
     try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .paste_start);
     try std.testing.expect(@as(std.meta.Tag(Event), events.items[1]) == .paste_data);
@@ -851,7 +1017,294 @@ test "parseBufferedEvents ignores stray paste_end and keeps balanced paste event
     try std.testing.expect(@as(std.meta.Tag(Event), events.items[2]) == .paste_end);
     try std.testing.expect(@as(std.meta.Tag(Event), events.items[3]) == .key_pressed);
     try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[3].key_pressed.code);
-    try std.testing.expect(!terminal.in_bracketed_paste);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents discards OSC52 payload and preserves stream sync" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1b]52;c;Zm9v\x1b\\z");
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents keeps trailing ESC during OSC52 discard" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = 1024;
+    const total_len = 7 + payload_len + 1;
+    var sequence = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(sequence);
+
+    sequence[0] = 0x1b;
+    sequence[1] = ']';
+    sequence[2] = '5';
+    sequence[3] = '2';
+    sequence[4] = ';';
+    sequence[5] = 'c';
+    sequence[6] = ';';
+    @memset(sequence[7 .. 7 + payload_len], 'A');
+    sequence[7 + payload_len] = 0x1b;
+
+    _ = try terminal.read_buffer.write(sequence);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const first_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.need_more_input, first_state);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.osc_overflow_discard, terminal.parse_mode);
+
+    _ = try terminal.read_buffer.write("\\z");
+    events.clearRetainingCapacity();
+
+    const second_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, second_state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents discards overlong non-52 OSC and preserves stream sync" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = p.osc_len_max_default + 64;
+    const total_len = 5 + payload_len + 2 + 1;
+    var sequence = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(sequence);
+
+    sequence[0] = 0x1b;
+    sequence[1] = ']';
+    sequence[2] = '4';
+    sequence[3] = ';';
+    sequence[4] = ';';
+    @memset(sequence[5 .. 5 + payload_len], 'A');
+    sequence[5 + payload_len] = 0x1b;
+    sequence[5 + payload_len + 1] = '\\';
+    sequence[5 + payload_len + 2] = 'z';
+
+    _ = try terminal.read_buffer.write(sequence);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents resyncs malformed overlong OSC at new control sequence" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = p.osc_len_max_default + 64;
+    const total_len = 5 + payload_len + 3;
+    var sequence = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(sequence);
+
+    sequence[0] = 0x1b;
+    sequence[1] = ']';
+    sequence[2] = '4';
+    sequence[3] = ';';
+    sequence[4] = ';';
+    @memset(sequence[5 .. 5 + payload_len], 'A');
+    sequence[5 + payload_len] = 0x1b;
+    sequence[5 + payload_len + 1] = '[';
+    sequence[5 + payload_len + 2] = 'A';
+
+    _ = try terminal.read_buffer.write(sequence);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(e.KeyEvent.Code.up, events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents keeps trailing ESC during OSC overflow discard" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = p.osc_len_max_default + 64;
+    const total_len = 5 + payload_len + 1;
+    var first_chunk = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(first_chunk);
+
+    first_chunk[0] = 0x1b;
+    first_chunk[1] = ']';
+    first_chunk[2] = '4';
+    first_chunk[3] = ';';
+    first_chunk[4] = ';';
+    @memset(first_chunk[5 .. 5 + payload_len], 'A');
+    first_chunk[5 + payload_len] = 0x1b;
+
+    _ = try terminal.read_buffer.write(first_chunk);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const first_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.need_more_input, first_state);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.osc_overflow_discard, terminal.parse_mode);
+
+    _ = try terminal.read_buffer.write("[A");
+    events.clearRetainingCapacity();
+
+    const second_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, second_state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(e.KeyEvent.Code.up, events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents discards ESC P payload until ST" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1bPignored\x1b\\z");
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents resyncs malformed ESC P payload at next control sequence" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1bPignored\x1b[A");
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(e.KeyEvent.Code.up, events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents keeps trailing ESC during skip-till-ST discard" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    _ = try terminal.read_buffer.write("\x1bPignored\x1b");
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const first_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.need_more_input, first_state);
+    try std.testing.expectEqual(@as(usize, 0), events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.skip_till_st_discard, terminal.parse_mode);
+
+    _ = try terminal.read_buffer.write("\\z");
+    events.clearRetainingCapacity();
+
+    const second_state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, second_state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents discards overlong CSI and preserves stream sync" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = p.csi_len_max_default + 64;
+    const total_len = 2 + payload_len + 1 + 1;
+    var sequence = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(sequence);
+
+    sequence[0] = 0x1b;
+    sequence[1] = '[';
+    @memset(sequence[2 .. 2 + payload_len], ';');
+    sequence[2 + payload_len] = 'm';
+    sequence[2 + payload_len + 1] = 'z';
+
+    _ = try terminal.read_buffer.write(sequence);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(@as(e.KeyEvent.Code, @enumFromInt('z')), events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
+}
+
+test "parseBufferedEvents resyncs malformed overlong CSI at new control sequence" {
+    var terminal = try initTestTerminal(std.heap.page_size_min, std.heap.page_size_min * 2);
+    defer terminal.read_buffer.deinit();
+
+    const payload_len = p.csi_len_max_default + 64;
+    const total_len = 2 + payload_len + 3;
+    var sequence = try std.testing.allocator.alloc(u8, total_len);
+    defer std.testing.allocator.free(sequence);
+
+    sequence[0] = 0x1b;
+    sequence[1] = '[';
+    @memset(sequence[2 .. 2 + payload_len], ';');
+    sequence[2 + payload_len] = 0x1b;
+    sequence[2 + payload_len + 1] = '[';
+    sequence[2 + payload_len + 2] = 'A';
+
+    _ = try terminal.read_buffer.write(sequence);
+
+    var queue_storage: [8]Event = undefined;
+    var events = std.ArrayList(Event).initBuffer(&queue_storage);
+
+    const state = terminal.parseBufferedEvents(&events);
+    try std.testing.expectEqual(Terminal.ParseBufferedState.drained, state);
+    try std.testing.expectEqual(@as(usize, 1), events.items.len);
+    try std.testing.expect(@as(std.meta.Tag(Event), events.items[0]) == .key_pressed);
+    try std.testing.expectEqual(e.KeyEvent.Code.up, events.items[0].key_pressed.code);
+    try std.testing.expectEqual(@as(usize, 0), terminal.read_buffer.len);
+    try std.testing.expectEqual(Terminal.ParseMode.ground, terminal.parse_mode);
 }
 
 test "ensureReadBufferWritable grows before dropping" {

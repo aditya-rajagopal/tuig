@@ -1,10 +1,11 @@
 ---
 title: If we get an invalid grapheme id we return false in renderer. Can this be better
-status: todo
+status: done
 priority_value: 50
 priority: medium
 owner: aditya
 created: 2026-02-05T22:30:09Z
+completed: 2026-02-12T07:32:05Z
 tags: 
 - renderer
 ---

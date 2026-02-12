@@ -1,579 +1,79 @@
 const std = @import("std");
 
-const stdx = @import("stdx");
-const assert = stdx.inlineAssert;
-const cutScalar = stdx.cutScalar;
 const seq = @import("sequences.zig");
 
-pub const csi_len_max_default: usize = 128;
-
-pub fn parseEvent(data: []const u8, consumed_bytes: *usize) Event {
-    assert(data.len > 0);
-    consumed_bytes.* = 0;
-
-    // @TODO GILA(anguished_claw_dzt) If \x1b is a lone byte we cant tell if it is an incomplete sequence or a part of
-    // a continuation
-    // @TODO GILA(gleeful_beam_g5f) If we get \x1b[ we cant tell if it is incomplete or alt + [
-    if (data[0] == '\x1b' and data.len > 1) switch (data[1]) {
-        0x4f => return parseSS3(data, consumed_bytes),
-        0x5b => return parseCSI(data, consumed_bytes),
-        else => {
-            var key_event = parseAscii(data[1]);
-            key_event.key_pressed.mods.alt = true;
-            consumed_bytes.* = 2;
-            return key_event;
-        },
-    } else {
-        consumed_bytes.* = 1;
-        return parseAscii(data[0]);
-    }
-
-    return .none;
-}
-
-fn parseAscii(c: u8) Event {
-    const key_event: KeyEvent = blk: switch (c) {
-        0x00 => .{ .code = @enumFromInt('@'), .mods = .{ .ctrl = true }, .physical_key = .@"2" },
-        0x1b => .{ .code = .escape, .mods = .{}, .physical_key = .escape },
-        0x0D => .{ .code = .enter, .mods = .{}, .physical_key = .enter },
-        0x0A => .{ .code = @enumFromInt('j'), .mods = .{ .ctrl = true }, .physical_key = .J },
-        0x09 => .{ .code = .tab, .mods = .{}, .physical_key = .tab },
-        0x7F => .{ .code = .backspace, .mods = .{}, .physical_key = .backspace },
-        1...8, 11, 12, 14...26, 0x1C...0x1F => |ctrl| {
-            const code: KeyEvent.Code = @enumFromInt(if (ctrl <= 0x1A) ctrl + 'a' - 1 else ctrl + 0x18);
-            const mapped_key = code.mapUsLayout();
-            break :blk .{ .code = code, .mods = .{ .ctrl = true, .shift = mapped_key.shift }, .physical_key = mapped_key.physical_key };
-        },
-        else => {
-            // @TODO GILA(twin_radar_74b)
-            const code: KeyEvent.Code = @enumFromInt(c);
-            const mapped_key = code.mapUsLayout();
-            break :blk .{ .code = @enumFromInt(c), .mods = .{ .shift = mapped_key.shift }, .physical_key = mapped_key.physical_key };
-        },
-    };
-    return .{ .key_pressed = key_event };
-}
-
-fn parseSS3(data: []const u8, consumed_bytes: *usize) Event {
-    if (data.len < 3) return .none;
-    assert(data[0] == '\x1b');
-    assert(data[1] == 'O');
-
-    const event: Event = switch (data[2]) {
-        // TODO GILA(angelic_kamodo_zx1) deal with multiple escape sequences
-        0x1b => {
-            consumed_bytes.* = 2;
-            return .none;
-        },
-        'A' => .{ .key_pressed = .{ .code = .up, .physical_key = .up, .mods = .{} } },
-        'B' => .{ .key_pressed = .{ .code = .down, .physical_key = .down, .mods = .{} } },
-        'C' => .{ .key_pressed = .{ .code = .right, .physical_key = .right, .mods = .{} } },
-        'D' => .{ .key_pressed = .{ .code = .left, .physical_key = .left, .mods = .{} } },
-        'E' => .{ .key_pressed = .{ .code = .kp_begin, .physical_key = .clear, .mods = .{} } },
-        'F' => .{ .key_pressed = .{ .code = .end, .physical_key = .end, .mods = .{} } },
-        'H' => .{ .key_pressed = .{ .code = .home, .physical_key = .home, .mods = .{} } },
-        'P' => .{ .key_pressed = .{ .code = .f1, .physical_key = .f1, .mods = .{} } },
-        'Q' => .{ .key_pressed = .{ .code = .f2, .physical_key = .f2, .mods = .{} } },
-        'R' => .{ .key_pressed = .{ .code = .f3, .physical_key = .f3, .mods = .{} } },
-        'S' => .{ .key_pressed = .{ .code = .f4, .physical_key = .f4, .mods = .{} } },
-        else => {
-            consumed_bytes.* = 3;
-            return .none;
-        },
-    };
-    consumed_bytes.* = 3;
-    return event;
-}
-
-const ScanResult = union(enum) {
-    complete: usize,
-    incomplete,
-    malformed: usize,
-    too_long: usize,
-};
-
-inline fn isCSIParameterByte(byte: u8) bool {
-    return byte >= 0x30 and byte <= 0x3F;
-}
-
-inline fn isCSIIntermediateByte(byte: u8) bool {
-    return byte >= 0x20 and byte <= 0x2F;
-}
-
-inline fn isCSIFinalByte(byte: u8) bool {
-    return byte >= 0x40 and byte <= 0x7E;
-}
-
-const CSIScanOptions = struct {
-    csi_len_max: usize = csi_len_max_default,
-};
-
-/// Scan CSI using ECMA-48 rules.
-/// https://ecma-international.org/wp-content/uploads/ECMA-48_5th_edition_june_1991.pdf
-/// CSI P ... P I ... I F
-/// P: parameter bytes (0x30..0x3F)
-/// I: intermediate bytes (0x20..0x2F)
-/// F: final byte (0x40..0x7E)
-/// Everythign else is invalid.
-fn scanCSI(data: []const u8, options: CSIScanOptions) ScanResult {
-    assert(data.len > 2);
-    assert(data[0] == '\x1b');
-    assert(data[1] == '[');
-    // Guard against overflow if someone passes absurd max.
-    const capped_max = @min(options.csi_len_max, std.math.maxInt(usize) - 2);
-    const limit = @min(data.len, 2 + capped_max);
-
-    var i: usize = 2;
-    // CSI <P ... P> I ... I F
-    while (i < limit and isCSIParameterByte(data[i])) : (i += 1) {}
-    // CSI P ... P <I ... I> F
-    while (i < limit and isCSIIntermediateByte(data[i])) : (i += 1) {}
-
-    if (i < limit) {
-        if (isCSIFinalByte(data[i])) {
-            return .{ .complete = i + 1 };
-        } else {
-            // @NOTE encountered a byte after intermedaite that is not a valid
-            // ECMA-48 final byte. This is not a valid CSI sequence.
-            // We leave the final byte to try to reparse.
-            return .{ .malformed = i };
-        }
-    } else {
-        if (limit < data.len) return .{ .too_long = limit };
-        return .incomplete;
-    }
-}
-
-fn parseCSI(data: []const u8, consumed_bytes: *usize) Event {
-    if (data.len < 3) return .none;
-    assert(data[0] == '\x1b');
-    assert(data[1] == '[');
-
-    const result = scanCSI(data, .{});
-    switch (result) {
-        .complete => |n| {
-            assert(n >= 3);
-            consumed_bytes.* = n;
-            const csi = data[0..n];
-            return switch (csi[n - 1]) {
-                'M', 'm' => parseMouse(csi, data, consumed_bytes),
-                'A', 'B', 'C', 'D', 'E', 'F', 'H', 'P', 'Q', 'S' => parseLegacyCursorKeys(csi),
-                '~' => parseLegacyTildeSequences(csi),
-                'c' => parseDeviceAttributes(csi),
-                'n' => .none, // @TODO GILA(odd_flux_g9x)
-                't' => .none, // @TODO GILA(wry_ray_32j)
-                'y' => parseDECRPM(csi),
-                'q' => .none, // @TODO GILA(rough_fang_bxy)
-                'u' => parseKitty(csi),
-                else => .none,
-            };
-        },
-        .incomplete => return .none,
-        .malformed => |n| {
-            consumed_bytes.* = n;
-            return .none;
-        },
-        .too_long => |n| {
-            consumed_bytes.* = n;
-            return .none;
-        },
-    }
-    unreachable;
-}
-
-fn parseKitty(csi: []const u8) Event {
-    assert(csi.len > 2);
-    if (csi[2] == '?') return parseKittyKeyboardQuery(csi);
-    return parseKittyKeyboardProtocol(csi);
-}
-
-const KeyEventType = enum(u8) {
-    pressed = 1,
-    repeat = 2,
-    released = 3,
-};
-
-fn parseKittyKeyboardProtocol(csi: []const u8) Event {
-    // @NOTE https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
-    //     CSI unicode-key-code:alternate-key-codes ; modifiers:event-type ; text-as-codepoints u
-    // Only the unicode-key-code field is mandatory, everything else is optional.
-    const n = csi.len;
-    const payload = csi[2 .. n - 1];
-    if (payload.len == 0) return .none;
-
-    const first, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
-    const key_code, const alt_key_code = if (cutScalar(u8, first, ':')) |result| result else .{ first, &.{} };
-
-    var key_event: KeyEvent = undefined;
-
-    const code = parseValue(u21, key_code, null) orelse return .none;
-    key_event.code = @enumFromInt(code);
-    key_event.physical_key = key_event.code.mapUsLayout().physical_key;
-    key_event.mods = .{};
-
-    // @TODO GILA(fluffy_tail_yw4)
-    _ = alt_key_code;
-    if (remaining.len == 0) return .{ .key_pressed = key_event };
-
-    const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-    const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
-
-    const mod_value = parseValue(u9, modifier_string, 1) orelse return .none;
-    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
-    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
-
-    const event = parseValue(u8, event_type, 1) orelse return .none;
-    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
-
-    // @TODO GILA(fluffy_tail_yw4)
-    _ = text_as_codepoint;
-
-    return switch (key_state) {
-        .pressed => .{ .key_pressed = key_event },
-        .repeat => .{ .key_repeat = key_event },
-        .released => .{ .key_released = key_event },
-    };
-}
-
-fn parseKittyKeyboardQuery(csi: []const u8) Event {
-    assert(csi.len >= 4);
-    assert(csi[2] == '?');
-    const n = csi.len;
-    assert(csi[n - 1] == 'u');
-    const body = csi[3 .. n - 1];
-
-    const flags_string, _ = if (cutScalar(u8, body, ';')) |result| result else .{ body, &.{} };
-    const raw_flags = parseValue(u16, flags_string, 0) orelse return .none;
-    const known_flags_mask: u16 = 0b1_1111;
-    const known_flags: seq.kitty.Flags = .{
-        .disambiguate_escape_codes = (raw_flags & 0b00001) != 0,
-        .report_event_types = (raw_flags & 0b00010) != 0,
-        .report_alternate_keys = (raw_flags & 0b00100) != 0,
-        .report_all_keys_as_escape_codes = (raw_flags & 0b01000) != 0,
-        .report_associated_text = (raw_flags & 0b10000) != 0,
-        .padding = 0,
-    };
-    return .{ .kitty_keyboard_query = .{
-        .raw_flags = raw_flags,
-        .known_flags = known_flags,
-        .unknown_flags = raw_flags & ~known_flags_mask,
-    } };
-}
-
-fn parseDECRPM(csi: []const u8) Event {
-    assert(csi.len > 2);
-    assert(csi[0] == '\x1b');
-    assert(csi[1] == '[');
-    const n = csi.len;
-    assert(csi[n - 1] == 'y');
-    const payload = csi[2 .. n - 1];
-    if (payload.len < 4) return .none;
-    if (payload[payload.len - 1] != '$') return .none;
-
-    const body = payload[0 .. payload.len - 1];
-    if (body[0] != '?') return .none;
-
-    const mode_string, const status_string = cutScalar(u8, body[1..], ';') orelse return .none;
-    const mode = parseValue(u16, mode_string, null) orelse return .none;
-    const status_value = parseValue(u8, status_string, null) orelse return .none;
-    const status = std.enums.fromInt(DECRPMStatus, status_value) orelse return .none;
-    return .{ .decrpm = .{ .mode = mode, .status = status } };
-}
-
-fn parseDeviceAttributes(csi: []const u8) Event {
-    assert(csi.len > 2);
-    assert(csi[0] == '\x1b');
-    assert(csi[1] == '[');
-    const n = csi.len;
-    assert(csi[n - 1] == 'c');
-    const payload = csi[2 .. n - 1];
-    if (payload.len == 0) return .none;
-
-    const body = payload[1..];
-    return switch (payload[0]) {
-        '?' => parsePrimaryDeviceAttributes(body),
-        '>' => parseSecondaryDeviceAttributes(body),
-        else => .none,
-    };
-}
-
-fn parsePrimaryDeviceAttributes(body: []const u8) Event {
-    if (body.len == 0) return .none;
-
-    const class_code_string, var remaining = if (cutScalar(u8, body, ';')) |result| result else .{ body, &.{} };
-    const class_code = parseValue(u16, class_code_string, null) orelse return .none;
-
-    var extensions: DA1Extensions = .{};
-    var unknown_extensions = false;
-    while (remaining.len > 0) {
-        const extension_string, remaining = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-        const extension = parseValue(u16, extension_string, null) orelse return .none;
-        switch (extension) {
-            4 => extensions.sixel = true,
-            6 => extensions.selective_erase = true,
-            18 => extensions.windowing = true,
-            21 => extensions.horizontal_scrolling = true,
-            22 => extensions.ansi_color = true,
-            46 => extensions.ascii_emulation = true,
-            52 => extensions.clipboard = true,
-            else => unknown_extensions = true,
-        }
-    }
-
-    return .{ .primary_device_attributes = .{
-        .class_code = class_code,
-        .extensions = extensions,
-        .unknown_extensions = unknown_extensions,
-    } };
-}
-
-fn parseSecondaryDeviceAttributes(body: []const u8) Event {
-    const identification_code_string, const remaining_after_identification = cutScalar(u8, body, ';') orelse return .none;
-    const firmware_version_string, const remaining_after_firmware = cutScalar(u8, remaining_after_identification, ';') orelse return .none;
-    const keyboard_option_string, var remaining = if (cutScalar(u8, remaining_after_firmware, ';')) |result| result else .{ remaining_after_firmware, &.{} };
-
-    const identification_code = parseValue(u16, identification_code_string, null) orelse return .none;
-    const firmware_version = parseValue(u16, firmware_version_string, null) orelse return .none;
-    const keyboard_option_raw = parseValue(u16, keyboard_option_string, null) orelse return .none;
-
-    var extra_parameters = false;
-    while (remaining.len > 0) {
-        const extra_parameter_string, const next = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-        _ = parseValue(u16, extra_parameter_string, null) orelse return .none;
-        extra_parameters = true;
-        remaining = next;
-    }
-
-    const keyboard_option: DA2KeyboardOption = switch (keyboard_option_raw) {
-        0 => .standard,
-        1 => .pc,
-        else => .unknown,
-    };
-
-    return .{ .secondary_device_attributes = .{
-        .identification_code = identification_code,
-        .firmware_version = firmware_version,
-        .keyboard_option = keyboard_option,
-        .keyboard_option_raw = keyboard_option_raw,
-        .extra_parameters = extra_parameters,
-    } };
-}
-
-fn parseLegacyCursorKeys(csi: []const u8) Event {
-    // @NOTE There are two types of events that end in these letters https://sw.kovidgoyal.net/kitty/keyboard-protocol/#legacy-key-event-encoding
-    //     CSI {A,B,C,D,E,F,H,P,Q,S} (legacy)
-    //     CSI 1; modifier:type {A,B,C,D,E,F,H,P,Q,S}
-    //
-    //     CSI R was supported as F3 in the original version but was dropped as it conflicts with cursor position reporting
-    //     @TODO Should we support CSI R as F3 or should we just ignore it?
-
-    const n = csi.len;
-    const payload = csi[2 .. n - 1];
-    var key_event: KeyEvent = undefined;
-    key_event.code, key_event.physical_key = switch (csi[n - 1]) {
-        'A' => .{ KeyEvent.Code.up, KeyEvent.PhysicalKey.up },
-        'B' => .{ KeyEvent.Code.down, KeyEvent.PhysicalKey.down },
-        'C' => .{ KeyEvent.Code.right, KeyEvent.PhysicalKey.right },
-        'D' => .{ KeyEvent.Code.left, KeyEvent.PhysicalKey.left },
-        'E' => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
-        'F' => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
-        'H' => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
-        'P' => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
-        'Q' => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
-        'S' => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
-        else => unreachable,
-    };
-    key_event.mods = .{};
-    if (payload.len == 0) return .{ .key_pressed = key_event };
-
-    const left, const right = cutScalar(u8, payload, ';') orelse return .none;
-    if (left.len != 1 or (left.len == 1 and left[0] != '1')) return .none;
-
-    const modifier, const event_type = if (cutScalar(u8, right, ':')) |result| result else .{ right, &.{} };
-    const mod_value = parseValue(u9, modifier, 1) orelse return .none;
-    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
-    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
-
-    const event = parseValue(u8, event_type, 1) orelse return .none;
-    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
-    return switch (key_state) {
-        .pressed => .{ .key_pressed = key_event },
-        .repeat => .{ .key_repeat = key_event },
-        .released => .{ .key_released = key_event },
-    };
-}
-
-fn parseLegacyTildeSequences(csi: []const u8) Event {
-    // @NOTE There are three types of events that end in ~
-    //     CSI number ~
-    //     CSI number; modifier:type ~
-    //     CSI number; modifier:type; text_as_codepoint ~
-    // see: https://sw.kovidgoyal.net/kitty/keyboard-protocol/#an-overview
-    const n = csi.len;
-    const payload = csi[2 .. n - 1];
-    const string_number, const remaining = if (cutScalar(u8, payload, ';')) |result| result else .{ payload, &.{} };
-    const number = parseValue(u16, string_number, null) orelse return .none;
-
-    var key_event: KeyEvent = undefined;
-    key_event.code, key_event.physical_key = switch (number) {
-        2 => .{ KeyEvent.Code.insert, KeyEvent.PhysicalKey.insert },
-        3 => .{ KeyEvent.Code.delete, KeyEvent.PhysicalKey.delete },
-        5 => .{ KeyEvent.Code.page_up, KeyEvent.PhysicalKey.page_up },
-        6 => .{ KeyEvent.Code.page_down, KeyEvent.PhysicalKey.page_down },
-        7 => .{ KeyEvent.Code.home, KeyEvent.PhysicalKey.home },
-        8 => .{ KeyEvent.Code.end, KeyEvent.PhysicalKey.end },
-        11 => .{ KeyEvent.Code.f1, KeyEvent.PhysicalKey.f1 },
-        12 => .{ KeyEvent.Code.f2, KeyEvent.PhysicalKey.f2 },
-        13 => .{ KeyEvent.Code.f3, KeyEvent.PhysicalKey.f3 },
-        14 => .{ KeyEvent.Code.f4, KeyEvent.PhysicalKey.f4 },
-        15 => .{ KeyEvent.Code.f5, KeyEvent.PhysicalKey.f5 },
-        17 => .{ KeyEvent.Code.f6, KeyEvent.PhysicalKey.f6 },
-        18 => .{ KeyEvent.Code.f7, KeyEvent.PhysicalKey.f7 },
-        19 => .{ KeyEvent.Code.f8, KeyEvent.PhysicalKey.f8 },
-        20 => .{ KeyEvent.Code.f9, KeyEvent.PhysicalKey.f9 },
-        21 => .{ KeyEvent.Code.f10, KeyEvent.PhysicalKey.f10 },
-        23 => .{ KeyEvent.Code.f11, KeyEvent.PhysicalKey.f11 },
-        24 => .{ KeyEvent.Code.f12, KeyEvent.PhysicalKey.f12 },
-        29 => .{ KeyEvent.Code.menu, KeyEvent.PhysicalKey.menu },
-        57427 => .{ KeyEvent.Code.kp_begin, KeyEvent.PhysicalKey.clear },
-        200 => return .paste_start,
-        201 => return .paste_end,
-        else => return .none,
-    };
-    key_event.mods = .{};
-    if (remaining.len == 0) return .{ .key_pressed = key_event };
-
-    const modifier_event_type, const text_as_codepoint = if (cutScalar(u8, remaining, ';')) |result| result else .{ remaining, &.{} };
-    const modifier_string, const event_type = if (cutScalar(u8, modifier_event_type, ':')) |result| result else .{ modifier_event_type, &.{} };
-
-    const mod_value = parseValue(u9, modifier_string, 1) orelse return .none;
-    if (mod_value == 0 or mod_value > 256) return .none; // @NOTE Malformed
-    key_event.mods = @bitCast(@as(u8, @intCast(mod_value - 1)));
-
-    const event = parseValue(u8, event_type, 1) orelse return .none;
-    const key_state: KeyEventType = std.enums.fromInt(KeyEventType, event) orelse return .none;
-
-    // @TODO GILA(fluffy_tail_yw4)
-    _ = text_as_codepoint;
-    return switch (key_state) {
-        .pressed => .{ .key_pressed = key_event },
-        .repeat => .{ .key_repeat = key_event },
-        .released => .{ .key_released = key_event },
-    };
-}
-
-fn parseMouse(csi: []const u8, data: []const u8, consumed_bytes: *usize) Event {
-    assert(csi[0] == '\x1b');
-    assert(csi[1] == '[');
-    const m = csi.len - 1;
-    assert(csi[m] == 'M' or csi[m] == 'm');
-
-    var sgr: bool = false;
-    const number, const x, const y = if (csi.len == 3 and csi[2] == 'M') blk: {
-        // @NOTE SGR off
-        if (data.len < 6) {
-            consumed_bytes.* = 0;
-            return .none;
-        }
-        if (data[3] < 32 or data[4] < 32 or data[5] < 32) {
-            return .none;
-        }
-        consumed_bytes.* = 6;
-        const number: u16 = data[3] - 32;
-        const x: u16 = data[4] - 32;
-        const y: u16 = data[5] - 32;
-        // Ignore SGR events with coordinates (0,0) this is malformed
-        if (x == 0 or y == 0) return .none;
-        break :blk .{ number, x, y };
-    } else if (csi.len >= 4 and csi[2] == '<') blk: {
-        // @NOTE SGR on
-        sgr = true;
-        assert(consumed_bytes.* == csi.len);
-        const mouse_event_type, const coordinates = cutScalar(u8, csi[3..m], ';') orelse return .none;
-        const string_x, const string_y = cutScalar(u8, coordinates, ';') orelse return .none;
-        const x = parseValue(u16, string_x, null) orelse return .none;
-        const y = parseValue(u16, string_y, null) orelse return .none;
-        const number = parseValue(u16, mouse_event_type, null) orelse return .none;
-        if (x == 0 or y == 0) return .none;
-        break :blk .{ number, x, y };
-    } else return .none;
-
-    const Button = enum(u8) {
-        left = 0,
-        middle = 1,
-        right = 2,
-        move_or_release = 3,
-    };
-    const shift_bit = 4;
-    const alt_bit = 8;
-    const ctrl_bit = 16;
-    const move_mask = 32;
-    const mouse_scroll_mask = 64;
-
-    const button: Button = @enumFromInt(number & 0b11);
-    const ctrl: bool = (number & ctrl_bit) != 0;
-    const alt: bool = (number & alt_bit) != 0;
-    const shift: bool = (number & shift_bit) != 0;
-    const mouse_scroll = (number & mouse_scroll_mask) == mouse_scroll_mask;
-    const mouse_move = (number & move_mask) == move_mask;
-
-    if (mouse_move and mouse_scroll) return .none;
-
-    const info: MouseEvent = .{
-        .mods = .{ .ctrl = ctrl, .alt = alt, .shift = shift },
-        .x = x,
-        .y = y,
-    };
-
-    if (mouse_scroll) switch (button) {
-        .left => return .{ .mouse_scroll_up = info },
-        .middle => return .{ .mouse_scroll_down = info },
-        else => return .none,
-    } else if (mouse_move) switch (button) {
-        .left => return .{ .mouse_drag_left = info },
-        .middle => return .{ .mouse_drag_middle = info },
-        .right => return .{ .mouse_drag_right = info },
-        .move_or_release => if (sgr) return .{ .mouse_move = info } else return .none,
-    } else switch (button) {
-        .left => if (csi[m] == 'm') return .{ .mouse_left_released = info } else return .{ .mouse_left_pressed = info },
-        .middle => if (csi[m] == 'm') return .{ .mouse_middle_released = info } else return .{ .mouse_middle_pressed = info },
-        .right => if (csi[m] == 'm') return .{ .mouse_right_released = info } else return .{ .mouse_right_pressed = info },
-        .move_or_release => if (!sgr) return .{ .mouse_released = info } else return .none,
-    }
-    unreachable;
-}
-
-fn parseValue(comptime T: type, data: []const u8, default_value: ?T) ?T {
-    if (data.len == 0) return default_value;
-    return std.fmt.parseInt(T, data, 10) catch return null;
-}
-
+/// Parsed terminal events emitted by `terminal.Terminal.pollEvents`.
+///
+/// Events carrying slices borrow terminal-owned buffers. In particular,
+/// `paste_data` and `osc_pointer_shape.value` are valid only until the next
+/// `pollEvents` call on the same terminal instance.
 pub const Event = union(enum(u8)) {
+    /// A key press event.
     key_pressed: KeyEvent,
+    /// A key release event when reported by the terminal protocol.
     key_released: KeyEvent,
+    /// A key repeat event when reported by the terminal protocol.
     key_repeat: KeyEvent,
+    /// Terminal size change.
     resize: ResizeEvent,
+    /// DEC private mode report (`DECRPM`).
     decrpm: DECRPMEvent,
+    /// Kitty keyboard protocol support or current flag report.
     kitty_keyboard_query: KittyKeyboardQueryEvent,
+    /// Primary device attributes response (`DA1`).
     primary_device_attributes: PrimaryDeviceAttributesEvent,
+    /// Secondary device attributes response (`DA2`).
     secondary_device_attributes: SecondaryDeviceAttributesEvent,
+    /// OSC 4 palette color report.
+    osc_palette_color: OSCPaletteColorEvent,
+    /// OSC dynamic color report.
+    osc_dynamic_color: OSCDynamicColorEvent,
+    /// OSC pointer-shape report.
+    ///
+    /// The `value` slice borrows parser input memory and is valid only until
+    /// the next `terminal.Terminal.pollEvents` call on the same terminal instance.
+    /// Copy the data if you need to retain it beyond the next `pollEvents` call.
+    osc_pointer_shape: OSCPointerShapeEvent,
+    /// Mouse move without any pressed buttons.
     mouse_move: MouseEvent,
+    /// Mouse move with left button pressed.
     mouse_drag_left: MouseEvent,
+    /// Mouse move with middle button pressed.
     mouse_drag_middle: MouseEvent,
+    /// Mouse move with right button pressed.
     mouse_drag_right: MouseEvent,
+    /// Mouse wheel scroll up.
     mouse_scroll_up: MouseEvent,
+    /// Mouse wheel scroll down.
     mouse_scroll_down: MouseEvent,
+    /// Left mouse button press.
     mouse_left_pressed: MouseEvent,
+    /// Middle mouse button press.
     mouse_middle_pressed: MouseEvent,
+    /// Right mouse button press.
     mouse_right_pressed: MouseEvent,
+    /// Left mouse button release.
     mouse_left_released: MouseEvent,
+    /// Middle mouse button release.
     mouse_middle_released: MouseEvent,
+    /// Right mouse button release.
     mouse_right_released: MouseEvent,
+    /// Generic mouse release when button identity is not reported.
     mouse_released: MouseEvent,
+    /// Start marker for bracketed paste (`CSI 200~`).
     paste_start,
+    /// A chunk of bracketed paste payload between `paste_start` and `paste_end`.
+    ///
+    /// This slice borrows terminal read-buffer memory and is valid only until
+    /// the next `pollEvents` call on the same terminal instance.
+    ///
+    /// If you need to retain the data beyond the next `pollEvents` call you
+    /// must copy it.
     paste_data: []const u8,
+    /// End marker for bracketed paste (`CSI 201~`).
     paste_end,
-    none,
+    /// Parsed input was recognized syntactically but not mapped to a supported event.
+    unrecognized,
 
     pub fn format(self: Event, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
@@ -597,6 +97,9 @@ pub const Event = union(enum(u8)) {
                 }
             },
             .secondary_device_attributes => |response| try writer.print("da2:{d};{d};{d}", .{ response.identification_code, response.firmware_version, response.keyboard_option_raw }),
+            .osc_palette_color => |response| try writer.print("osc4:{d}=rgb:{x:0>2}/{x:0>2}/{x:0>2}", .{ response.index, response.color.r, response.color.g, response.color.b }),
+            .osc_dynamic_color => |response| try writer.print("osc{d}:rgb:{x:0>2}/{x:0>2}/{x:0>2}", .{ response.slot, response.color.r, response.color.g, response.color.b }),
+            .osc_pointer_shape => |response| try writer.print("osc22:{s}({s}b)", .{ @tagName(response.kind), response.value }),
             .mouse_move => |info| try writer.print("{f}mouse_move@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_drag_left => |info| try writer.print("{f}mouse_drag+left_button@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_drag_middle => |info| try writer.print("{f}mouse_drag+middle_button@[{d}x{d}]", .{ info.mods, info.x, info.y }),
@@ -610,9 +113,15 @@ pub const Event = union(enum(u8)) {
             .mouse_middle_released => |info| try writer.print("{f}mouse_middle_button_released@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_right_released => |info| try writer.print("{f}mouse_right_button_released@[{d}x{d}]", .{ info.mods, info.x, info.y }),
             .mouse_released => |info| try writer.print("{f}mouse_released@[{d}x{d}]", .{ info.mods, info.x, info.y }),
-            .none => try writer.writeAll("none"),
+            .unrecognized => try writer.writeAll("unrecognized"),
         }
     }
+};
+
+pub const RGBColor = struct {
+    r: u8,
+    g: u8,
+    b: u8,
 };
 
 pub const DECRPMStatus = enum(u8) {
@@ -662,6 +171,147 @@ pub const SecondaryDeviceAttributesEvent = struct {
     keyboard_option: DA2KeyboardOption,
     keyboard_option_raw: u16,
     extra_parameters: bool,
+};
+
+pub const OSCPaletteColorEvent = struct {
+    index: u8,
+    color: RGBColor,
+};
+
+pub const OSCDynamicColorEvent = struct {
+    slot: u8,
+    color: RGBColor,
+};
+
+pub const OSCClipboardSelection = enum {
+    clipboard,
+    primary,
+    select,
+    cut0,
+    cut1,
+    cut2,
+    cut3,
+    cut4,
+    cut5,
+    cut6,
+    cut7,
+};
+
+pub const OSCClipboardSelectionMask = packed struct(u16) {
+    reserved_0: bool = false,
+    clipboard: bool = false,
+    primary: bool = false,
+    select: bool = false,
+    cut0: bool = false,
+    cut1: bool = false,
+    cut2: bool = false,
+    cut3: bool = false,
+    cut4: bool = false,
+    cut5: bool = false,
+    cut6: bool = false,
+    cut7: bool = false,
+    reserved: u4 = 0,
+
+    pub const empty: OSCClipboardSelectionMask = .{};
+
+    pub fn set(self: *OSCClipboardSelectionMask, selection: OSCClipboardSelection) void {
+        switch (selection) {
+            .clipboard => self.clipboard = true,
+            .primary => self.primary = true,
+            .select => self.select = true,
+            .cut0 => self.cut0 = true,
+            .cut1 => self.cut1 = true,
+            .cut2 => self.cut2 = true,
+            .cut3 => self.cut3 = true,
+            .cut4 => self.cut4 = true,
+            .cut5 => self.cut5 = true,
+            .cut6 => self.cut6 = true,
+            .cut7 => self.cut7 = true,
+        }
+    }
+
+    pub fn format(self: OSCClipboardSelectionMask, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("raw={d}", .{@as(u16, @bitCast(self))});
+
+        const has_any = self.clipboard or self.primary or self.select or self.cut0 or self.cut1 or self.cut2 or self.cut3 or self.cut4 or self.cut5 or self.cut6 or self.cut7;
+        if (!has_any) {
+            try writer.writeAll("(none)");
+            return;
+        }
+
+        try writer.writeByte('(');
+        var first = true;
+        if (self.clipboard) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("clipboard");
+            first = false;
+        }
+        if (self.primary) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("primary");
+            first = false;
+        }
+        if (self.select) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("select");
+            first = false;
+        }
+        if (self.cut0) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut0");
+            first = false;
+        }
+        if (self.cut1) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut1");
+            first = false;
+        }
+        if (self.cut2) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut2");
+            first = false;
+        }
+        if (self.cut3) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut3");
+            first = false;
+        }
+        if (self.cut4) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut4");
+            first = false;
+        }
+        if (self.cut5) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut5");
+            first = false;
+        }
+        if (self.cut6) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut6");
+            first = false;
+        }
+        if (self.cut7) {
+            if (!first) try writer.writeByte(',');
+            try writer.writeAll("cut7");
+        }
+        try writer.writeByte(')');
+    }
+};
+
+pub const OSCPointerShapeEvent = struct {
+    kind: Kind,
+    /// Reported pointer-shape value payload.
+    ///
+    /// This slice borrows parser input memory and is valid only until the next
+    /// `terminal.Terminal.pollEvents` call on the same terminal instance.
+    value: []const u8,
+
+    pub const Kind = enum(u2) {
+        shape_name,
+        support_bitmap,
+        empty,
+    };
 };
 
 pub const ResizeEvent = struct {
@@ -1290,404 +940,3 @@ pub const KeyEvent = struct {
         }
     };
 };
-
-const testPrint = struct {
-    fn print(sequence: []const u8) void {
-        var buffer: [256]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buffer);
-
-        writer.writeAll("Sequence '") catch unreachable;
-        for (sequence) |c| {
-            if (c == '\x1b') writer.writeAll("\\x1b") catch unreachable else writer.writeByte(c) catch unreachable;
-        }
-        writer.writeAll("' failed:") catch unreachable;
-        std.log.err("{s}", .{writer.buffered()});
-    }
-}.print;
-
-const TestCase = struct {
-    sequence: []const u8,
-    expected: Event,
-    expected_consumed_bytes: ?usize = null,
-};
-
-fn testTerminalSequences(comptime test_cases: []const TestCase) error{TestExpectedEqual}!void {
-    var error_out: ?error{TestExpectedEqual} = null;
-
-    inline for (test_cases) |test_case| {
-        var error_this_test: bool = false;
-        var consumed_bytes: usize = test_case.sequence.len;
-        const event = parseEvent(test_case.sequence, &consumed_bytes);
-        const expected_consumed_bytes = if (test_case.expected_consumed_bytes) |expected_consumed_bytes| expected_consumed_bytes else test_case.sequence.len;
-        if (consumed_bytes != expected_consumed_bytes) {
-            testPrint(test_case.sequence);
-            std.log.err("\tFailed to consume all bytes in sequence: expected {d}, consumed {d}", .{ expected_consumed_bytes, consumed_bytes });
-            error_this_test = true;
-            error_out = error.TestExpectedEqual;
-        }
-
-        const Tag = std.meta.Tag(Event);
-        const expected_tag = @as(Tag, test_case.expected);
-        const actual_tag = @as(Tag, event);
-
-        if (actual_tag == expected_tag) {
-            switch (comptime test_case.expected) {
-                .key_pressed, .key_released, .key_repeat => |expected| {
-                    const actual: KeyEvent = @field(event, @tagName(expected_tag));
-                    if (actual.code != expected.code) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected code {any}, found {any}", .{ expected.code, actual.code });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.physical_key != expected.physical_key) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected physical_key {any}, found {any}", .{ expected.physical_key, actual.physical_key });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.mods != expected.mods) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected mods {any}, found {any}", .{ expected.mods, actual.mods });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (error_this_test) std.log.err("---------------------------------------", .{});
-                },
-                .mouse_left_pressed,
-                .mouse_middle_pressed,
-                .mouse_right_pressed,
-                .mouse_left_released,
-                .mouse_middle_released,
-                .mouse_right_released,
-                .mouse_released,
-                .mouse_scroll_down,
-                .mouse_scroll_up,
-                .mouse_drag_left,
-                .mouse_drag_middle,
-                .mouse_drag_right,
-                .mouse_move,
-                => |expected| {
-                    const actual: MouseEvent = @field(event, @tagName(expected_tag));
-                    if (actual.mods != expected.mods) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected mods {any}, found {any}", .{ expected.mods, actual.mods });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.x != expected.x) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected x {any}, found {any}", .{ expected.x, actual.x });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.y != expected.y) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected y {any}, found {any}", .{ expected.y, actual.y });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                },
-                .decrpm => |expected| {
-                    const actual: DECRPMEvent = @field(event, @tagName(expected_tag));
-                    if (actual.mode != expected.mode) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected mode {any}, found {any}", .{ expected.mode, actual.mode });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.status != expected.status) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected status {any}, found {any}", .{ expected.status, actual.status });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                },
-                .kitty_keyboard_query => |expected| {
-                    const actual: KittyKeyboardQueryEvent = @field(event, @tagName(expected_tag));
-                    if (actual.raw_flags != expected.raw_flags) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected raw_flags {any}, found {any}", .{ expected.raw_flags, actual.raw_flags });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.known_flags != expected.known_flags) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected known_flags {any}, found {any}", .{ expected.known_flags, actual.known_flags });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.unknown_flags != expected.unknown_flags) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected unknown_flags {any}, found {any}", .{ expected.unknown_flags, actual.unknown_flags });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                },
-                .primary_device_attributes => |expected| {
-                    const actual: PrimaryDeviceAttributesEvent = @field(event, @tagName(expected_tag));
-                    if (actual.class_code != expected.class_code) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected class_code {any}, found {any}", .{ expected.class_code, actual.class_code });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.extensions != expected.extensions) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected extensions {any}, found {any}", .{ expected.extensions, actual.extensions });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.unknown_extensions != expected.unknown_extensions) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected unknown_extensions {any}, found {any}", .{ expected.unknown_extensions, actual.unknown_extensions });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                },
-                .secondary_device_attributes => |expected| {
-                    const actual: SecondaryDeviceAttributesEvent = @field(event, @tagName(expected_tag));
-                    if (actual.identification_code != expected.identification_code) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected identification_code {any}, found {any}", .{ expected.identification_code, actual.identification_code });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.firmware_version != expected.firmware_version) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected firmware_version {any}, found {any}", .{ expected.firmware_version, actual.firmware_version });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.keyboard_option != expected.keyboard_option) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected keyboard_option {any}, found {any}", .{ expected.keyboard_option, actual.keyboard_option });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.keyboard_option_raw != expected.keyboard_option_raw) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected keyboard_option_raw {any}, found {any}", .{ expected.keyboard_option_raw, actual.keyboard_option_raw });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                    if (actual.extra_parameters != expected.extra_parameters) {
-                        if (!error_this_test) testPrint(test_case.sequence);
-                        std.log.err("\tExpected extra_parameters {any}, found {any}", .{ expected.extra_parameters, actual.extra_parameters });
-                        error_out = error.TestExpectedEqual;
-                        error_this_test = true;
-                    }
-                },
-                else => {},
-            }
-        } else {
-            if (!error_this_test) testPrint(test_case.sequence);
-            std.log.err("\tExpected Tag {any}, found {any}", .{ expected_tag, actual_tag });
-            error_out = error.TestExpectedEqual;
-            error_this_test = true;
-        }
-    }
-
-    if (error_out) |err| return err;
-}
-
-test "keyboard events" {
-    const test_cases = [_]TestCase{
-        .{ .sequence = "a", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "A", .expected = .{ .key_pressed = .{ .code = .A, .physical_key = .A, .mods = .{ .shift = true } } } },
-        .{ .sequence = ";", .expected = .{ .key_pressed = .{ .code = .@";", .physical_key = .@";", .mods = .{} } } },
-        .{ .sequence = ":", .expected = .{ .key_pressed = .{ .code = .@":", .physical_key = .@";", .mods = .{ .shift = true } } } },
-        .{ .sequence = "\x1b", .expected = .{ .key_pressed = .{ .code = .escape, .physical_key = .escape, .mods = .{} } } },
-        .{ .sequence = "\x02", .expected = .{ .key_pressed = .{ .code = .b, .physical_key = .B, .mods = .{ .ctrl = true } } } },
-        .{ .sequence = "\x1d", .expected = .{ .key_pressed = .{ .code = .@"5", .physical_key = .@"5", .mods = .{ .ctrl = true } } } },
-        .{ .sequence = "\x1ba", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .alt = true } } } },
-        .{ .sequence = "\x1b\x1d", .expected = .{ .key_pressed = .{ .code = .@"5", .physical_key = .@"5", .mods = .{ .alt = true, .ctrl = true } } } },
-        .{ .sequence = "\x1bA", .expected = .{ .key_pressed = .{ .code = .A, .physical_key = .A, .mods = .{ .alt = true, .shift = true } } } },
-        .{ .sequence = "\x1b[97;1:1u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97;1:2u", .expected = .{ .key_repeat = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97;1:3u", .expected = .{ .key_released = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97:65;1u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97;1;65u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97:65:97;1:1;65:66u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{} } } },
-        .{ .sequence = "\x1b[97;65u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .caps_lock = true } } } },
-        .{ .sequence = "\x1b[97;129u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .num_lock = true } } } },
-        .{ .sequence = "\x1b[97;193u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .caps_lock = true, .num_lock = true } } } },
-        .{ .sequence = "\x1b[A", .expected = .{ .key_pressed = .{ .code = .up, .physical_key = .up, .mods = .{} } } },
-        .{ .sequence = "\x1b[1;5B", .expected = .{ .key_pressed = .{ .code = .down, .physical_key = .down, .mods = .{ .ctrl = true } } } },
-        .{ .sequence = "\x1b[1;2:3C", .expected = .{ .key_released = .{ .code = .right, .physical_key = .right, .mods = .{ .shift = true } } } },
-        .{ .sequence = "\x1b[5~", .expected = .{ .key_pressed = .{ .code = .page_up, .physical_key = .page_up, .mods = .{} } } },
-        .{ .sequence = "\x1b[3;5~", .expected = .{ .key_pressed = .{ .code = .delete, .physical_key = .delete, .mods = .{ .ctrl = true } } } },
-        .{ .sequence = "\x1b[24;2:3~", .expected = .{ .key_released = .{ .code = .f12, .physical_key = .f12, .mods = .{ .shift = true } } } },
-        .{ .sequence = "\x1bOA", .expected = .{ .key_pressed = .{ .code = .up, .physical_key = .up, .mods = .{} } } },
-        .{ .sequence = "\x1bOP", .expected = .{ .key_pressed = .{ .code = .f1, .physical_key = .f1, .mods = .{} } } },
-        .{ .sequence = "\x1b[97;17u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .hyper = true } } } },
-        .{ .sequence = "\x1b[97;33u", .expected = .{ .key_pressed = .{ .code = .a, .physical_key = .A, .mods = .{ .meta = true } } } },
-        .{ .sequence = "\x1b[13u", .expected = .{ .key_pressed = .{ .code = .enter, .physical_key = .enter, .mods = .{} } } },
-        .{ .sequence = "\x1b[13;2u", .expected = .{ .key_pressed = .{ .code = .enter, .physical_key = .enter, .mods = .{ .shift = true } } } },
-        .{ .sequence = "\x1b[27u", .expected = .{ .key_pressed = .{ .code = .escape, .physical_key = .escape, .mods = .{} } } },
-        .{ .sequence = "\x1b[<0;305;1024M", .expected = .{ .mouse_left_pressed = .{ .mods = .{}, .x = 305, .y = 1024 } } },
-        // Negative tests
-        .{ .sequence = "\x1b[", .expected = .none, .expected_consumed_bytes = 0 },
-        .{ .sequence = "\x1b[97:65:97;1:", .expected = .none, .expected_consumed_bytes = 0 },
-        .{ .sequence = "\x1bO", .expected = .none, .expected_consumed_bytes = 0 },
-        .{ .sequence = "\x1bOZ", .expected = .none },
-        .{ .sequence = "\x1b[1;1X", .expected = .none },
-        .{ .sequence = "\x1b[999~", .expected = .none },
-        // Modifier encoding is 1 + bitmask; 0 and > 256 are invalid
-        .{ .sequence = "\x1b[97;282u", .expected = .none },
-        .{ .sequence = "\x1b[97;0:1u", .expected = .none },
-        .{ .sequence = "\x1b[97;0:2u", .expected = .none },
-        .{ .sequence = "\x1b[1;257A", .expected = .none },
-        .{ .sequence = "\x1b[3;0~", .expected = .none },
-    };
-
-    try testTerminalSequences(&test_cases);
-}
-
-test "mouse events" {
-    const test_cases = [_]TestCase{
-        // SGR off tests positive
-        .{ .sequence = "\x1b[M\x20\x25\x25", .expected = .{ .mouse_left_pressed = .{ .mods = .{}, .x = 5, .y = 5 } } },
-        .{ .sequence = "\x1b[M\x27\x30\x30", .expected = .{ .mouse_released = .{ .mods = .{ .shift = true }, .x = 16, .y = 16 } } },
-        .{ .sequence = "\x1b[M\x6c\x30\x30", .expected = .{ .mouse_scroll_up = .{ .mods = .{ .shift = true, .alt = true }, .x = 16, .y = 16 } } },
-        .{ .sequence = "\x1b[M\x55\x42\x32", .expected = .{ .mouse_drag_middle = .{ .mods = .{ .shift = true, .ctrl = true }, .x = 34, .y = 18 } } },
-        // SGR on tests
-        .{ .sequence = "\x1b[<0;10;20M", .expected = .{ .mouse_left_pressed = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<0;10;20m", .expected = .{ .mouse_left_released = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<16;10;20M", .expected = .{ .mouse_left_pressed = .{ .mods = .{ .ctrl = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<4;10;20M", .expected = .{ .mouse_left_pressed = .{ .mods = .{ .shift = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<8;10;20M", .expected = .{ .mouse_left_pressed = .{ .mods = .{ .alt = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<28;10;20M", .expected = .{ .mouse_left_pressed = .{ .mods = .{ .shift = true, .ctrl = true, .alt = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<35;10;20M", .expected = .{ .mouse_move = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<47;10;20M", .expected = .{ .mouse_move = .{ .mods = .{ .shift = true, .alt = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<32;10;20M", .expected = .{ .mouse_drag_left = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<48;10;20M", .expected = .{ .mouse_drag_left = .{ .mods = .{ .ctrl = true }, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<33;10;20M", .expected = .{ .mouse_drag_middle = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<34;10;20M", .expected = .{ .mouse_drag_right = .{ .mods = .{}, .x = 10, .y = 20 } } },
-        .{ .sequence = "\x1b[<64;5;5M", .expected = .{ .mouse_scroll_up = .{ .mods = .{}, .x = 5, .y = 5 } } },
-        .{ .sequence = "\x1b[<80;5;5M", .expected = .{ .mouse_scroll_up = .{ .mods = .{ .ctrl = true }, .x = 5, .y = 5 } } },
-        .{ .sequence = "\x1b[<65;5;5M", .expected = .{ .mouse_scroll_down = .{ .mods = .{}, .x = 5, .y = 5 } } },
-        .{ .sequence = "\x1b[<85;5;5M", .expected = .{ .mouse_scroll_down = .{ .mods = .{ .shift = true, .ctrl = true }, .x = 5, .y = 5 } } },
-        // Negative tests
-        .{ .sequence = "\x1b[M", .expected = .none, .expected_consumed_bytes = 0 },
-        .{ .sequence = "\x1b[<0;10M", .expected = .none },
-        .{ .sequence = "\x1b[<0;10;20", .expected = .none, .expected_consumed_bytes = 0 },
-        .{ .sequence = "\x1b[<M", .expected = .none },
-        .{ .sequence = "\x1b[M\x57\x42\x32", .expected = .none }, // Mouse is set to button 3(release) and movement. This is not valid in X10 mode
-        .{ .sequence = "\x1b[M\x82\x42\x32", .expected = .none }, // Mouse has move and scroll modifiers set this is invalid
-        .{ .sequence = "\x1b[M\x1b[A", .expected = .none, .expected_consumed_bytes = 3 }, // Malformed X10 packet should consume only CSI bytes
-    };
-
-    try testTerminalSequences(&test_cases);
-}
-
-test "terminal capability response events" {
-    const test_cases = [_]TestCase{
-        .{ .sequence = "\x1b[?u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 0, .known_flags = .{}, .unknown_flags = 0 } } },
-        .{ .sequence = "\x1b[?5u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 5, .known_flags = .{ .disambiguate_escape_codes = true, .report_alternate_keys = true }, .unknown_flags = 0 } } },
-        .{ .sequence = "\x1b[?7;1u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 7, .known_flags = .{ .disambiguate_escape_codes = true, .report_event_types = true, .report_alternate_keys = true }, .unknown_flags = 0 } } },
-        .{ .sequence = "\x1b[?255u", .expected = .{ .kitty_keyboard_query = .{ .raw_flags = 255, .known_flags = .{ .disambiguate_escape_codes = true, .report_event_types = true, .report_alternate_keys = true, .report_all_keys_as_escape_codes = true, .report_associated_text = true }, .unknown_flags = 224 } } },
-        .{ .sequence = "\x1b[?1006;0$y", .expected = .{ .decrpm = .{ .mode = 1006, .status = .not_recognized } } },
-        .{ .sequence = "\x1b[?1006;1$y", .expected = .{ .decrpm = .{ .mode = 1006, .status = .set } } },
-        .{ .sequence = "\x1b[?1016;4$y", .expected = .{ .decrpm = .{ .mode = 1016, .status = .permanently_reset } } },
-        .{ .sequence = "\x1b[?64;4;6;18;21;22;46;52c", .expected = .{ .primary_device_attributes = .{ .class_code = 64, .extensions = .{ .sixel = true, .selective_erase = true, .windowing = true, .horizontal_scrolling = true, .ansi_color = true, .ascii_emulation = true, .clipboard = true }, .unknown_extensions = false } } },
-        .{ .sequence = "\x1b[?64;99c", .expected = .{ .primary_device_attributes = .{ .class_code = 64, .extensions = .{}, .unknown_extensions = true } } },
-        .{ .sequence = "\x1b[>61;20;1c", .expected = .{ .secondary_device_attributes = .{ .identification_code = 61, .firmware_version = 20, .keyboard_option = .pc, .keyboard_option_raw = 1, .extra_parameters = false } } },
-        .{ .sequence = "\x1b[>61;20;9;5c", .expected = .{ .secondary_device_attributes = .{ .identification_code = 61, .firmware_version = 20, .keyboard_option = .unknown, .keyboard_option_raw = 9, .extra_parameters = true } } },
-        // Negative tests
-        .{ .sequence = "\x1b[?;1$y", .expected = .none },
-        .{ .sequence = "\x1b[?1006;$y", .expected = .none },
-        .{ .sequence = "\x1b[?1006;9$y", .expected = .none },
-        .{ .sequence = "\x1b[?999999999999999999999u", .expected = .none },
-        .{ .sequence = "\x1b[?64;;1c", .expected = .none },
-        .{ .sequence = "\x1b[=1;2c", .expected = .none },
-        .{ .sequence = "\x1b[>61;20c", .expected = .none },
-    };
-
-    try testTerminalSequences(&test_cases);
-}
-
-const ScanTestCase = struct {
-    sequence: []const u8,
-    options: CSIScanOptions = .{},
-    expected: ScanResult,
-};
-
-fn expectScanResult(actual: ScanResult, expected: ScanResult) !void {
-    const Tag = std.meta.Tag(ScanResult);
-    try std.testing.expectEqual(@as(Tag, expected), @as(Tag, actual));
-    switch (expected) {
-        .complete => |n| try std.testing.expectEqual(n, actual.complete),
-        .malformed => |n| try std.testing.expectEqual(n, actual.malformed),
-        .too_long => |n| try std.testing.expectEqual(n, actual.too_long),
-        .incomplete => {},
-    }
-}
-
-fn testScanCSI(comptime cases: []const ScanTestCase) !void {
-    inline for (cases) |tc| {
-        const actual = scanCSI(tc.sequence, tc.options);
-        try expectScanResult(actual, tc.expected);
-    }
-}
-
-test "scanCSI ECMA-48 grammar and bounds" {
-    const cases = [_]ScanTestCase{
-        // Complete
-        .{ .sequence = "\x1b[A", .expected = .{ .complete = 3 } },
-        .{ .sequence = "\x1b[?25h", .expected = .{ .complete = 6 } },
-        .{ .sequence = "\x1b[[", .expected = .{ .complete = 3 } }, // '[' is a valid final byte class
-        // Incomplete (must be len > 2 because scanCSI asserts that)
-        .{ .sequence = "\x1b[1", .expected = .incomplete },
-        .{ .sequence = "\x1b[?25", .expected = .incomplete },
-        // Malformed: parameter byte after intermediate byte
-        .{ .sequence = "\x1b[ 0", .expected = .{ .malformed = 3 } },
-        // Malformed: invalid byte immediately after CSI introducer
-        .{ .sequence = "\x1b[\x10", .expected = .{ .malformed = 2 } },
-        // Malformed: preserve potential next ESC sequence start
-        // "\x1b[12" malformed at index 4 where next ESC begins.
-        .{ .sequence = "\x1b[12\x1b[A", .expected = .{ .malformed = 4 } },
-        // Too long using a small cap
-        .{
-            .sequence = "\x1b[12345A",
-            .options = .{ .csi_len_max = 4 },
-            .expected = .{ .too_long = 6 },
-        },
-    };
-    try testScanCSI(&cases);
-}
-
-test "scanCSI malformed preserves potential next ESC" {
-    const sequence = "\x1b[12\x1b[A";
-    const result = scanCSI(sequence, .{});
-    try std.testing.expectEqual(
-        @as(std.meta.Tag(ScanResult), .malformed),
-        @as(std.meta.Tag(ScanResult), result),
-    );
-    try std.testing.expectEqual(@as(usize, 4), result.malformed);
-}
-
-test "parseEvent malformed CSI does not eat next event start" {
-    const sequence = "\x1b[12\x1b[A";
-    // First parse: malformed CSI prefix only.
-    var consumed_first: usize = 0;
-    const first = parseEvent(sequence, &consumed_first);
-    try std.testing.expectEqual(
-        @as(std.meta.Tag(Event), .none),
-        @as(std.meta.Tag(Event), first),
-    );
-    try std.testing.expectEqual(@as(usize, 4), consumed_first);
-    // Second parse: remaining bytes should still start with ESC [ A.
-    const remaining = sequence[consumed_first..];
-    var consumed_second: usize = 0;
-    const second = parseEvent(remaining, &consumed_second);
-    try std.testing.expectEqual(@as(usize, 3), consumed_second);
-    switch (second) {
-        .key_pressed => |key| {
-            try std.testing.expectEqual(KeyEvent.Code.up, key.code);
-            try std.testing.expectEqual(KeyEvent.PhysicalKey.up, key.physical_key);
-            try std.testing.expectEqual(Mods{}, key.mods);
-        },
-        else => try std.testing.expect(false),
-    }
-}
